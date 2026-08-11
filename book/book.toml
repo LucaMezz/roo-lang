@@ -1,0 +1,20 @@
+[book]
+title = "The fig Programming Language"
+authors = ["The fig-lang project"]
+description = "The language specification and guide for fig, an embeddable, gradually-typed scripting language."
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-icon = "fa-github"
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true

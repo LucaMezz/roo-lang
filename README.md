@@ -22,6 +22,19 @@ fig-engine's own `crates/*` layout):
 - [`crates/lexer`](crates/lexer) — turns source text into tokens. The only
   crate that exists so far.
 
+## Documentation
+
+The language itself — every kind of statement, expression, declaration, and
+type fig understands — is specified in [The fig Programming
+Language](book), an [mdBook](https://github.com/rust-lang/mdBook) built from
+[`book/src`](book/src). It documents the language's intended design, ahead
+of the implementation. Build it locally with:
+
+```sh
+cargo install mdbook
+mdbook build book --open
+```
+
 ## License
 
 Licensed under the [MIT license](LICENSE).

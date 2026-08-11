@@ -1,0 +1,127 @@
+# Generics
+
+A function, struct, enum, or trait can be parameterized over one or more
+types, written as `<T>` (or `<T, U, ...>`) after its name, exactly as in
+Rust.
+
+## Generic functions
+
+```fig
+fn first<T>(items: [T]) -> T {
+    items[0]
+}
+
+first([1, 2, 3]);           // T = int
+first(["a", "b", "c"]);     // T = String
+```
+
+Type arguments are usually inferred at the call site (see
+[Type Inference](../types/inference.md)) and can also be given explicitly:
+
+```fig
+let x = first::<int>([1, 2, 3]);
+```
+
+## Generic structs and enums
+
+```fig
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+let p = Pair { first: 1, second: 2 };       // Pair<int>
+let q = Pair { first: "a", second: "b" };   // Pair<String>
+```
+
+```fig
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+```
+
+## Trait bounds
+
+A bare generic parameter (`<T>`) can be any type at all, including one with
+no methods usable on it. A **trait bound** restricts the parameter to types
+implementing a given trait, which is what makes it possible to call that
+trait's methods on values of type `T`:
+
+```fig
+fn largest<T: PartialOrd>(items: [T]) -> T {
+    let mut best = items[0];
+    for item in items {
+        if item > best { // requires PartialOrd
+            best = item;
+        }
+    }
+    best
+}
+```
+
+Multiple bounds combine with `+`:
+
+```fig
+fn print_and_compare<T: Display + PartialOrd>(a: T, b: T) {
+    print(a);
+    print(b);
+    print(a < b);
+}
+```
+
+## `where` clauses
+
+For functions with several bounded parameters, a `where` clause after the
+signature is equivalent to inline bounds but easier to read:
+
+```fig
+fn process<T, U>(a: T, b: U) -> bool
+where
+    T: PartialOrd,
+    U: Display,
+{
+    // ...
+}
+```
+
+## Generic `impl` blocks
+
+Methods can be defined generically, and can also be restricted to specific
+type arguments:
+
+```fig
+impl<T> Pair<T> {
+    fn new(first: T, second: T) -> Pair<T> {
+        Pair { first, second }
+    }
+}
+
+impl<T: PartialOrd> Pair<T> {
+    fn largest(self) -> T {
+        if self.first > self.second { self.first } else { self.second }
+    }
+}
+```
+
+## Generic traits
+
+A trait itself can be generic:
+
+```fig
+trait Converter<T> {
+    fn convert(self) -> T;
+}
+```
+
+## How generics interact with gradual typing
+
+Generics are a purely static-typing feature: a generic parameter with no
+bound (`<T>`) still means "some specific, statically-tracked type, the same
+for every use of `T` in this signature," not "dynamically typed." If you
+want a genuinely dynamically-typed parameter, omit the type annotation
+entirely rather than reaching for a generic — see
+[Gradual Typing](../types/gradual-typing.md). The two features solve
+different problems: generics let one signature work polymorphically across
+many *static* types; gradual typing lets a binding opt out of static typing
+altogether.
