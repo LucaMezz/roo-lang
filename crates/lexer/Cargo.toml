@@ -1,0 +1,16 @@
+[package]
+name = "lexer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Turns fig-lang source text into tokens"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["lexer", "tokenizer", "compiler"]
+categories = ["compilers", "parser-implementations"]
+# repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
