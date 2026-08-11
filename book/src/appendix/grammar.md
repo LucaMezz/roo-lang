@@ -39,14 +39,16 @@ variant     ::= ident (tuple_fields | struct_fields)?
 tuple_fields  ::= "(" type ("," type)* ")"
 struct_fields ::= "{" field ("," field)* "}"
 
-trait_def   ::= "trait" ident generics? (":" bounds)? "{" trait_item* "}"
+trait_def   ::= "pub"? "trait" ident generics? (":" bounds)? "{" trait_item* "}"
 trait_item  ::= "fn" ident generics? "(" params? ")" ("->" type)? (block | ";")
               | "type" ident ";"
 
 impl_block  ::= "impl" generics? type ("for" type)? "{" (function | assoc_type)* "}"
 assoc_type  ::= "type" ident "=" type ";"
 
-module      ::= "mod" ident (";" | "{" item* "}")
+module      ::= "pub"? "mod" ident (";" | "{" statement* "}")
+              (* a module body holds the same statement* as a whole
+                 program — it's a nested scope, not a restricted one *)
 use_decl    ::= "pub"? "use" path ("as" ident)? ";"
               | "pub"? "use" path "::" "{" use_list "}" ";"
               | "pub"? "use" path "::" "*" ";"
@@ -67,7 +69,7 @@ statement   ::= let_stmt | item | expr ";" | block_expr
                  if/match/loop/while/for are "expression-with-block" forms,
                  the same exception Rust's grammar makes *)
 let_stmt    ::= "pub"? "let" pattern (":" type)? ("=" expr)? ";"
-              | "let" pattern (":" type)? "=" expr "else" block  (* let-else *)
+              | "let" pattern (":" type)? "=" expr "else" block ";"  (* let-else *)
               (* "pub" is only meaningful at module scope — see
                  Modules and Visibility. There's no separate "mut" slot
                  here: "let mut x = 5;" is just "let" applied to the
