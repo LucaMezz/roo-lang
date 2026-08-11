@@ -1,0 +1,161 @@
+//! A small 2D geometry/math library.
+//!
+//! Exercises: operator overloading, enums + match, traits with default
+//! methods, generics with trait bounds, and associated types.
+
+struct Vector2 { x: float, y: float }
+
+// `Rhs` defaults to `Self`, so the common same-type case below reads
+// exactly as tersely as the old fixed-shape trait did.
+trait Add<Rhs = Self> {
+    type Output;
+
+    fn add(self, rhs: Rhs) -> Self::Output;
+}
+
+trait Sub<Rhs = Self> {
+    type Output;
+
+    fn sub(self, rhs: Rhs) -> Self::Output;
+}
+
+trait Mul<Rhs = Self> {
+    type Output;
+
+    fn mul(self, rhs: Rhs) -> Self::Output;
+}
+
+impl Add for Vector2 {
+    type Output = Vector2;
+
+    fn add(self, rhs: Vector2) -> Vector2 {
+        Vector2 { x: self.x + rhs.x, y: self.y + rhs.y }
+    }
+}
+
+impl Sub for Vector2 {
+    type Output = Vector2;
+
+    fn sub(self, rhs: Vector2) -> Vector2 {
+        Vector2 { x: self.x - rhs.x, y: self.y - rhs.y }
+    }
+}
+
+// This is the case that didn't fit the old fixed `Self, Self -> Self`
+// trait shape: a different `Rhs` (`float`, not `Vector2`), spelled out
+// explicitly instead of relying on the default.
+impl Mul<float> for Vector2 {
+    type Output = Vector2;
+
+    fn mul(self, rhs: float) -> Vector2 {
+        Vector2 { x: self.x * rhs, y: self.y * rhs }
+    }
+}
+
+impl Vector2 {
+    fn dot(self, other: Vector2) -> float {
+        self.x * other.x + self.y * other.y
+    }
+
+    fn magnitude(self) -> float {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+
+let a = Vector2 { x: 1.0, y: 2.0 };
+let b = Vector2 { x: 3.0, y: 4.0 };
+let summed = a + b;    // Vector2 + Vector2, via the default-Rhs impl
+let doubled = a * 2.0; // Vector2 * float, via the explicit-Rhs impl
+
+// --- shapes, reusing the book's own enum example ---
+
+enum Shape {
+    Circle(float),
+    Rectangle { width: float, height: float },
+    Triangle { base: float, height: float },
+}
+
+trait Shape2D {
+    fn area(self) -> float;
+    fn perimeter(self) -> float;
+
+    fn describe(self) -> String {
+        "a shape" // default, matching the book's traits.md example
+    }
+}
+
+impl Shape2D for Shape {
+    fn area(self) -> float {
+        match self {
+            Shape::Circle(radius) => 3.14159 * radius * radius,
+            Shape::Rectangle { width, height } => width * height,
+            Shape::Triangle { base, height } => 0.5 * base * height,
+        }
+    }
+
+    fn perimeter(self) -> float {
+        match self {
+            Shape::Circle(radius) => 2.0 * 3.14159 * radius,
+            Shape::Rectangle { width, height } => 2.0 * (width + height),
+            // not geometrically accurate without knowing all three sides,
+            // fine for an illustrative example
+            Shape::Triangle { base, height } => base + height + base,
+        }
+    }
+}
+
+fn total_area(shapes: [Shape]) -> float {
+    let mut total = 0.0;
+    for shape in shapes {
+        total += shape.area();
+    }
+    total
+}
+
+// Generic over anything that's a Shape2D. Comparing by `.area()` only
+// needs `<` on `float`, which is one of the primitive types documented
+// as intrinsically implementing ordering — no custom comparison trait
+// needed here.
+fn largest<T: Shape2D>(shapes: [T]) -> T {
+    let mut best = shapes[0];
+    for shape in shapes {
+        if shape.area() > best.area() {
+            best = shape;
+        }
+    }
+    best
+}
+
+let shapes = [
+    Shape::Circle(2.0),
+    Shape::Rectangle { width: 3.0, height: 4.0 },
+    Shape::Triangle { base: 5.0, height: 2.0 },
+];
+
+print(total_area(shapes));
+print(largest(shapes).describe());
+
+// --- associated types ---
+// Mirrors the book's own Container example in abstraction/traits.md.
+trait Intersect {
+    type Output;
+
+    fn intersect(self, other: Self) -> Self::Output;
+}
+
+// A circle-circle intersection either produces nothing, a point, or an
+// overlapping region — modeled here as a Shape for simplicity, wrapped
+// in the local Option stand-in used throughout these examples.
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+impl Intersect for Shape {
+    type Output = Option<Shape>;
+
+    fn intersect(self, other: Shape) -> Option<Shape> {
+        // illustrative only — not a real intersection algorithm
+        Option::None
+    }
+}

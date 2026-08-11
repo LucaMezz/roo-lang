@@ -1,0 +1,206 @@
+//! A small entity-component system.
+//!
+//! Exercises: modules and visibility, structs (named/tuple), traits
+//! (default methods, supertraits), generics, ambient modules, closures
+//! stored as data, pattern matching, `let else`, labeled loops, and the
+//! value/mutability model.
+//!
+//! fig has no standard library yet, so `Option<T>` is redefined locally
+//! here, the same way `errors/error-handling.md` does in the book — this
+//! is a stand-in for a future stdlib type, not a language feature.
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+mod ecs {
+    use super::Option;
+
+    // The field is private on purpose — EntityId(x) could construct one
+    // from outside the module if it were `pub int`, but going through
+    // `new` keeps entity ids opaque handles rather than "just an int
+    // anyone can make up," which is the point of a newtype like this.
+    pub struct EntityId(int);
+
+    impl EntityId {
+        pub fn new(raw: int) -> EntityId {
+            EntityId(raw)
+        }
+    }
+
+    pub struct Position { pub x: float, pub y: float }
+    pub struct Velocity { pub dx: float, pub dy: float }
+    pub struct Health { pub current: int, pub max: int }
+
+    pub trait Named {
+        fn name(self) -> String;
+    }
+
+    // A supertrait relationship: every Component is also Named, and gets
+    // a default `describe` built on top of it for free.
+    pub trait Component: Named {
+        fn describe(self) -> String {
+            self.name()
+        }
+    }
+
+    impl Named for Position {
+        fn name(self) -> String { "Position" }
+    }
+    impl Component for Position {} // uses the default `describe` as-is
+
+    impl Named for Health {
+        fn name(self) -> String { "Health" }
+    }
+    impl Component for Health {
+        // overrides the default instead of using it
+        fn describe(self) -> String {
+            "Health"
+        }
+    }
+
+    // A generic, sparse-ish component store: one slot per entity index,
+    // `None` where an entity doesn't have this component.
+    pub struct Store<T> {
+        pub slots: [Option<T>],
+    }
+
+    impl<T> Store<T> {
+        pub fn new() -> Store<T> {
+            Store { slots: [] }
+        }
+
+        pub fn set(mut self, id: EntityId, value: T) {
+            while self.slots.len() <= id.0 {
+                self.slots.push(Option::None);
+            }
+            self.slots[id.0] = Option::Some(value);
+        }
+
+        pub fn get(self, id: EntityId) -> Option<T> {
+            if id.0 >= self.slots.len() {
+                return Option::None;
+            }
+            self.slots[id.0]
+        }
+    }
+
+    pub struct World {
+        pub next_id: int,
+        pub positions: Store<Position>,
+        pub velocities: Store<Velocity>,
+        pub healths: Store<Health>,
+    }
+
+    impl World {
+        pub fn new() -> World {
+            World {
+                next_id: 0,
+                positions: Store::new(),
+                velocities: Store::new(),
+                healths: Store::new(),
+            }
+        }
+
+        pub fn spawn(mut self, position: Position, velocity: Velocity) -> EntityId {
+            let id = EntityId::new(self.next_id);
+            self.next_id += 1;
+            self.positions.set(id, position);
+            self.velocities.set(id, velocity);
+            id
+        }
+    }
+}
+
+// A host (fig-engine) would provide these — no fig implementation exists
+// for them, only the shapes of the calls a script can make.
+mod engine {
+    pub fn is_key_down(key: String) -> bool;
+    pub fn draw_circle(x: float, y: float, radius: float);
+    pub fn delta_time() -> float;
+}
+
+use ecs::{EntityId, Position, Velocity, Health, World};
+
+fn movement_system(mut world: World) -> () {
+    let dt = engine::delta_time();
+    let mut i = 0;
+    while i < world.next_id {
+        let id = EntityId::new(i);
+        let velocity = world.velocities.get(id);
+        if let Option::Some(v) = velocity {
+            let position = world.positions.get(id);
+            if let Option::Some(mut p) = position {
+                p.x += v.dx * dt;
+                p.y += v.dy * dt;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn render_system(world: World) -> () {
+    let mut i = 0;
+    while i < world.next_id {
+        let position = world.positions.get(EntityId::new(i));
+        let Option::Some(p) = position else {
+            i += 1;
+            continue;
+        };
+        engine::draw_circle(p.x, p.y, 4.0);
+        i += 1;
+    }
+}
+
+// Finds the first entity within `radius` of (x, y), searching a fixed set
+// of candidate ids, bailing out early via a labeled loop the moment a hit
+// is found in either the primary or fallback candidate list.
+fn find_nearby(world: World, x: float, y: float, radius: float) -> Option<EntityId> {
+    let primary = [0, 1, 2];
+    let fallback = [3, 4, 5];
+
+    let mut found: Option<EntityId> = Option::None;
+
+    search: for candidates in [primary, fallback] {
+        for raw_id in candidates {
+            let id = EntityId::new(raw_id);
+            let position = world.positions.get(id);
+            if let Option::Some(p) = position {
+                let dx = p.x - x;
+                let dy = p.y - y;
+                if dx * dx + dy * dy <= radius * radius {
+                    found = Option::Some(id);
+                    break search;
+                }
+            }
+        }
+    }
+
+    found
+}
+
+// --- top-level script body ---
+// This part doesn't need `return`/`?`, so it runs directly as plain
+// top-level statements rather than needing the `fn run() { ... } run();`
+// wrapper — see bindings/variables.md's "Structuring anything larger
+// than a few lines".
+
+let mut world = World::new();
+
+let player = world.spawn(
+    Position { x: 0.0, y: 0.0 },
+    Velocity { dx: 1.0, dy: 0.0 },
+);
+world.healths.set(player, Health { current: 100, max: 100 });
+
+let systems: [Fn(World) -> ()] = [movement_system, render_system];
+
+loop {
+    if engine::is_key_down("Escape") {
+        break;
+    }
+    for system in systems {
+        system(world);
+    }
+}

@@ -1,0 +1,97 @@
+//! Loading and saving a small config/save file.
+//!
+//! Exercises: modules and visibility (including root-relative path
+//! resolution between sibling modules), an ambient module for file I/O,
+//! `Result`/`Option`/`?`/`let else`, struct update syntax, and casting.
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+// Host-provided (fig-engine would supply this, or a filesystem sandboxed
+// however the embedder chooses) — no fig implementation, just shapes.
+mod fs {
+    pub fn read_to_string(path: String) -> Result<String, String>;
+    pub fn write_string(path: String, contents: String) -> Result<(), String>;
+}
+
+mod save {
+    // `fs` doesn't need `pub` on the `mod fs` item itself for `save` to
+    // reach it (both are descendants of the file root, and the path
+    // resolves from the root by default) — but `read_to_string` and
+    // `write_string` themselves need `pub`, since `save` is a sibling of
+    // `fs`, not a descendant of it. See findings.md.
+
+    pub struct SaveData {
+        pub level: int,
+        pub max_level: int,
+        pub player_name: String,
+        pub position: (float, float),
+    }
+
+    pub fn load(path: String) -> Result<SaveData, String> {
+        let text = fs::read_to_string(path)?;
+        parse(text)
+    }
+
+    pub fn save_to(path: String, data: SaveData) -> Result<(), String> {
+        let text = serialize(data);
+        fs::write_string(path, text)
+    }
+
+    fn parse(text: String) -> Result<SaveData, String> {
+        // illustrative only — real parsing needs stdlib string support
+        // that doesn't exist yet
+        if text.len() == 0 {
+            return Result::Err("empty save file");
+        }
+        Result::Ok(SaveData {
+            level: 1,
+            max_level: 20,
+            player_name: "Player",
+            position: (0.0, 0.0),
+        })
+    }
+
+    fn serialize(data: SaveData) -> String {
+        data.player_name
+    }
+}
+
+fn progress_percent(data: save::SaveData) -> float {
+    (data.level as float / data.max_level as float) * 100.0
+}
+
+// `int`/`float` implement `ToString` intrinsically (see
+// types/casting.md#converting-to-string), so `.to_string()` plus `String`'s
+// own `+` (concatenation) is how a formatted message actually gets built.
+fn progress_message(data: save::SaveData) -> String {
+    "Level " + data.level.to_string() + " — " + progress_percent(data).to_string() + "% complete"
+}
+
+fn run() -> () {
+    let loaded = save::load("save1.dat");
+    let Result::Ok(data) = loaded else {
+        print("could not load save file");
+        return;
+    };
+
+    print(data.player_name);
+    print(progress_message(data));
+
+    // struct update syntax: advance a level, keep everything else
+    let leveled_up = save::SaveData { level: data.level + 1, ..data };
+
+    match save::save_to("save1.dat", leveled_up) {
+        Result::Ok(_) => print("saved"),
+        Result::Err(message) => print(message),
+    }
+}
+
+run();
