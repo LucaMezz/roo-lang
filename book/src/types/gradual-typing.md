@@ -118,6 +118,40 @@ Going the other direction — a statically-typed value used where no
 annotation exists — is always fine, since a typed value is automatically a
 valid value of the dynamic world too; every type is a subtype of `any`.
 
+### The same boundary applies to a function's return type
+
+A function or closure is an ordinary value (see
+[Functions: Functions as values](../functions/functions.md#functions-as-values)),
+so the boundary rule above isn't just about parameters — it applies the
+same way to a function whose *return type* is dynamic, when that function
+is used somewhere expecting a concrete `Fn(...) -> T`:
+
+```fig
+fn log(message: String) { print(message); } // dynamic return
+
+let handler: Fn(String) -> () = log; // allowed — no complaint at assignment
+handler("hi");                        // fine: log's body has no trailing
+                                        // expression, so it returns `()`
+                                        // at runtime, matching `handler`'s
+                                        // declared type
+```
+
+```fig
+fn oops(message: String) { message } // dynamic return, *does* return a value
+
+let handler: Fn(String) -> () = oops; // still allowed at assignment
+handler("hi"); // runtime type error here: `oops` actually returned a
+                // `String`, but `handler`'s declared type says `()`
+```
+
+The check happens **at the call**, not wherever the caller later uses the
+result — the same checkpoint the parameter case above already uses. This
+matters because `()` (and dynamic values generally) are easy to discard
+without ever really "using" them; if the check were deferred to that
+point, a call whose result goes unused would silently skip it, and
+`Fn(...) -> T` would stop being a promise the type system actually keeps.
+Checking at the call keeps it honest.
+
 ## Structs and gradual typing
 
 An untyped field behaves like an untyped variable: it can hold anything, and

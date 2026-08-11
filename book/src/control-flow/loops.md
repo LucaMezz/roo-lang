@@ -139,3 +139,19 @@ occupying the label namespace. Since fig has no lifetimes at all, its loop
 labels are spelled as plain identifiers instead, so the syntax doesn't imply
 a feature that isn't there — see
 [Differences from Rust](../design/differences-from-rust.md).
+
+### Labels vs. values named the same thing
+
+Plain-identifier labels create one small wrinkle Rust's `'outer` spelling
+doesn't have: `break x;` could mean "break the loop labeled `x`" or "break
+the innermost loop with the value of variable `x`," and nothing about the
+syntax itself tells them apart. The rule is simple and deterministic: **if
+the identifier right after `break`/`continue` names an in-scope loop
+label, it's always the label**, never a variable read — the same way an
+inner `let` shadows an outer one of the same name, just applied to labels
+and values sharing a namespace at that one spot. A variable that happens
+to share a name with an enclosing label is simply not reachable as a
+`break`/`continue` value from inside that loop; rename one or the other if
+this ever actually comes up, which in practice should be rare — a loop
+label and a nearby variable sharing a name is already confusing style
+independent of this rule.

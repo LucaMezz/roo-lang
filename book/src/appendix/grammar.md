@@ -21,13 +21,18 @@ item        ::= function | struct_def | enum_def | trait_def
 function    ::= "fn" ident generics? "(" params? ")" ("->" type)? (block | ";")
               (* a ";" body declares an ambient function — see Ambient Modules *)
 params      ::= param ("," param)* ","?
-param       ::= "mut"? pattern (":" type)?
+param       ::= pattern (":" type)?
+              (* no separate "mut" slot here either, same reasoning as
+                 let_stmt — "fn bump(mut p: Point)" is "mut p" as a
+                 pattern, not a modifier on the parameter *)
 
 struct_def  ::= "pub"? "struct" ident generics? struct_body
 struct_body ::= "{" field ("," field)* ","? "}"
-              | "(" type ("," type)* ","? ")" ";"
+              | "(" tuple_field ("," tuple_field)* ","? ")" ";"
               | ";"
 field       ::= "pub"? ident (":" type)?
+tuple_field ::= "pub"? type   (* positional fields are individually
+                                  "pub"?, same as named ones *)
 
 enum_def    ::= "pub"? "enum" ident generics? "{" variant ("," variant)* ","? "}"
 variant     ::= ident (tuple_fields | struct_fields)?
@@ -42,23 +47,32 @@ impl_block  ::= "impl" generics? type ("for" type)? "{" (function | assoc_type)*
 assoc_type  ::= "type" ident "=" type ";"
 
 module      ::= "mod" ident (";" | "{" item* "}")
-use_decl    ::= "use" path ("as" ident)? ";"
-              | "use" path "::" "{" use_list "}" ";"
-              | "use" path "::" "*" ";"
+use_decl    ::= "pub"? "use" path ("as" ident)? ";"
+              | "pub"? "use" path "::" "{" use_list "}" ";"
+              | "pub"? "use" path "::" "*" ";"
+              (* without "pub", a use only brings the name into scope for
+                 the current module; with it, the name is re-exported
+                 through the current module's own path *)
 
 generics    ::= "<" generic_param ("," generic_param)* ">"
-generic_param ::= ident (":" bounds)?
+generic_param ::= ident (":" bounds)? ("=" type)?
 bounds      ::= type ("+" type)*
 where_clause  ::= "where" (type ":" bounds ",")*
 
 (* -------------------------------------------------------------- *)
 (* Statements *)
 
-statement   ::= let_stmt | item | expr ";"
-let_stmt    ::= "pub"? "let" "mut"? pattern (":" type)? ("=" expr)? ";"
+statement   ::= let_stmt | item | expr ";" | block_expr
+              (* block_expr needs no trailing ";" in statement position —
+                 if/match/loop/while/for are "expression-with-block" forms,
+                 the same exception Rust's grammar makes *)
+let_stmt    ::= "pub"? "let" pattern (":" type)? ("=" expr)? ";"
               | "let" pattern (":" type)? "=" expr "else" block  (* let-else *)
               (* "pub" is only meaningful at module scope — see
-                 Modules and Visibility *)
+                 Modules and Visibility. There's no separate "mut" slot
+                 here: "let mut x = 5;" is just "let" applied to the
+                 pattern "mut x" — see the pattern grammar below. *)
+block_expr  ::= block | if_expr | match_expr | loop_expr | while_expr | for_expr
 
 block       ::= "{" statement* expr? "}"
 
@@ -71,6 +85,10 @@ expr        ::= literal | ident | unary_expr | binary_expr
               | block | closure | struct_expr | tuple_expr | array_expr
               | "return" expr? | "break" ident? expr? | "continue" ident?
               | expr "?"
+              (* the ident right after "break"/"continue" is a label if
+                 one with that name is in scope — always, deterministically
+                 — never a value expression; see Loops: "Labels vs. values
+                 named the same thing" *)
 
 if_expr     ::= "if" expr block ("else" (if_expr | if_let_expr | block))?
 if_let_expr ::= "if" "let" pattern "=" expr block ("else" ...)?
@@ -87,7 +105,7 @@ closure     ::= "|" params? "|" ("->" type)? (block | expr)
 
 struct_expr ::= path "{" field_init ("," field_init)* ","? (".." expr)? "}"
 field_init  ::= ident (":" expr)?
-tuple_expr  ::= "(" (expr ",")+ expr? ")"
+tuple_expr  ::= "(" (expr ",")* expr? ")"   (* zero elements: "()", the unit value *)
 array_expr  ::= "[" (expr ("," expr)* ","?)? "]"
 
 call_expr   ::= expr "(" (expr ("," expr)*)? ")"
@@ -97,15 +115,22 @@ index_expr  ::= expr "[" expr "]"
 (* -------------------------------------------------------------- *)
 (* Patterns *)
 
-pattern     ::= "_" | ident ("@" pattern)? | literal
+pattern     ::= "_" | "mut"? ident ("@" pattern)? | literal
               | range_pattern | tuple_pattern | array_pattern
               | struct_pattern | path tuple_pattern? | pattern "|" pattern
+              (* "mut" marks just that one binding as reassignable/
+                 mutate-through-able; unrelated bindings elsewhere in the
+                 same pattern are unaffected *)
 
 range_pattern  ::= expr (".." | "..=") expr
 tuple_pattern  ::= "(" (pattern ",")* pattern? ")"
 array_pattern  ::= "[" (pattern ("," pattern)* (",", "..")?)? "]"
 struct_pattern ::= path "{" (field_pattern ("," field_pattern)*)? (",", "..")? "}"
-field_pattern  ::= ident (":" pattern)?
+field_pattern  ::= "mut"? ident (":" pattern)?   (* "mut" only applies to
+                                                      the shorthand form —
+                                                      "x: pattern" puts any
+                                                      "mut" inside `pattern`
+                                                      instead *)
 
 (* -------------------------------------------------------------- *)
 (* Types *)

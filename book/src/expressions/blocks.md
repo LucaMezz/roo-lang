@@ -32,21 +32,40 @@ print(y); // error: `y` is not defined here — it went out of scope
 Function bodies, `if`/`else` branches, `match` arms, and loop bodies are all
 blocks, and each introduces its own scope the same way.
 
-## Nested functions and types
+## Nested functions and types, and hoisting
 
 A block can contain `fn`, `struct`, `enum`, `trait`, `impl`, and `mod`
-declarations, not just `let`s — these are visible throughout the enclosing
-block (including before the point they're declared textually), but not
-outside it:
+declarations, not just `let`s — collectively, **items**. Items are
+**hoisted**: every item in a block is visible (nameable, callable)
+anywhere in that block, including *before* the line it's declared on, not
+just after it. This is different from a `let`, which is only in scope from
+its own line onward (see [Scope](#scope) above) — a block's items are all
+resolved up front, as if the whole block "knew about" every item in it
+before running any of the block's statements, regardless of the order they
+appear in:
 
 ```fig
 fn outer() -> int {
+    let result = helper(21); // calling `helper` before its own
+                               // declaration below — fine, it's hoisted
+
     fn helper(n: int) -> int {
         n * 2
     }
-    helper(21)
+
+    result
 }
 ```
+
+Items are visible throughout the block they're declared in, but not
+outside it — hoisting only reaches to the edges of the enclosing block,
+never further out.
+
+Hoisting is why a named `fn` can't capture a `let` from its enclosing
+scope the way a [closure](../functions/closures.md#why-fn-and-closures-capture-differently)
+can: a `let` only has a value from its own line onward, but a hoisted `fn`
+can be reached from code that runs earlier than that — there's no single,
+well-defined moment at which such a capture could happen.
 
 ## Blocks as arguments to control flow
 

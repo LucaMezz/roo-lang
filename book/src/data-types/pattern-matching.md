@@ -37,6 +37,27 @@ match shape {
 }
 ```
 
+## Mutable bindings
+
+`mut` before an identifier in a pattern marks *that* binding as mutable —
+reassignable, and (for a reference type) writable-through — the same
+[`mut` that governs any other binding](../design/values-and-mutation.md#mut-still-controls-the-binding-not-the-data).
+It applies to exactly the one name it's written on, not to the whole
+pattern:
+
+```fig
+if let Option::Some(mut p) = position {
+    p.x += 1.0; // ok — this `p` is mut
+}
+
+let (mut count, total) = (0, 100); // `count` is mut, `total` isn't
+```
+
+This is also what `let mut x = 5;` actually is: not a special form, just
+`let` applied to the pattern `mut x` — a single-identifier pattern with
+`mut` on it, the same mechanism as above. See
+[Variables](../bindings/variables.md).
+
 ## The wildcard pattern
 
 `_` matches anything and binds nothing — used to ignore a value entirely:
@@ -89,6 +110,10 @@ match point {
     Point { x, y } => print(x + y),
 }
 ```
+
+`mut` on a shorthand field (`Point { mut x, y }`) makes just that binding
+mutable, same as anywhere else. On the non-shorthand form, put `mut`
+inside the nested pattern instead: `Point { x: mut dx, y }`.
 
 ## Enum variant patterns
 

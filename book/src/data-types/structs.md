@@ -59,6 +59,15 @@ even though they hold the same shape of data — struct types in fig are
 always **nominal**, never structural (see
 [Gradual Typing: What gradual typing is not](../types/gradual-typing.md#what-gradual-typing-is-not)).
 
+Each positional field has its own `pub`, the same as a named field does —
+useful for a newtype-style wrapper that wants to expose some parts of
+itself and keep others opaque:
+
+```fig
+struct EntityId(pub int);         // .0 is visible outside the module
+struct Meters(float);              // the field is private — a pure opaque handle
+```
+
 ## Unit-like structs
 
 A struct with no fields at all, useful as a marker type:

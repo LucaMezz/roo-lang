@@ -135,8 +135,10 @@ See [Closures](closures.md) for anonymous functions and capturing.
 ## Nested and recursive functions
 
 Functions can be declared inside other functions (see
-[Nested functions and types](../expressions/blocks.md#nested-functions-and-types)),
-and can call themselves recursively:
+[Nested functions and types, and hoisting](../expressions/blocks.md#nested-functions-and-types-and-hoisting)) —
+note that a nested `fn`, unlike a [closure](closures.md#why-fn-and-closures-capture-differently),
+still can't capture its enclosing function's `let` bindings — and can call
+themselves recursively:
 
 ```fig
 fn factorial(n: int) -> int {

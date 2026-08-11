@@ -114,6 +114,36 @@ trait Converter<T> {
 }
 ```
 
+## Default type parameters
+
+A generic parameter can declare a default, filled in whenever it's left
+unspecified at the `impl`/use site:
+
+```fig
+trait Converter<T = String> {
+    fn convert(self) -> T;
+}
+
+impl Converter for Point {       // T defaults to String here
+    fn convert(self) -> String {
+        // ...
+    }
+}
+
+impl Converter<int> for Point {  // explicit T overrides the default
+    fn convert(self) -> int {
+        // ...
+    }
+}
+```
+
+This exists mainly so a generic trait can have one common case that reads
+exactly as tersely as a non-generic one, while still allowing less common
+instantiations to be spelled out explicitly. The main place this matters
+is [operator overloading](operator-overloading.md#the-right-hand-side-isnt-always-self),
+where the right-hand-side type of an operator is usually — but not always
+— the same as the left-hand side.
+
 ## How generics interact with gradual typing
 
 Generics are a purely static-typing feature: a generic parameter with no

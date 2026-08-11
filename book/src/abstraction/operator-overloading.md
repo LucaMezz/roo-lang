@@ -6,19 +6,26 @@ implementing a specific, operator-associated trait for your type. Writing
 `Add` trait shaped like:
 
 ```fig
-trait Add {
-    fn add(self, other: Self) -> Self;
+trait Add<Rhs = Self> {
+    type Output;
+
+    fn add(self, rhs: Rhs) -> Self::Output;
 }
 ```
 
-so that implementing it for a custom type makes `+` work on that type:
+so that implementing it for a custom type makes `+` work on that type. The
+common case — right-hand side and result both the same type as the left —
+uses the [default type parameter](generics.md#default-type-parameters) and
+reads exactly as tersely as a fixed-shape trait would:
 
 ```fig
 struct Point { x: float, y: float }
 
-impl Add for Point {
-    fn add(self, other: Point) -> Point {
-        Point { x: self.x + other.x, y: self.y + other.y }
+impl Add for Point {         // Rhs defaults to Self (Point), here
+    type Output = Point;
+
+    fn add(self, rhs: Point) -> Point {
+        Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
 
@@ -27,6 +34,32 @@ let sum = Point { x: 1.0, y: 2.0 } + Point { x: 3.0, y: 4.0 };
 
 `Self` (capital `S`) inside a trait or `impl` block refers to "the type this
 block is implementing the trait for" — here, `Point`.
+
+## The right-hand side isn't always Self
+
+Point + Point is the easy case. A lot of real operator overloading needs a
+right-hand side that *isn't* the same type as the left — scaling a vector
+by a plain number is the standard example:
+
+```fig
+struct Vector2 { x: float, y: float }
+
+impl Add<float> for Vector2 {    // Rhs given explicitly: float, not Self
+    type Output = Vector2;
+
+    fn add(self, rhs: float) -> Vector2 {
+        Vector2 { x: self.x + rhs, y: self.y + rhs }
+    }
+}
+
+let a = Vector2 { x: 1.0, y: 2.0 };
+let b = a + 2.0; // Vector2 + float, using the impl above
+```
+
+A type can have more than one `impl` of the same trait, as long as each one
+picks a different `Rhs` — `impl Add for Vector2` (Rhs defaults to
+`Vector2`) and `impl Add<float> for Vector2` can coexist, and `a + b` picks
+whichever one matches `b`'s type.
 
 ## What can be overloaded
 
@@ -46,6 +79,13 @@ method call, and implementing the trait for your type makes the operator
 work), which is a language-level guarantee independent of what the traits
 end up being named.
 
+Only *binary* operators have an `Rhs`. A unary operator's trait just has an
+`Output`: conceptually `trait Neg { type Output; fn neg(self) ->
+Self::Output; }` for unary `-`. Indexing is shaped like a binary operator
+but with the second type conventionally called `Idx` rather than `Rhs`,
+and without a default — `a[i]` doesn't have an obvious "usual" index type
+the way `a + b` has an obvious "usual" right-hand-side type.
+
 ## Primitive types implement these traits intrinsically
 
 `int`, `float`, `bool`, and `char` already support the relevant operators —
@@ -55,15 +95,21 @@ operators special-cased in the grammar, so that generic, trait-bounded code
 treats primitives and custom types uniformly:
 
 ```fig
-fn sum<T: Add>(a: T, b: T) -> T { a + b }
+fn sum<T: Add>(a: T, b: T) -> T::Output { a + b }
 
 sum(1, 2);           // needs `int` to satisfy `T: Add`
 sum(p1, p2);          // needs `Point`'s own `impl Add` to satisfy it too
 ```
 
+(The return type is `T::Output`, not `T` — a bare `T: Add` bound doesn't
+by itself guarantee the result is the same type as the operands, only that
+*some* `Output` exists. `int`'s `Add` impl happens to have `Output = int`,
+the same way `Point`'s does, but a generic function can't assume that
+without also constraining `Output`.)
+
 There's no fig source behind `int`'s `Add` implementation, and there never
-can be: the body would have to say `fn add(self, other: int) -> int { self
-+ other }`, which defines `+` in terms of itself. So unlike a custom type's
+can be: the body would have to say `fn add(self, rhs: int) -> int { self +
+rhs }`, which defines `+` in terms of itself. So unlike a custom type's
 `impl`, and unlike an [ambient module](../modules/ambient-modules.md)'s
 bodyless signatures, there is no declaration anywhere in fig-visible syntax
 for this — no `impl` block, bodyless or otherwise, and no module path

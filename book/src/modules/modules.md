@@ -101,6 +101,30 @@ use shapes::Circle as Round;
 use shapes::*; // glob import — brings every public item into scope
 ```
 
+By default, a `use` only brings a name into scope for the module it's
+written in — it doesn't make that name reachable through *that* module's
+own path. `pub use` does: it re-exports the imported item, so anything
+that can reach the module doing the `pub use` can reach the item through
+it too, as if it had been declared there directly:
+
+```fig
+mod shapes {
+    pub mod circle {
+        pub struct Circle { pub radius: float }
+    }
+
+    pub use circle::Circle; // re-exported as `shapes::Circle`
+}
+
+let c = shapes::Circle { radius: 1.0 }; // works — no need to know
+                                          // about `shapes::circle` at all
+```
+
+This is how a module presents a flatter, more convenient public path than
+its actual internal structure — callers of `shapes::Circle` don't need to
+know `circle` is a separate inner module at all. `pub use` supports the
+same grouping, renaming, and glob forms as plain `use`.
+
 ## Paths
 
 A path is a `::`-separated sequence of module/item names. An unqualified

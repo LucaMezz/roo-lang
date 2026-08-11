@@ -31,6 +31,12 @@ point.x = 5;                       // ok: point is mut
 point = Point { x: 1, y: 1 };      // ok: point is mut
 ```
 
+`mut` here isn't special to `let` — `let mut x = ...` is `let` applied to
+the pattern `mut x`, the same `mut`-on-a-binding mechanism available in any
+pattern (`Some(mut x)`, `(mut a, b)`, ...). See
+[Pattern Matching: Mutable bindings](../data-types/pattern-matching.md#mutable-bindings)
+for the general form.
+
 ## Shadowing
 
 A new `let` with the same name **shadows** the previous binding rather than
@@ -108,3 +114,32 @@ let PI: float = 3.14159265;
 A module-level `let` is an ordinary binding like any other — it follows
 the same [value model](../design/values-and-mutation.md) as a `let` inside
 a function, with no special aliasing or re-evaluation rules attached to it.
+
+### Structuring anything larger than a few lines
+
+Because top-level code isn't inside a function, `return` and `?` don't
+mean anything there — both are defined in terms of "the current function"
+(see [Expressions and Statements](../expressions/expressions-and-statements.md#return-break-and-continue-are-expressions-too)
+and [Error Handling](../errors/error-handling.md#the--operator)), and the
+top level has none. This is a direct, unsurprising consequence of fig
+having no `fn main` to begin with — not a separate restriction — but it
+does mean a script that wants either has to put its logic inside a real
+function and call that function explicitly:
+
+```fig
+fn run() {
+    let data = load_config("settings.fig")?; // `?` needs a real function
+    if data.invalid {
+        return; // same for `return`
+    }
+    apply(data);
+}
+
+run(); // nothing invokes `run` automatically — this call is what runs it
+```
+
+For a short script, plain top-level statements are simplest and don't need
+this at all. Once a script grows past that — enough to want early returns,
+or fallible steps chained with `?` — wrapping its body in a function like
+`run` above and calling it as the last line is the idiomatic way to get
+there, not a workaround.

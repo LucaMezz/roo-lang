@@ -57,6 +57,28 @@ it captures. fig has none of that: there is one kind of closure, and it
 captures exactly the way a function parameter would receive the same
 variable — see [Differences from Rust](../design/differences-from-rust.md).
 
+## Why `fn` and closures capture differently
+
+A named `fn` — even one nested inside a block, like
+[the `helper` example](../expressions/blocks.md#nested-functions-and-types-and-hoisting)
+— does **not** capture variables from its enclosing scope, only a closure
+does. This isn't a leftover Rust restriction fig kept out of convention;
+Rust's version of this rule is mainly about ownership bookkeeping, which
+fig doesn't have. fig's reason is different, and it still applies: `fn`
+items are **hoisted** (visible everywhere in their enclosing block, even
+before their own declaration — see [Blocks and Scope](../expressions/blocks.md#nested-functions-and-types-and-hoisting)),
+while a `let` binding only exists from its own line onward. If a hoisted
+`fn` could capture a `let`, calling that `fn` from code that runs *before*
+the `let` it wants to capture — which hoisting explicitly allows — would
+have no well-defined value to use. There's no such problem for a closure:
+a closure isn't hoisted, it's an ordinary expression evaluated in normal
+execution order, so by the time a closure captures something, that
+something already has a value.
+
+So the split isn't arbitrary: **hoisted things can't capture, and things
+that capture aren't hoisted.** `fn` and closures are fig's two sides of
+that line, not two historical accidents that happen to look like Rust's.
+
 ## Closures as values
 
 A closure's type is written the same way a named function's is,
