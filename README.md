@@ -12,15 +12,21 @@ eventually replace Luau/`mlua` as the scripting language for. Expect the API
 
 ## Status
 
-Early scaffolding — no lexer, parser, type checker, or codegen yet.
+Early scaffolding. The lexer is implemented; the parser crate exists with
+its dependencies wired up but no parsing logic yet. No type checker or
+codegen yet.
 
 ## Structure
 
 A Cargo workspace, one crate per stage of the pipeline (mirroring
 fig-engine's own `crates/*` layout):
 
-- [`crates/lexer`](crates/lexer) — turns source text into tokens. The only
-  crate that exists so far.
+- [`crates/lexer`](crates/lexer) — turns source text into tokens, using
+  [`logos`](https://docs.rs/logos). Implemented, and tested against every
+  code snippet in `book/` plus the programs in `examples/`.
+- [`crates/parser`](crates/parser) — will turn that token stream into an
+  AST, using [`chumsky`](https://docs.rs/chumsky). Scaffolded only —
+  dependencies are set up, no parsing logic yet.
 
 ## Documentation
 

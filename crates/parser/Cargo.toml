@@ -1,0 +1,18 @@
+[package]
+name = "parser"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Parses fig-lang tokens into an AST"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["parser", "ast", "compiler"]
+categories = ["compilers", "parser-implementations"]
+# repository.workspace = true
+
+[dependencies]
+chumsky = "0.13.0"
+lexer = { version = "0.1.0", path = "../lexer" }
+
+[lints]
+workspace = true
