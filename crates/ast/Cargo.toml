@@ -1,0 +1,16 @@
+[package]
+name = "ast"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The abstract syntax tree fig-lang source parses into"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["ast", "compiler"]
+categories = ["compilers", "parser-implementations"]
+# repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

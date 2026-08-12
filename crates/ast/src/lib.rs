@@ -1,0 +1,733 @@
+//! `ast` is the abstract syntax tree fig-lang source parses into.
+//!
+//! Owns its own strings (`String`/`Box<str>`) rather than borrowing from
+//! the original source text — unlike `lexer`'s `Token<'src>`, nothing here
+//! should need a lifetime parameter, so that `parser`, the type checker,
+//! and the transpiler can all hold onto an AST independently of how long
+//! the source buffer it was parsed from stays alive.
+
+use std::fmt;
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ident {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Clone)]
+pub struct Label {
+    pub ident: Ident,
+}
+
+impl fmt::Debug for Label {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "label({:?})", self.ident)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Path {
+    pub segments: Vec<PathSegment>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct PathSegment {
+    pub ident: Ident,
+    pub args: Option<GenericArgs>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GenericArgs {
+    pub args: Vec<GenericArg>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum GenericArg {
+    Arg(Ty),
+    Constraint(AssocItemConstraint),
+}
+
+#[derive(Clone, Debug)]
+pub struct AssocItemConstraint {
+    pub ident: Ident,
+    pub gen_args: Option<GenericArgs>,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ty {
+    pub kind: TyKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum TyKind {
+    Array(Box<Ty>),
+    Never,
+    Tup(Vec<Box<Ty>>),
+    Path(Path),
+    Paren(Box<Ty>),
+    /// `Fn(int, int) -> int` — grammar.md's `"Fn" "(" (type ("," type)*)? ")" ("->" type)?`.
+    /// Not `FnDecl`: a function *type*'s parameters are bare types, no
+    /// names/patterns, unlike an actual `fn`/closure declaration's params.
+    Fn(Box<FnTy>),
+    Infer,
+    ImplicitSelf,
+    Dummy,
+    Err,
+}
+
+#[derive(Clone, Debug)]
+pub struct Generics {
+    pub params: Vec<GenericParam>,
+    pub where_clause: WhereClause,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct WhereClause {
+    pub predicates: Vec<WherePredicate>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct GenericParam {
+    pub ident: Ident,
+    pub bounds: GenericBounds,
+    pub default: Option<Ty>,
+}
+
+pub type GenericBounds = Vec<Ty>;
+
+#[derive(Clone, Debug)]
+pub struct WherePredicate {
+    pub bounded_ty: Box<Ty>,
+    pub bounds: GenericBounds,
+}
+
+#[derive(Clone, Debug)]
+pub struct Lit {
+    pub kind: LitKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LitKind {
+    Str(String),
+    Char(char),
+    Int(String),
+    Float(String),
+    Bool(bool),
+}
+
+#[derive(Clone, Debug)]
+pub struct MetaItem {
+    pub path: Path,
+    pub kind: MetaItemKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum MetaItemKind {
+    Word,
+    List(Vec<MetaItemInner>),
+    NameValue(MetaItemLit),
+}
+
+#[derive(Clone, Debug)]
+pub enum MetaItemInner {
+    MetaItem(MetaItem),
+    Lit(MetaItemLit),
+}
+
+pub type MetaItemLit = Lit;
+
+#[derive(Clone, Debug)]
+pub struct Annotation {
+    pub item: MetaItem,
+    pub style: AnnotationStyle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnotationStyle {
+    Outer,
+    Inner,
+}
+
+pub type AnnotationVec = Vec<Annotation>;
+
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum StmtKind {
+    Let(Box<Local>),
+    Item(Box<Item>),
+    Expr(Box<Expr>),
+    Semi(Box<Expr>),
+    Empty,
+}
+
+#[derive(Clone, Debug)]
+pub struct Local {
+    pub pat: Box<Pat>,
+    pub ty: Option<Box<Ty>>,
+    pub kind: LocalKind,
+    pub span: Span,
+    pub annotations: AnnotationVec,
+}
+
+#[derive(Clone, Debug)]
+pub enum LocalKind {
+    Decl,
+    Init(Box<Expr>),
+    InitElse(Box<Expr>, Box<Block>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+    pub annotations: AnnotationVec,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
+    Array(Vec<Box<Expr>>),
+    Call(Box<Expr>, Vec<Box<Expr>>),
+    MethodCall(Box<MethodCall>),
+    Tup(Vec<Box<Expr>>),
+    Binary(BinOp, Box<Expr>, Box<Expr>),
+    Unary(UnOp, Box<Expr>),
+    Lit(Lit),
+    Let(Box<Pat>, Box<Expr>, Span),
+    If(Box<Expr>, Box<Block>, Option<Box<Expr>>),
+    While(Box<Expr>, Box<Block>, Option<Label>),
+    ForLoop {
+        pat: Box<Pat>,
+        iter: Box<Expr>,
+        body: Box<Block>,
+        label: Option<Label>,
+    },
+    Loop(Box<Block>, Option<Label>, Span),
+    Match(Box<Expr>, Vec<Arm>),
+    Closure(Box<Closure>),
+    Block(Box<Block>, Option<Label>),
+    Assign(Box<Expr>, Box<Expr>, Span),
+    AssignOp(AssignOp, Box<Expr>, Box<Expr>),
+    Field(Box<Expr>, Ident),
+    Index(Box<Expr>, Box<Expr>, Span),
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, RangeLimits),
+    Underscore,
+    Path(Option<Box<QSelf>>, Path),
+    Break(Option<Label>, Option<Box<Expr>>),
+    Continue(Option<Label>),
+    Ret(Option<Box<Expr>>),
+    Struct(Box<StructExpr>),
+    Paren(Box<Expr>),
+    Try(Box<Expr>),
+    Err,
+    Dummy,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructExpr {
+    pub qself: Option<Box<QSelf>>,
+    pub path: Path,
+    pub fields: Vec<ExprField>,
+    pub rest: Option<Box<Expr>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExprField {
+    pub annotations: AnnotationVec,
+    pub span: Span,
+    pub ident: Ident,
+    pub expr: Box<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct QSelf {
+    pub ty: Box<Ty>,
+    pub path_span: Span,
+    pub position: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum RangeLimits {
+    /// a..b
+    HalfOpen,
+    /// a..=b
+    Closed,
+}
+
+#[derive(Clone, Debug)]
+pub struct Arm {
+    pub annotations: AnnotationVec,
+    pub pat: Box<Pat>,
+    pub guard: Option<Box<Guard>>,
+    pub body: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Guard {
+    pub cond: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct Closure {
+    pub fn_decl: Box<FnDecl>,
+    pub body: Box<Expr>,
+    pub fn_decl_span: Span,
+    pub fn_arg_span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct FnDecl {
+    pub inputs: Vec<Param>,
+    pub output: FnRetTy,
+}
+
+#[derive(Clone, Debug)]
+pub enum FnRetTy {
+    /// No return type specified. Defaults to dynamic typing.
+    Default(Span),
+    Ty(Box<Ty>),
+}
+
+/// The `Fn(int, int) -> int` function *type* — see [`TyKind::Fn`]. Bare
+/// types only, unlike [`FnDecl`]'s named/patterned parameters.
+#[derive(Clone, Debug)]
+pub struct FnTy {
+    pub inputs: Vec<Box<Ty>>,
+    pub output: FnRetTy,
+}
+
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub annotations: AnnotationVec,
+    pub ty: Option<Box<Ty>>,
+    pub pat: Box<Pat>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct MethodCall {
+    pub seg: PathSegment,
+    pub receiver: Box<Expr>,
+    pub args: Vec<Box<Expr>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Item<K = ItemKind> {
+    pub span: Span,
+    pub vis: Visibility,
+    pub annotations: AnnotationVec,
+    pub kind: K,
+}
+
+#[derive(Clone, Debug)]
+pub struct Visibility {
+    pub kind: VisibilityKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum VisibilityKind {
+    Public,
+    Restricted { path: Box<Path>, shorthand: bool },
+    Inherited,
+}
+
+#[derive(Clone, Debug)]
+pub enum ItemKind {
+    Use(UseTree),
+    Fn(Box<Fn>),
+    Mod(Ident, ModKind),
+    TyAlias(Box<TyAlias>),
+    Enum(Ident, Generics, EnumDef),
+    Struct(Ident, Generics, VariantData),
+    Trait(Box<Trait>),
+    Impl(Impl),
+}
+
+#[derive(Clone, Debug)]
+pub struct Trait {
+    pub ident: Ident,
+    pub generics: Generics,
+    pub bounds: GenericBounds,
+    pub items: Vec<Box<AssocItem>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumDef {
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Variant {
+    pub annotations: AnnotationVec,
+    pub span: Span,
+    pub vis: Visibility,
+    pub ident: Ident,
+    pub data: VariantData,
+}
+
+#[derive(Clone, Debug)]
+pub enum VariantData {
+    Struct(Vec<FieldDef>),
+    Tuple(Vec<FieldDef>),
+    Unit,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    pub annotations: AnnotationVec,
+    pub span: Span,
+    pub vis: Visibility,
+    pub ident: Option<Ident>,
+    pub ty: Option<Box<Ty>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Impl {
+    pub generics: Generics,
+    pub of_trait: Option<Box<Path>>,
+    pub self_ty: Box<Ty>,
+    pub items: Vec<Box<AssocItem>>,
+}
+
+pub type AssocItem = Item<AssocItemKind>;
+
+#[derive(Clone, Debug)]
+pub enum AssocItemKind {
+    Fn(Box<Fn>),
+    Type(Box<TyAlias>),
+}
+
+#[derive(Clone, Debug)]
+pub struct TyAlias {
+    pub ident: Ident,
+    pub generics: Generics,
+    pub after_where_clause: WhereClause,
+    pub bounds: GenericBounds,
+    pub ty: Option<Box<Ty>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ModKind {
+    Loaded(Vec<Box<Item>>),
+    Unloaded,
+}
+
+#[derive(Clone, Debug)]
+pub struct Fn {
+    pub ident: Ident,
+    pub generics: Generics,
+    pub sig: FnDecl,
+    pub body: Option<Box<Block>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UseTree {
+    pub prefix: Path,
+    pub kind: UseTreeKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum UseTreeKind {
+    Simple(Option<Ident>),
+    Nested { items: Vec<UseTree>, span: Span },
+    Glob(Span),
+}
+
+#[derive(Clone, Debug)]
+pub struct Pat {
+    pub kind: PatKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum PatKind {
+    Missing,
+    Wild,
+    /// A binding, optionally `mut` (the `bool`), optionally with an `@`
+    /// sub-pattern — see decisions/0008: `mut` lives on the pattern
+    /// itself, not a separate slot. No `ref` half like rustc's
+    /// `BindingMode`, since fig has no borrowing.
+    Ident(bool, Ident, Option<Box<Pat>>),
+    Struct(Option<Box<QSelf>>, Path, Vec<PatField>, PatFieldsRest),
+    TupleStruct(Option<Box<QSelf>>, Path, Vec<Pat>),
+    Or(Vec<Pat>),
+    Path(Option<Box<QSelf>>, Path),
+    Tuple(Vec<Pat>),
+    Expr(Box<Expr>),
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, RangeEnd, Span),
+    Array(Vec<Pat>),
+    Rest,
+    Never,
+    Paren(Box<Pat>),
+    Err,
+}
+
+type PatFieldsRest = Option<Span>;
+
+#[derive(Clone, Debug)]
+pub struct PatField {
+    pub ident: Ident,
+    pub pat: Box<Pat>,
+    pub annotations: AnnotationVec,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RangeEnd {
+    Included,
+    Excluded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fixity {
+    /// The operator is left-associative
+    Left,
+    /// The operator is right-associative
+    Right,
+    /// The operator is not associative
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+pub enum ExprPrecedence {
+    // return, break, yield, closures
+    Jump,
+    // = += -= *= /= %= &= |= ^= <<= >>=
+    Assign,
+    // .. ..=
+    Range,
+    // ||
+    LOr,
+    // &&
+    LAnd,
+    // == != < > <= >=
+    Compare,
+    // |
+    BitOr,
+    // ^
+    BitXor,
+    // &
+    BitAnd,
+    // << >>
+    Shift,
+    // + -
+    Sum,
+    // * / %
+    Product,
+    // as
+    Cast,
+    // unary - * ! & &mut
+    Prefix,
+    // paths, loops, function calls, array indexing, field expressions, method calls
+    Unambiguous,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AssignOpKind {
+    /// The `+=` operator (addition)
+    AddAssign,
+    /// The `-=` operator (subtraction)
+    SubAssign,
+    /// The `*=` operator (multiplication)
+    MulAssign,
+    /// The `/=` operator (division)
+    DivAssign,
+    /// The `%=` operator (modulus)
+    RemAssign,
+    /// The `^=` operator (bitwise xor)
+    BitXorAssign,
+    /// The `&=` operator (bitwise and)
+    BitAndAssign,
+    /// The `|=` operator (bitwise or)
+    BitOrAssign,
+    /// The `<<=` operator (shift left)
+    ShlAssign,
+    /// The `>>=` operator (shift right)
+    ShrAssign,
+}
+
+impl AssignOpKind {
+    pub fn as_str(&self) -> &'static str {
+        use AssignOpKind::*;
+        match self {
+            AddAssign => "+=",
+            SubAssign => "-=",
+            MulAssign => "*=",
+            DivAssign => "/=",
+            RemAssign => "%=",
+            BitXorAssign => "^=",
+            BitAndAssign => "&=",
+            BitOrAssign => "|=",
+            ShlAssign => "<<=",
+            ShrAssign => ">>=",
+        }
+    }
+
+    /// AssignOps are always by value.
+    pub fn is_by_value(self) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AssignOp {
+    pub kind: AssignOpKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UnOp {
+    Not,
+    Neg,
+}
+
+impl UnOp {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UnOp::Not => "!",
+            UnOp::Neg => "-",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BinOpKind {
+    /// The `+` operator (addition)
+    Add,
+    /// The `-` operator (subtraction)
+    Sub,
+    /// The `*` operator (multiplication)
+    Mul,
+    /// The `/` operator (division)
+    Div,
+    /// The `%` operator (modulus)
+    Rem,
+    /// The `&&` operator (logical and)
+    And,
+    /// The `||` operator (logical or)
+    Or,
+    /// The `^` operator (bitwise xor)
+    BitXor,
+    /// The `&` operator (bitwise and)
+    BitAnd,
+    /// The `|` operator (bitwise or)
+    BitOr,
+    /// The `<<` operator (shift left)
+    Shl,
+    /// The `>>` operator (shift right)
+    Shr,
+    /// The `==` operator (equality)
+    Eq,
+    /// The `<` operator (less than)
+    Lt,
+    /// The `<=` operator (less than or equal to)
+    Le,
+    /// The `!=` operator (not equal to)
+    Ne,
+    /// The `>=` operator (greater than or equal to)
+    Ge,
+    /// The `>` operator (greater than)
+    Gt,
+}
+
+impl BinOpKind {
+    pub fn as_str(&self) -> &'static str {
+        use BinOpKind::*;
+        match self {
+            Add => "+",
+            Sub => "-",
+            Mul => "*",
+            Div => "/",
+            Rem => "%",
+            And => "&&",
+            Or => "||",
+            BitXor => "^",
+            BitAnd => "&",
+            BitOr => "|",
+            Shl => "<<",
+            Shr => ">>",
+            Eq => "==",
+            Lt => "<",
+            Le => "<=",
+            Ne => "!=",
+            Ge => ">=",
+            Gt => ">",
+        }
+    }
+
+    pub fn is_lazy(&self) -> bool {
+        matches!(self, BinOpKind::And | BinOpKind::Or)
+    }
+
+    pub fn precedence(&self) -> ExprPrecedence {
+        use BinOpKind::*;
+        match *self {
+            Mul | Div | Rem => ExprPrecedence::Product,
+            Add | Sub => ExprPrecedence::Sum,
+            Shl | Shr => ExprPrecedence::Shift,
+            BitAnd => ExprPrecedence::BitAnd,
+            BitXor => ExprPrecedence::BitXor,
+            BitOr => ExprPrecedence::BitOr,
+            Lt | Gt | Le | Ge | Eq | Ne => ExprPrecedence::Compare,
+            And => ExprPrecedence::LAnd,
+            Or => ExprPrecedence::LOr,
+        }
+    }
+
+    pub fn fixity(&self) -> Fixity {
+        use BinOpKind::*;
+        match self {
+            Eq | Ne | Lt | Le | Gt | Ge => Fixity::None,
+            Add | Sub | Mul | Div | Rem | And | Or | BitXor | BitAnd | BitOr | Shl | Shr => {
+                Fixity::Left
+            }
+        }
+    }
+
+    pub fn is_comparison(self) -> bool {
+        use BinOpKind::*;
+        match self {
+            Eq | Ne | Lt | Le | Gt | Ge => true,
+            Add | Sub | Mul | Div | Rem | And | Or | BitXor | BitAnd | BitOr | Shl | Shr => false,
+        }
+    }
+
+    /// Returns `true` if the binary operator takes its arguments by value.
+    pub fn is_by_value(self) -> bool {
+        !self.is_comparison()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BinOp {
+    pub kind: BinOpKind,
+    pub span: Span,
+}
