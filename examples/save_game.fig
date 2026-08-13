@@ -2,7 +2,11 @@
 //!
 //! Exercises: modules and visibility (including root-relative path
 //! resolution between sibling modules), an ambient module for file I/O,
-//! `Result`/`Option`/`?`/`let else`, struct update syntax, and casting.
+//! `Result`/`Option`/`?`/`let else`, struct update syntax, and casting;
+//! also `#[entry]` — the function fig-engine calls to actually run this
+//! script, since a module's top level holds only items and nothing runs
+//! automatically. See geometry.fig for the same convention, and
+//! ecs.fig/player_controller.fig/dialogue.fig for three others.
 
 enum Option<T> {
     Some(T),
@@ -75,6 +79,9 @@ fn progress_message(data: save::SaveData) -> String {
     "Level " + data.level.to_string() + " — " + progress_percent(data).to_string() + "% complete"
 }
 
+// fig-engine calls this because it's #[entry] — nothing inside this
+// script does.
+#[entry]
 fn run() -> () {
     let loaded = save::load("save1.dat");
     let Result::Ok(data) = loaded else {
@@ -93,5 +100,3 @@ fn run() -> () {
         Result::Err(message) => print(message),
     }
 }
-
-run();

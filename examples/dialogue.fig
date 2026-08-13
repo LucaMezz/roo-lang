@@ -3,9 +3,17 @@
 //! instead of the heavier trait/generic machinery the other examples use.
 //!
 //! Exercises: unannotated bindings/fields/parameters, the explicit `any`
-//! type, dynamic arrays, closures with untyped parameters, and the
+//! type, dynamic arrays, closures with untyped parameters, the
 //! typed/untyped boundary (a dynamic value flowing into a statically
-//! typed function, checked at the call).
+//! typed function, checked at the call); and a marked-struct entry
+//! point — `#[script]` tags `InventoryScript` as "the thing fig-engine
+//! instantiates and runs," and `#[entry]` on one of its methods is what
+//! actually gets called. A module's top level holds only items now, no
+//! executable statements, so every one of these examples has to answer
+//! "where does this actually start running" somehow; see ecs.fig for an
+//! annotated-loose-function take on the same problem (`#[setup]`/
+//! `#[system]`) and player_controller.fig for a bare-named-function one
+//! (`_ready`/`_update`).
 
 // Every item carries wildly different extra data depending on `kind` — a
 // weapon has damage, a potion has heal_amount, a key has nothing at all.
@@ -17,14 +25,6 @@ struct Item {
     kind: String,
     data,
 }
-
-let sword = Item { name: "Sword", kind: "weapon", data: 12 };
-let potion = Item { name: "Potion", kind: "potion", data: 25 };
-let key = Item { name: "Rusty Key", kind: "key", data: () };
-
-// A dynamically-typed array — every element is checked individually at
-// use, not against one shared element type.
-let inventory: [Item] = [sword, potion, key];
 
 // Fully statically typed, unlike almost everything around it.
 fn heal(current: int, amount: int) -> int {
@@ -42,48 +42,70 @@ fn use_item(mut health: int, item: Item) -> int {
     health
 }
 
-// `any` written explicitly: `selected` would otherwise infer to `String`
-// from its first assignment and get locked there — `any` opts it out, on
-// purpose, since it's meant to hold whichever item's name was clicked on
-// last, or nothing at all yet.
-let mut selected: any = "";
+// A unit struct — no data of its own is needed here, it exists purely
+// as something for fig-engine to recognize via #[script] and instantiate.
+#[script]
+struct InventoryScript;
 
-// This has to be a closure, not a plain `fn` — a plain `fn` is hoisted
-// (visible throughout this file, even above this point), and `selected`
-// only exists from its own `let` onward, so a hoisted `fn` couldn't
-// capture it: there'd be no well-defined value if it were called before
-// `selected`'s `let` runs. See closures.md's "Why fn and closures capture
-// differently".
-let select = |name: String| {
-    selected = name;
-};
+impl InventoryScript {
+    // fig-engine calls this because it's #[entry] — nothing inside this
+    // script does.
+    #[entry]
+    fn on_start(self) {
+        let sword = Item { name: "Sword", kind: "weapon", data: 12 };
+        let potion = Item { name: "Potion", kind: "potion", data: 25 };
+        let key = Item { name: "Rusty Key", kind: "key", data: () };
 
-// Closures with untyped parameters, stored uniformly regardless of what
-// each one actually expects its argument to look like. Neither closure
-// literal below declares its own return type either — both are
-// dynamically-typed functions being stored into a concretely
-// `Fn(any) -> ()`-typed slot, checked at the call, not at this
-// assignment — see gradual-typing.md's "The same boundary applies to a
-// function's return type".
-let on_examine: Fn(any) -> () = |item| {
-    print(item.name);
-};
+        // A dynamically-typed array — every element is checked
+        // individually at use, not against one shared element type.
+        let inventory: [Item] = [sword, potion, key];
 
-let on_use: Fn(any) -> () = |item| {
-    print(item.kind);
-};
+        // `any` written explicitly: `selected` would otherwise infer to
+        // `String` from its first assignment and get locked there —
+        // `any` opts it out, on purpose, since it's meant to hold
+        // whichever item's name was clicked on last, or nothing at all
+        // yet.
+        let mut selected: any = "";
 
-let handlers: [Fn(any) -> ()] = [on_examine, on_use];
+        // This has to be a closure, not a plain `fn` — a plain `fn` is
+        // hoisted (visible throughout this method, even above this
+        // point), and `selected` only exists from its own `let` onward,
+        // so a hoisted `fn` couldn't capture it: there'd be no
+        // well-defined value if it were called before `selected`'s
+        // `let` runs. See closures.md's "Why fn and closures capture
+        // differently".
+        let select = |name: String| {
+            selected = name;
+        };
 
-for item in inventory {
-    select(item.name);
-    for handler in handlers {
-        handler(item);
+        // Closures with untyped parameters, stored uniformly regardless
+        // of what each one actually expects its argument to look like.
+        // Neither closure literal below declares its own return type
+        // either — both are dynamically-typed functions being stored
+        // into a concretely `Fn(any) -> ()`-typed slot, checked at the
+        // call, not at this assignment — see gradual-typing.md's "The
+        // same boundary applies to a function's return type".
+        let on_examine: Fn(any) -> () = |item| {
+            print(item.name);
+        };
+
+        let on_use: Fn(any) -> () = |item| {
+            print(item.kind);
+        };
+
+        let handlers: [Fn(any) -> ()] = [on_examine, on_use];
+
+        for item in inventory {
+            select(item.name);
+            for handler in handlers {
+                handler(item);
+            }
+        }
+
+        let mut health = 80;
+        for item in inventory {
+            health = use_item(health, item);
+        }
+        print(health);
     }
 }
-
-let mut health = 80;
-for item in inventory {
-    health = use_item(health, item);
-}
-print(health);

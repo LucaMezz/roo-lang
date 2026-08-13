@@ -1,7 +1,14 @@
 //! A small 2D geometry/math library.
 //!
 //! Exercises: operator overloading, enums + match, traits with default
-//! methods, generics with trait bounds, and associated types.
+//! methods, generics with trait bounds, and associated types; also the
+//! simplest possible entry-point convention a host could use — a single
+//! `#[entry]`-annotated function fig-engine calls to start the script,
+//! with no per-frame state to thread through at all. Contrast ecs.fig's
+//! `#[setup]`/`#[system]` pair, player_controller.fig's `_ready`/
+//! `_update`, and dialogue.fig's marked struct — all answers to the same
+//! question, since a module's top level holds only items now, never
+//! executable statements.
 
 struct Vector2 { x: float, y: float }
 
@@ -62,11 +69,6 @@ impl Vector2 {
     }
 }
 
-let a = Vector2 { x: 1.0, y: 2.0 };
-let b = Vector2 { x: 3.0, y: 4.0 };
-let summed = a + b;    // Vector2 + Vector2, via the default-Rhs impl
-let doubled = a * 2.0; // Vector2 * float, via the explicit-Rhs impl
-
 // --- shapes, reusing the book's own enum example ---
 
 enum Shape {
@@ -126,15 +128,6 @@ fn largest<T: Shape2D>(shapes: [T]) -> T {
     best
 }
 
-let shapes = [
-    Shape::Circle(2.0),
-    Shape::Rectangle { width: 3.0, height: 4.0 },
-    Shape::Triangle { base: 5.0, height: 2.0 },
-];
-
-print(total_area(shapes));
-print(largest(shapes).describe());
-
 // --- associated types ---
 // Mirrors the book's own Container example in abstraction/traits.md.
 trait Intersect {
@@ -158,4 +151,23 @@ impl Intersect for Shape {
         // illustrative only — not a real intersection algorithm
         Option::None
     }
+}
+
+// fig-engine calls this because it's #[entry] — nothing inside this
+// script does.
+#[entry]
+fn main() {
+    let a = Vector2 { x: 1.0, y: 2.0 };
+    let b = Vector2 { x: 3.0, y: 4.0 };
+    let summed = a + b;    // Vector2 + Vector2, via the default-Rhs impl
+    let doubled = a * 2.0; // Vector2 * float, via the explicit-Rhs impl
+
+    let shapes = [
+        Shape::Circle(2.0),
+        Shape::Rectangle { width: 3.0, height: 4.0 },
+        Shape::Triangle { base: 5.0, height: 2.0 },
+    ];
+
+    print(total_area(shapes));
+    print(largest(shapes).describe());
 }
