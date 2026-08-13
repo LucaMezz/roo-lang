@@ -1,3 +1,4 @@
 /target
 /.cargo/config.toml
 /book/book
+/book/mdbook-fig-highlight/target
