@@ -104,6 +104,7 @@ pub struct GenericParam {
     pub ident: Ident,
     pub bounds: GenericBounds,
     pub default: Option<Ty>,
+    pub annotations: AnnotationVec,
 }
 
 pub type GenericBounds = Vec<Ty>;
@@ -470,10 +471,6 @@ pub struct Pat {
 pub enum PatKind {
     Missing,
     Wild,
-    /// A binding, optionally `mut` (the `bool`), optionally with an `@`
-    /// sub-pattern — see decisions/0008: `mut` lives on the pattern
-    /// itself, not a separate slot. No `ref` half like rustc's
-    /// `BindingMode`, since fig has no borrowing.
     Ident(bool, Ident, Option<Box<Pat>>),
     Struct(Option<Box<QSelf>>, Path, Vec<PatField>, PatFieldsRest),
     TupleStruct(Option<Box<QSelf>>, Path, Vec<Pat>),

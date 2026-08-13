@@ -407,18 +407,28 @@ fn generic_bounds<'src>() -> impl FigParser<'src, GenericBounds> {
 }
 
 pub fn generic_param<'src>() -> impl FigParser<'src, GenericParam> {
-    ident()
-        .then(generic_bounds())
-        .then(ty().or_not())
-        .map(|((ident, bounds), default)| GenericParam {
+    annotation()
+        .repeated()
+        .collect::<Vec<_>>()
+        .then(ident())
+        .then(
+            just(Token::Colon)
+                .ignore_then(generic_bounds())
+                .or_not()
+                .map(Option::unwrap_or_default),
+        )
+        .then(just(Token::Eq).ignore_then(ty()).or_not())
+        .map(|(((annotations, ident), bounds), default)| GenericParam {
             ident,
             bounds,
             default,
+            annotations,
         })
 }
 
 pub fn where_predicate<'src>() -> impl FigParser<'src, WherePredicate> {
     ty().map(Box::new)
+        .then_ignore(just(Token::Colon))
         .then(generic_bounds())
         .map(|(bounded_ty, bounds)| WherePredicate { bounded_ty, bounds })
 }
@@ -483,7 +493,7 @@ pub fn annotation<'src>() -> impl FigParser<'src, Annotation> {
             just(Token::Bang).map(|_| AnnotationStyle::Inner),
             empty().map(|_| AnnotationStyle::Outer),
         )))
-        .then(meta_item())
+        .then(meta_item().delimited_by(just(Token::LBracket), just(Token::RBracket)))
         .map(|(style, item)| Annotation { style, item })
 }
 
@@ -999,5 +1009,210 @@ mod tests {
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed, FnRetTy::Default(_)));
+    }
+
+    #[test]
+    fn parses_a_word_meta_item() {
+        let tokens = tokens("component");
+        let parsed = meta_item()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.path.segments[0].ident.name, "component");
+        assert!(matches!(parsed.kind, MetaItemKind::Word));
+    }
+
+    #[test]
+    fn parses_a_name_value_meta_item() {
+        let tokens = tokens(r#"audio_cue = "jump""#);
+        let parsed = meta_item()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.path.segments[0].ident.name, "audio_cue");
+        let MetaItemKind::NameValue(lit) = parsed.kind else {
+            panic!("expected MetaItemKind::NameValue, got {:?}", parsed.kind);
+        };
+        assert_eq!(lit.kind, LitKind::Str("jump".to_owned()));
+    }
+
+    #[test]
+    fn parses_a_recursively_nested_list_meta_item() {
+        // The exact shape used in examples/ecs.fig's `#[replicated(...)]`:
+        // a list containing a name-value pair and a nested list, whose own
+        // argument is a bare word.
+        let tokens = tokens(r#"replicated(rename = "hp", skip_if(default))"#);
+        let parsed = meta_item()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.path.segments[0].ident.name, "replicated");
+
+        let MetaItemKind::List(items) = parsed.kind else {
+            panic!("expected MetaItemKind::List, got {:?}", parsed.kind);
+        };
+        assert_eq!(items.len(), 2);
+
+        let MetaItemInner::MetaItem(rename) = &items[0] else {
+            panic!("expected a nested MetaItem, got {:?}", items[0]);
+        };
+        assert_eq!(rename.path.segments[0].ident.name, "rename");
+        assert!(matches!(rename.kind, MetaItemKind::NameValue(_)));
+
+        let MetaItemInner::MetaItem(skip_if) = &items[1] else {
+            panic!("expected a nested MetaItem, got {:?}", items[1]);
+        };
+        assert_eq!(skip_if.path.segments[0].ident.name, "skip_if");
+        let MetaItemKind::List(inner_items) = &skip_if.kind else {
+            panic!("expected a nested List, got {:?}", skip_if.kind);
+        };
+        assert_eq!(inner_items.len(), 1);
+        let MetaItemInner::MetaItem(default_arg) = &inner_items[0] else {
+            panic!("expected a nested MetaItem, got {:?}", inner_items[0]);
+        };
+        assert_eq!(default_arg.path.segments[0].ident.name, "default");
+        assert!(matches!(default_arg.kind, MetaItemKind::Word));
+    }
+
+    #[test]
+    fn parses_an_outer_annotation() {
+        let tokens = tokens("#[component]");
+        let parsed = annotation()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert!(matches!(parsed.style, AnnotationStyle::Outer));
+        assert_eq!(parsed.item.path.segments[0].ident.name, "component");
+    }
+
+    #[test]
+    fn parses_an_inner_annotation() {
+        let tokens = tokens("#![replicated]");
+        let parsed = annotation()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert!(matches!(parsed.style, AnnotationStyle::Inner));
+        assert_eq!(parsed.item.path.segments[0].ident.name, "replicated");
+    }
+
+    #[test]
+    fn parses_the_exact_annotations_used_in_the_ecs_example() {
+        let cases = [
+            "#[component]",
+            r#"#[replicated(rename = "hp", skip_if(default))]"#,
+            "#[range(min = 0, max = 100)]",
+            "#[must_use]",
+            "#[system]",
+            r#"#[audio_cue = "jump"]"#,
+        ];
+        for src in cases {
+            let tokens = tokens(src);
+            annotation()
+                .parse(&tokens)
+                .into_result()
+                .unwrap_or_else(|e| panic!("failed to parse {src:?}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn rejects_an_annotation_missing_its_brackets() {
+        let tokens = tokens("#component");
+        assert!(annotation().parse(&tokens).into_result().is_err());
+    }
+
+    #[test]
+    fn parses_a_plain_generic_param_with_no_annotations() {
+        let tokens = tokens("T");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.ident.name, "T");
+        assert!(parsed.annotations.is_empty());
+    }
+
+    #[test]
+    fn parses_an_annotated_generic_param() {
+        let tokens = tokens("#[opaque] T");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.ident.name, "T");
+        assert_eq!(parsed.annotations.len(), 1);
+        assert_eq!(
+            parsed.annotations[0].item.path.segments[0].ident.name,
+            "opaque"
+        );
+    }
+
+    #[test]
+    fn parses_a_generic_param_with_stacked_annotations() {
+        let tokens = tokens("#[a] #[b] T");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.annotations.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_generic_param_with_a_bound() {
+        let tokens = tokens("T: Display");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.bounds.len(), 1);
+        assert!(parsed.default.is_none());
+    }
+
+    #[test]
+    fn parses_a_generic_param_with_multiple_bounds() {
+        let tokens = tokens("T: Display + Clone");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.bounds.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_generic_param_with_a_default() {
+        let tokens = tokens("T = int");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert!(parsed.bounds.is_empty());
+        assert!(parsed.default.is_some());
+    }
+
+    #[test]
+    fn parses_a_generic_param_with_a_bound_and_a_default() {
+        let tokens = tokens("T: Display = int");
+        let parsed = generic_param()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.bounds.len(), 1);
+        assert!(parsed.default.is_some());
+    }
+
+    #[test]
+    fn parses_a_where_predicate() {
+        let tokens = tokens("T: Display + Clone");
+        let parsed = where_predicate()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.bounds.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_where_predicate_missing_its_colon() {
+        let tokens = tokens("T Display");
+        assert!(where_predicate().parse(&tokens).into_result().is_err());
     }
 }
