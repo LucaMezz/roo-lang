@@ -44,8 +44,8 @@ Check items off as their parser function lands.
 literal/path-like sub-expressions — parse those with a **restricted**
 expr parser (literals + unary minus + paths), not the full one below.
 
-- [ ] `PatField`
-- [ ] `PatKind`, `Pat` — leaf-first: `Wild`/`Rest`/`Never` → `Ident`/`Path` →
+- [x] `PatField`
+- [x] `PatKind`, `Pat` — leaf-first: `Wild`/`Rest`/`Never` → `Ident`/`Path` →
       `Tuple`/`Array`/`Or`/`Struct`/`TupleStruct` → `Range`/`Expr`
 
 ## Tier 5 — Full Expression
@@ -53,12 +53,12 @@ expr parser (literals + unary minus + paths), not the full one below.
 `Closure`/`FnDecl`/`Param` are expression-level, not item-level, and
 live here.
 
-- [ ] `Guard`, `Arm`
-- [ ] `ExprField`, `StructExpr`
-- [ ] `MethodCall`
-- [ ] `Param`, `FnDecl`
-- [ ] `Closure`
-- [ ] `ExprKind`, `Expr` — use `ExprPrecedence`/`Fixity`/`BinOpKind::precedence`
+- [x] `Guard`, `Arm`
+- [x] `ExprField`, `StructExpr`
+- [x] `MethodCall`
+- [x] `Param`, `FnDecl`
+- [x] `Closure`
+- [x] `ExprKind`, `Expr` — use `ExprPrecedence`/`Fixity`/`BinOpKind::precedence`
       for precedence climbing
 
 ## Tier 6 — Block/Stmt/Local
@@ -68,10 +68,10 @@ needs `Stmt`; `Stmt::Item` needs `Item`; `Item::Fn` needs `Block` for its
 body. `parse_block`/`parse_stmt` call into both `parse_expr` and
 `parse_item` as forward references.
 
-- [ ] `LocalKind`, `Local`
-- [ ] `StmtKind`, `Stmt`
-- [ ] `Block`
-- [ ] go back and wire up the `Expr` variants that need `Block`: `If`,
+- [x] `LocalKind`, `Local`
+- [x] `StmtKind`, `Stmt`
+- [x] `Block`
+- [x] go back and wire up the `Expr` variants that need `Block`: `If`,
       `While`, `ForLoop`, `Loop`, `Match`, `Block`
 
 ## Tier 7 — Item and its substructures

@@ -11,7 +11,7 @@ categories = ["compilers", "parser-implementations"]
 # repository.workspace = true
 
 [dependencies]
-chumsky = "0.13.0"
+chumsky = { version = "0.13.0", features = ["pratt"] }
 lexer = { version = "0.1.0", path = "../lexer" }
 ast = { version = "0.1.0", path = "../ast" }
 

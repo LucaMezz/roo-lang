@@ -205,9 +205,9 @@ pub enum LocalKind {
 
 #[derive(Clone, Debug)]
 pub struct Expr {
+    pub annotations: AnnotationVec,
     pub kind: ExprKind,
     pub span: Span,
-    pub annotations: AnnotationVec,
 }
 
 #[derive(Clone, Debug)]
@@ -297,8 +297,6 @@ pub struct Guard {
 pub struct Closure {
     pub fn_decl: Box<FnDecl>,
     pub body: Box<Expr>,
-    pub fn_decl_span: Span,
-    pub fn_arg_span: Span,
 }
 
 #[derive(Clone, Debug)]
