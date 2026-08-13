@@ -2,10 +2,16 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
+fn inner_doc_comments<'src>() -> impl FigParser<'src, ()> {
+    select! { Token::InnerDocComment(_) => () }
+        .repeated()
+        .ignored()
+}
+
 pub fn module_body<'src>(
     item: impl FigParser<'src, Item> + 'src,
 ) -> impl FigParser<'src, Vec<Box<Item>>> {
-    item.map(Box::new).repeated().collect::<Vec<_>>()
+    inner_doc_comments().ignore_then(item.map(Box::new).repeated().collect::<Vec<_>>())
 }
 
 pub fn mod_kind<'src>(item: impl FigParser<'src, Item> + 'src) -> impl FigParser<'src, ModKind> {
@@ -44,5 +50,12 @@ mod tests {
     fn rejects_trailing_garbage_after_the_last_item() {
         let tokens = tokens("struct A; )");
         assert!(module().parse(&tokens).into_result().is_err());
+    }
+
+    #[test]
+    fn parses_leading_inner_doc_comments() {
+        let tokens = tokens("//! a module\n//! across two lines\nstruct A;");
+        let parsed = module().parse(&tokens).into_result().expect("should parse");
+        assert_eq!(parsed.len(), 1);
     }
 }
