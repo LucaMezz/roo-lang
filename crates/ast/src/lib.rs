@@ -267,8 +267,7 @@ pub struct ExprField {
 #[derive(Clone, Debug)]
 pub struct QSelf {
     pub ty: Box<Ty>,
-    pub path_span: Span,
-    pub position: usize,
+    pub trait_path: Option<Path>,
 }
 
 #[derive(Clone, Debug)]
@@ -355,7 +354,7 @@ pub struct Visibility {
 #[derive(Clone, Debug)]
 pub enum VisibilityKind {
     Public,
-    Restricted { path: Box<Path>, shorthand: bool },
+    Restricted { path: Box<Path> },
     Inherited,
 }
 

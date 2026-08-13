@@ -303,6 +303,9 @@ pub enum Token<'src> {
     /// `@`
     #[token("@")]
     At,
+    /// `#`
+    #[token("#")]
+    Pound,
 
     /// `(`
     #[token("(")]

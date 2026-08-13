@@ -402,6 +402,112 @@ pub fn path<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, P
         })
 }
 
+fn generic_bounds<'src>() -> impl FigParser<'src, GenericBounds> {
+    ty().separated_by(just(Token::Plus)).collect::<Vec<_>>()
+}
+
+pub fn generic_param<'src>() -> impl FigParser<'src, GenericParam> {
+    ident()
+        .then(generic_bounds())
+        .then(ty().or_not())
+        .map(|((ident, bounds), default)| GenericParam {
+            ident,
+            bounds,
+            default,
+        })
+}
+
+pub fn where_predicate<'src>() -> impl FigParser<'src, WherePredicate> {
+    ty().map(Box::new)
+        .then(generic_bounds())
+        .map(|(bounded_ty, bounds)| WherePredicate { bounded_ty, bounds })
+}
+
+pub fn where_clause<'src>() -> impl FigParser<'src, WhereClause> {
+    where_predicate()
+        .separated_by(just(Token::Comma))
+        .collect::<Vec<_>>()
+        .map_with(|predicates, e| WhereClause {
+            predicates,
+            span: span(e),
+        })
+}
+
+pub fn q_self<'src>() -> impl FigParser<'src, QSelf> {
+    ty().map(Box::new)
+        .then_ignore(just(Token::As))
+        .then(path(ty()).or_not())
+        .delimited_by(just(Token::Lt), just(Token::Gt))
+        .map(|(ty, trait_path)| QSelf { ty, trait_path })
+}
+
+fn meta_item_list<'src>(
+    meta_item: impl FigParser<'src, MetaItem> + 'src,
+) -> impl FigParser<'src, MetaItemKind> {
+    choice((
+        meta_item.map(MetaItemInner::MetaItem),
+        literal().map(MetaItemInner::Lit),
+    ))
+    .separated_by(just(Token::Comma))
+    .allow_trailing()
+    .collect::<Vec<_>>()
+    .delimited_by(just(Token::LParen), just(Token::RParen))
+    .map(MetaItemKind::List)
+}
+
+fn meta_item_name_value<'src>() -> impl FigParser<'src, MetaItemKind> {
+    just(Token::Eq)
+        .ignore_then(literal())
+        .map(MetaItemKind::NameValue)
+}
+
+pub fn meta_item<'src>() -> impl FigParser<'src, MetaItem> {
+    recursive(|meta_item| {
+        path(ty())
+            .then(choice((
+                meta_item_list(meta_item),
+                meta_item_name_value(),
+                empty().to(MetaItemKind::Word),
+            )))
+            .map_with(|(path, kind), e| MetaItem {
+                path,
+                kind,
+                span: span(e),
+            })
+    })
+}
+
+pub fn annotation<'src>() -> impl FigParser<'src, Annotation> {
+    just(Token::Pound)
+        .ignore_then(choice((
+            just(Token::Bang).map(|_| AnnotationStyle::Inner),
+            empty().map(|_| AnnotationStyle::Outer),
+        )))
+        .then(meta_item())
+        .map(|(style, item)| Annotation { style, item })
+}
+
+fn visibility_kind<'src>() -> impl FigParser<'src, VisibilityKind> {
+    choice((
+        just(Token::Pub).map(|_| VisibilityKind::Public),
+        just(Token::Pub)
+            .ignore_then(
+                path(ty())
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .map(Box::new),
+            )
+            .map(|path| VisibilityKind::Restricted { path }),
+        empty().map(|_| VisibilityKind::Inherited),
+    ))
+}
+
+pub fn visibility<'src>() -> impl FigParser<'src, Visibility> {
+    visibility_kind().map_with(|kind, e| Visibility {
+        kind,
+        span: span(e),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

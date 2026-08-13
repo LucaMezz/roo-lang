@@ -28,15 +28,15 @@ Check items off as their parser function lands.
 
 ## Tier 2 — Generics (needs `Ty`)
 
-- [ ] `GenericParam`, `GenericBounds`
-- [ ] `WherePredicate`, `WhereClause`
+- [x] `GenericParam`, `GenericBounds`
+- [x] `WherePredicate`, `WhereClause`
 - [ ] `Generics`
 
 ## Tier 3 — small standalone consumers of Tier 1/2
 
-- [ ] `QSelf` (needs `Ty`)
-- [ ] `MetaItem`, `MetaItemKind`, `MetaItemInner`, `Annotation`, `AnnotationVec` (need `Path`, `Lit`)
-- [ ] `Visibility`, `VisibilityKind` (needs `Path`)
+- [x] `QSelf` (needs `Ty`)
+- [x] `MetaItem`, `MetaItemKind`, `MetaItemInner`, `Annotation`, `AnnotationVec` (need `Path`, `Lit`)
+- [x] `Visibility`, `VisibilityKind` (needs `Path`)
 
 ## Tier 4 — Pattern
 

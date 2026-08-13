@@ -194,6 +194,7 @@ mod operators_and_punctuation {
     op_test!(semi, ";", Token::Semi);
     op_test!(comma, ",", Token::Comma);
     op_test!(at, "@", Token::At);
+    op_test!(pound, "#", Token::Pound);
 
     // Brackets
     op_test!(lparen, "(", Token::LParen);
@@ -211,6 +212,22 @@ mod operators_and_punctuation {
         assert_tokens("<=>", &[LtEq, Gt]);
         assert_tokens("...", &[DotDot, Dot]); // not real fig syntax, but must still lex
         assert_tokens("..=..", &[DotDotEq, DotDot]);
+    }
+
+    #[test]
+    fn annotation_shapes_lex_as_separate_tokens_not_a_raw_string() {
+        use Token::*;
+        assert_tokens(
+            "#[replicated]",
+            &[Pound, LBracket, Identifier("replicated"), RBracket],
+        );
+        assert_tokens(
+            "#![replicated]",
+            &[Pound, Bang, LBracket, Identifier("replicated"), RBracket],
+        );
+        // A bare `#` doesn't feed into raw-string lexing — only `r#*"`
+        // starting from the `r` does.
+        assert_tokens("# \"hi\"", &[Pound, StringLiteral("\"hi\"")]);
     }
 
     #[test]
