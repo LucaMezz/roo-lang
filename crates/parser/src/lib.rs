@@ -10,7 +10,8 @@
 //! between them isn't a strict layering — most modules call into `ty`,
 //! `path`, and `ident` at minimum — so every module glob-imports the
 //! whole crate (`use crate::*;`) rather than naming specific siblings.
-//! Top-level items (`fn`/`struct`/`impl`/...) aren't implemented yet.
+//! `module()` (in `module`) is the top-level entry point for parsing a
+//! whole file.
 
 use chumsky::input::MapExtra;
 use chumsky::prelude::*;
@@ -19,23 +20,29 @@ use lexer::Token;
 mod annotation;
 mod expr;
 mod ident;
+mod item;
 mod literal;
+mod module;
 mod operator;
 mod pat;
 mod path;
 mod stmt;
 mod ty;
+mod use_tree;
 mod visibility;
 
 pub use annotation::*;
 pub use expr::*;
 pub use ident::*;
+pub use item::*;
 pub use literal::*;
+pub use module::*;
 pub use operator::*;
 pub use pat::*;
 pub use path::*;
 pub use stmt::*;
 pub use ty::*;
+pub use use_tree::*;
 pub use visibility::*;
 
 /// The concrete `MapExtra` shape every `select!`/`.map_with` site in this

@@ -30,7 +30,7 @@ Check items off as their parser function lands.
 
 - [x] `GenericParam`, `GenericBounds`
 - [x] `WherePredicate`, `WhereClause`
-- [ ] `Generics`
+- [x] `Generics`
 
 ## Tier 3 — small standalone consumers of Tier 1/2
 
@@ -76,18 +76,18 @@ body. `parse_block`/`parse_stmt` call into both `parse_expr` and
 
 ## Tier 7 — Item and its substructures
 
-- [ ] `FieldDef`
-- [ ] `VariantData`, `Variant`, `EnumDef`
-- [ ] `TyAlias`
-- [ ] `UseTreeKind`, `UseTree`
-- [ ] `ModKind`
-- [ ] `Fn`
-- [ ] `AssocItemKind`, `AssocItem`
-- [ ] `Trait`, `Impl`
-- [ ] `ItemKind`
-- [ ] `Item<K>`
+- [x] `FieldDef`
+- [x] `VariantData`, `Variant`, `EnumDef`
+- [x] `TyAlias`
+- [x] `UseTreeKind`, `UseTree`
+- [x] `ModKind`
+- [x] `Fn`
+- [x] `AssocItemKind`, `AssocItem`
+- [x] `Trait`, `Impl`
+- [x] `ItemKind`
+- [x] `Item<K>`
 
 ## Tier 8 — Top level
 
-- [ ] crate root / module parse entry point (`Vec<Box<Item>>` or similar —
-      lives in `parser`, not yet defined)
+- [x] crate root / module parse entry point — `module()` in `module.rs`,
+      `Vec<Box<Item>>`

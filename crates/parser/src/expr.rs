@@ -83,7 +83,7 @@ pub fn method_call<'src>(
         })
 }
 
-fn param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Param> {
+pub fn param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Param> {
     annotations()
         .then(pat_no_top_alt(expr).map(Box::new))
         .then(just(Token::Colon).ignore_then(ty()).map(Box::new).or_not())

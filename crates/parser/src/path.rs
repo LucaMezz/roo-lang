@@ -116,7 +116,7 @@ pub fn path_turbofish<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigPars
     path_with(path_segment_turbofish(ty))
 }
 
-fn generic_bounds<'src>() -> impl FigParser<'src, GenericBounds> {
+pub fn generic_bounds<'src>() -> impl FigParser<'src, GenericBounds> {
     ty().separated_by(just(Token::Plus)).collect::<Vec<_>>()
 }
 
@@ -151,6 +151,25 @@ pub fn where_clause<'src>() -> impl FigParser<'src, WhereClause> {
         .collect::<Vec<_>>()
         .map_with(|predicates, e| WhereClause {
             predicates,
+            span: span(e),
+        })
+}
+
+pub fn generics<'src>() -> impl FigParser<'src, Generics> {
+    generic_param()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::Lt), just(Token::Gt))
+        .or_not()
+        .map(|params| params.unwrap_or_default())
+        .then(just(Token::Where).ignore_then(where_clause()).or_not())
+        .map_with(|(params, where_clause), e| Generics {
+            params,
+            where_clause: where_clause.unwrap_or_else(|| WhereClause {
+                predicates: Vec::new(),
+                span: span(e),
+            }),
             span: span(e),
         })
 }
@@ -394,6 +413,50 @@ mod tests {
     fn rejects_a_where_predicate_missing_its_colon() {
         let tokens = tokens("T Display");
         assert!(where_predicate().parse(&tokens).into_result().is_err());
+    }
+
+    #[test]
+    fn parses_empty_generics_when_absent() {
+        let tokens = tokens("");
+        let parsed = generics()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert!(parsed.params.is_empty());
+        assert!(parsed.where_clause.predicates.is_empty());
+    }
+
+    #[test]
+    fn parses_generics_with_params_only() {
+        let tokens = tokens("<T, U: Display>");
+        let parsed = generics()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.params.len(), 2);
+        assert!(parsed.where_clause.predicates.is_empty());
+    }
+
+    #[test]
+    fn parses_generics_with_a_trailing_where_clause() {
+        let tokens = tokens("<T> where T: Display");
+        let parsed = generics()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.params.len(), 1);
+        assert_eq!(parsed.where_clause.predicates.len(), 1);
+    }
+
+    #[test]
+    fn parses_a_bare_where_clause_with_no_generic_params() {
+        let tokens = tokens("where T: Display");
+        let parsed = generics()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert!(parsed.params.is_empty());
+        assert_eq!(parsed.where_clause.predicates.len(), 1);
     }
 
     #[test]
