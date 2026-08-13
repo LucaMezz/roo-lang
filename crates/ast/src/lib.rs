@@ -124,7 +124,7 @@ pub struct Lit {
 pub enum LitKind {
     Str(String),
     Char(char),
-    Int(String),
+    Int(u128),
     Float(String),
     Bool(bool),
 }
