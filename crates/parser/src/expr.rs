@@ -4,7 +4,7 @@
 use crate::*;
 use ast::*;
 use chumsky::pratt::*;
-use lexer::Token;
+use lexer::{NumberKind, Token};
 
 /// `#[annotations]* ident (":" expr)?` — the no-`: expr` shorthand
 /// (`Point { x }`, short for `Point { x: x }`) refers to a binding with
@@ -143,6 +143,21 @@ fn expr_path<'src>() -> impl FigParser<'src, ExprKind> {
         .or_not()
         .then(path_turbofish(ty()))
         .map(|(qself, path)| ExprKind::Path(qself, path))
+}
+
+/// A field access's name: an ordinary [`ident`] (`foo.bar`), or a bare
+/// decimal integer (`foo.0`) for indexing a tuple/tuple-struct field by
+/// position — those have no name at all on the definition side (see
+/// `FieldDef.ident: None` for tuple fields), so this just stores the
+/// digits as `Ident`'s text, the same way rustc's own AST represents a
+/// tuple index as an `Ident` rather than a separate node.
+fn field_ident<'src>() -> impl FigParser<'src, Ident> {
+    choice((
+        ident(),
+        select! {
+            Token::Number(NumberKind::Int(digits)) = e => Ident { name: digits.to_owned(), span: span(e) },
+        },
+    ))
 }
 
 fn expr_underscore<'src>() -> impl FigParser<'src, ExprKind> {
@@ -475,7 +490,7 @@ fn expr_pratt<'src>(
         ),
         postfix(
             ExprPrecedence::Unambiguous as u16 + 1,
-            just(Token::Dot).ignore_then(ident()),
+            just(Token::Dot).ignore_then(field_ident()),
             |receiver: Expr, field, e| Expr {
                 kind: ExprKind::Field(Box::new(receiver), field),
                 span: span(e),
@@ -1070,6 +1085,17 @@ mod tests {
         };
         assert!(matches!(receiver.kind, ExprKind::Path(..)));
         assert_eq!(field.name, "bar");
+    }
+
+    #[test]
+    fn parses_a_tuple_index_field_access() {
+        let tokens = tokens("foo.0");
+        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let ExprKind::Field(receiver, field) = parsed.kind else {
+            panic!("expected ExprKind::Field, got {:?}", parsed.kind);
+        };
+        assert!(matches!(receiver.kind, ExprKind::Path(..)));
+        assert_eq!(field.name, "0");
     }
 
     #[test]
