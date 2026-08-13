@@ -57,6 +57,10 @@
 - [Generics](abstraction/generics.md)
 - [Operator Overloading](abstraction/operator-overloading.md)
 
+# Annotations
+
+- [Annotations](annotations/annotations.md)
+
 # Program Organization
 
 - [Modules and Visibility](modules/modules.md)

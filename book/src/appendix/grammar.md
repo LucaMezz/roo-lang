@@ -13,6 +13,19 @@ program     ::= statement*  (* a fig file runs top to bottom, like a script —
                                 no entry-point function required *)
 
 (* -------------------------------------------------------------- *)
+(* Annotations — see Annotations. Precede the item/field/variant/param
+   they describe; inert at the language level, meaningful only to
+   whatever host reads them back. *)
+
+annotation  ::= "#" "!"? "[" meta_item "]"   (* "!" = inner form, `#![...]` *)
+meta_item   ::= path meta_item_tail?
+meta_item_tail ::= "=" literal
+                 | "(" (meta_item_arg ("," meta_item_arg)* ","?)? ")"
+meta_item_arg ::= meta_item | literal
+              (* recursive: a list argument is itself a full meta_item,
+                 e.g. #[serialize(rename = "pos", skip_if(default))] *)
+
+(* -------------------------------------------------------------- *)
 (* Items *)
 
 item        ::= function | struct_def | enum_def | trait_def
@@ -160,4 +173,4 @@ ident       ::= (letter | "_") (letter | digit | "_")*
 
 See [Differences from Rust](../design/differences-from-rust.md) for
 everything deliberately absent from this grammar (references, lifetimes,
-`unsafe`, macros, attributes, and the rest).
+`unsafe`, macros, and the rest).
