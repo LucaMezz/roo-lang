@@ -75,10 +75,28 @@ pub fn assoc_item_constraint<'src>(
     assoc_item_constraint_with(ty.clone(), generic_arg(ty))
 }
 
+/// A path segment's leading name — an ordinary [`ident`], or one of the
+/// three reserved words that can start/appear in a path (`self`, `Self`,
+/// `super`; fig has no `crate` root, decisions/0002). These lex as their
+/// own keyword tokens, not `Token::Identifier`, so `ident()` alone never
+/// matches them — this is what lets `use super::Foo;`, `self::Foo`, and
+/// `Self`/`Self::Output` resolve through the same path machinery as any
+/// other name instead of needing their own parallel one.
+fn path_segment_ident<'src>() -> impl FigParser<'src, Ident> {
+    choice((
+        ident(),
+        select! {
+            Token::SelfLower = e => Ident { name: "self".to_owned(), span: span(e) },
+            Token::SelfUpper = e => Ident { name: "Self".to_owned(), span: span(e) },
+            Token::Super = e => Ident { name: "super".to_owned(), span: span(e) },
+        },
+    ))
+}
+
 fn path_segment_with<'src>(
     generic_args: impl FigParser<'src, GenericArgs> + 'src,
 ) -> impl FigParser<'src, PathSegment> {
-    ident()
+    path_segment_ident()
         .then(generic_args.or_not())
         .map(|(ident, args)| PathSegment { ident, args })
 }
@@ -217,6 +235,47 @@ mod tests {
     fn rejects_an_empty_path() {
         let tokens = tokens("");
         assert!(path(ty()).parse(&tokens).into_result().is_err());
+    }
+
+    #[test]
+    fn parses_self_upper_as_a_bare_path() {
+        let tokens = tokens("Self");
+        let parsed = path(ty())
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.segments.len(), 1);
+        assert_eq!(parsed.segments[0].ident.name, "Self");
+    }
+
+    #[test]
+    fn parses_self_upper_qualified_by_an_assoc_item() {
+        let tokens = tokens("Self::Output");
+        let parsed = path(ty())
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        let names: Vec<_> = parsed
+            .segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Self", "Output"]);
+    }
+
+    #[test]
+    fn parses_a_super_relative_path() {
+        let tokens = tokens("super::Foo");
+        let parsed = path(ty())
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        let names: Vec<_> = parsed
+            .segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["super", "Foo"]);
     }
 
     #[test]
