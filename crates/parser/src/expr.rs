@@ -461,6 +461,7 @@ fn expr_pratt<'src>(
                     expr.clone()
                         .map(Box::new)
                         .separated_by(just(Token::Comma))
+                        .allow_trailing()
                         .collect::<Vec<_>>()
                         .delimited_by(just(Token::LParen), just(Token::RParen)),
                 ),
@@ -480,6 +481,7 @@ fn expr_pratt<'src>(
             expr.clone()
                 .map(Box::new)
                 .separated_by(just(Token::Comma))
+                .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen)),
             |callee: Expr, args, e| Expr {
@@ -1074,6 +1076,26 @@ mod tests {
         };
         assert!(matches!(callee.kind, ExprKind::Path(..)));
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_call_with_a_trailing_comma() {
+        let tokens = tokens("foo(1, 2,)");
+        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let ExprKind::Call(_, args) = parsed.kind else {
+            panic!("expected ExprKind::Call, got {:?}", parsed.kind);
+        };
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_method_call_with_a_trailing_comma() {
+        let tokens = tokens("5.foo(1, 2,)");
+        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let ExprKind::MethodCall(call) = parsed.kind else {
+            panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
+        };
+        assert_eq!(call.args.len(), 2);
     }
 
     #[test]
