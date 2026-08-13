@@ -245,6 +245,7 @@ pub enum ExprKind {
     Struct(Box<StructExpr>),
     Paren(Box<Expr>),
     Try(Box<Expr>),
+    Cast(Box<Expr>, Box<Ty>),
     Err,
     Dummy,
 }

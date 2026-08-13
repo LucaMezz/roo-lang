@@ -366,6 +366,15 @@ fn expr_pratt<'src>(
                 annotations: Vec::new(),
             },
         ),
+        postfix(
+            ExprPrecedence::Cast as u16,
+            just(Token::As).ignore_then(ty()),
+            |lhs: Expr, ty: Ty, e| Expr {
+                kind: ExprKind::Cast(Box::new(lhs), Box::new(ty)),
+                span: span(e),
+                annotations: Vec::new(),
+            },
+        ),
         infix(
             fixity_assoc(Fixity::Right, ExprPrecedence::Assign),
             just(Token::Eq),
@@ -1143,6 +1152,30 @@ mod tests {
         };
         assert!(matches!(lhs.kind, ExprKind::Path(..)));
         assert!(matches!(rhs.kind, ExprKind::Assign(..)));
+    }
+
+    #[test]
+    fn parses_a_cast_expr() {
+        let tokens = tokens("x as float");
+        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let ExprKind::Cast(lhs, ty) = parsed.kind else {
+            panic!("expected ExprKind::Cast, got {:?}", parsed.kind);
+        };
+        assert!(matches!(lhs.kind, ExprKind::Path(..)));
+        assert!(matches!(ty.kind, TyKind::Path(..)));
+    }
+
+    #[test]
+    fn cast_binds_tighter_than_addition() {
+        // 1 + x as float must be 1 + (x as float), not (1 + x) as float.
+        let tokens = tokens("1 + x as float");
+        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
+            panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
+        };
+        assert_eq!(op.kind, BinOpKind::Add);
+        assert!(matches!(lhs.kind, ExprKind::Lit(_)));
+        assert!(matches!(rhs.kind, ExprKind::Cast(..)));
     }
 
     #[test]
