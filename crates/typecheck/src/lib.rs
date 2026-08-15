@@ -18,11 +18,11 @@ use std::collections::HashMap;
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
-    Block, Expr, ExprKind, Fn, FnRetTy, FnTy, Item, ItemKind, LitKind, Local, LocalKind, ModKind,
-    Pat, PatKind, Path, Span, Stmt, StmtKind, Ty, TyKind, VariantData,
+    Block, Expr, ExprKind, Fn, FnRetTy, FnTy, GenericArg, Item, ItemKind, LitKind, Local,
+    LocalKind, ModKind, Pat, PatKind, Path, Span, Stmt, StmtKind, Ty, TyKind, VariantData,
 };
 use slotmap::SlotMap;
-use unify::{Term, TermId, UnificationContext, UnifyError, term};
+use unify::{Term, TermId, UnificationContext, UnifyError, VarId, term};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Level {
@@ -83,12 +83,6 @@ impl Diagnostic {
         self
     }
 
-    /// The diagnostic for an occurs-check failure -- unifying `expected`
-    /// and `actual` (already rendered as source-like text) would
-    /// require an infinitely self-referential type. Every unify call
-    /// site needs the exact same treatment for this regardless of what
-    /// triggered it, so it's centralized here rather than rebuilt at
-    /// each one.
     fn cyclic_type(span: Span, expected: &str, actual: &str) -> Self {
         Self::error(span, "cyclic type of infinite size")
             .with_note(format!("expected type `{expected}`"))
@@ -121,6 +115,14 @@ enum TyCon {
     Struct(SymbolId),
     Enum(SymbolId),
 
+    // A generic type parameter. Not a wildcard: it
+    // only unifies with another `Generic` carrying the same id, and is
+    // rejected against every other constructor. A polymorphic symbol's
+    // stored type is a template built from these; using it (e.g. calling
+    // a generic function) substitutes each one for a fresh, ordinary
+    // unification variable, one fresh copy per use.
+    Generic(GenericId),
+
     Err,
 }
 
@@ -130,6 +132,16 @@ slotmap::new_key_type! {
 
     /// Generational id for the symbol arena.
     pub struct SymbolId;
+
+    /// Identifies one generic parameter binding site (e.g. the `T` in
+    /// `fn identity<T>(x: T) -> T`, or one discovered by generalizing an
+    /// inferred function). Two [`TyCon::Generic`] terms are the same type
+    /// only if they carry the same id. This is what gives a generic
+    /// parameter rigid/skolem-like behavior (unifies with itself, fails
+    /// against any concrete type) using nothing but `unify`'s ordinary
+    /// constructor-equality check, with no changes to the `unify` crate
+    /// itself.
+    pub struct GenericId;
 }
 
 /// A unique identifier for a name. The [`NameInterner`] maps
@@ -176,6 +188,17 @@ struct Symbol {
 
     /// The type of the symbol.
     ty: TermId,
+
+    /// The generic parameters quantified over in `ty`, if this symbol is
+    /// polymorphic (e.g. a generic `fn`) . This list will be empty for
+    /// every monomorphic symbol, which is the common case and keeps `ty`
+    /// usable as-is with no special handling. A non-empty list means `ty`
+    /// is a *template*: each `TyCon::Generic` id listed in the `ty` must
+    /// be replaced with a fresh unification variable per use
+    /// (instantiation) rather than read off directly.
+    generics: Vec<GenericId>,
+
+    param_spans: Vec<Span>,
 }
 
 /// The different kinds of symbols.
@@ -184,10 +207,11 @@ enum SymbolKind {
     Enum,
     Variant,
     Trait,
-    TyAlias,
+    TyAlias(ScopeId),
     Mod(ScopeId),
     Fn(ScopeId),
     Local,
+    GenericParam,
 }
 
 impl SymbolKind {
@@ -198,7 +222,8 @@ impl SymbolKind {
             SymbolKind::Struct
             | SymbolKind::Enum
             | SymbolKind::Trait
-            | SymbolKind::TyAlias
+            | SymbolKind::TyAlias(_)
+            | SymbolKind::GenericParam
             | SymbolKind::Mod(_) => Namespace::Type,
             SymbolKind::Variant | SymbolKind::Fn(_) | SymbolKind::Local => Namespace::Value,
         }
@@ -259,8 +284,17 @@ pub struct TypeCheckContext {
     /// [`Scopes`] with a [`ScopeId`].
     scopes: SlotMap<ScopeId, Scope>,
 
+    generic_ids: SlotMap<GenericId, ()>,
+
+    generic_names: HashMap<GenericId, String>,
+
+    synthetic_generic_names: u32,
+
     /// The current scope being checked.
     current_scope: ScopeId,
+
+    checking: Option<(SymbolId, ScopeId)>,
+    self_or_sibling_referenced: bool,
 
     /// Diagnostics collected while type checking. Errors are pushed
     /// here rather than aborting, so checking always runs to completion
@@ -289,8 +323,13 @@ impl TypeCheckContext {
 
             names: NameInterner::new(),
             scopes,
+            generic_ids: SlotMap::with_key(),
+            generic_names: HashMap::new(),
+            synthetic_generic_names: 0,
             symbols: SlotMap::with_key(),
             current_scope: root,
+            checking: None,
+            self_or_sibling_referenced: false,
             diagnostics: Vec::new(),
         }
     }
@@ -432,9 +471,160 @@ impl TypeCheckContext {
         let name = self.names.id(name);
         let var = self.uni_cx.fresh_var();
         let ty = term!(self.uni_cx, var var);
-        let symbol = self.symbols.insert(Symbol { name, kind, ty });
+        let symbol = self.symbols.insert(Symbol {
+            name,
+            kind,
+            ty,
+            generics: Vec::new(),
+            param_spans: Vec::new(),
+        });
         self.insert_in_scope(name, symbol, namespace);
         symbol
+    }
+
+    fn declare_generic_param(&mut self, param_name: &str) -> (SymbolId, GenericId) {
+        let name = self.names.id(param_name);
+        let id = self.generic_ids.insert(());
+        self.generic_names.insert(id, param_name.to_owned());
+        let ty = term!(self.uni_cx, TyCon::Generic(id));
+        let symbol = self.symbols.insert(Symbol {
+            name,
+            kind: SymbolKind::GenericParam,
+            ty,
+            generics: Vec::new(),
+            param_spans: Vec::new(),
+        });
+        self.insert_in_scope(name, symbol, Namespace::Type);
+        (symbol, id)
+    }
+
+    fn free_vars(&mut self, term: TermId, out: &mut Vec<VarId>) {
+        let resolved = self.uni_cx.resolve(term);
+        match self.uni_cx.term(resolved).cloned() {
+            Some(Term::Var(v)) => {
+                let root = self.uni_cx.find(v);
+                if !out.contains(&root) {
+                    out.push(root);
+                }
+            }
+            Some(Term::App { args, .. }) => {
+                for arg in args {
+                    self.free_vars(arg, out);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn synthetic_generic_name(&mut self) -> String {
+        const LETTERS: [char; 7] = ['T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
+        let n = self.synthetic_generic_names;
+        self.synthetic_generic_names += 1;
+        let letter = LETTERS[(n % LETTERS.len() as u32) as usize];
+        let suffix = n / LETTERS.len() as u32;
+        if suffix == 0 {
+            letter.to_string()
+        } else {
+            format!("{letter}{}", suffix + 1)
+        }
+    }
+
+    fn generalize(&mut self, symbol: SymbolId) {
+        self.synthetic_generic_names = 0;
+        let ty = self.symbols[symbol].ty;
+        let mut vars = Vec::new();
+        self.free_vars(ty, &mut vars);
+        for var in vars {
+            let id = self.generic_ids.insert(());
+            let name = self.synthetic_generic_name();
+            self.generic_names.insert(id, name);
+            let generic_term = term!(self.uni_cx, TyCon::Generic(id));
+            self.uni_cx.bind(var, generic_term);
+            self.symbols[symbol].generics.push(id);
+        }
+    }
+
+    fn instantiate(&mut self, symbol: SymbolId) -> TermId {
+        self.instantiate_with(symbol, &[])
+    }
+
+    fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[TermId]) -> TermId {
+        let ty = self.symbols[symbol].ty;
+        if self.symbols[symbol].generics.is_empty() {
+            return ty;
+        }
+        let generics = self.symbols[symbol].generics.clone();
+        let mut subst = HashMap::new();
+        for (&id, &term) in generics.iter().zip(explicit) {
+            subst.insert(id, term);
+        }
+        self.instantiate_term(ty, &mut subst)
+    }
+
+    fn instantiate_term(&mut self, term: TermId, subst: &mut HashMap<GenericId, TermId>) -> TermId {
+        let resolved = self.uni_cx.resolve(term);
+        match self.uni_cx.term(resolved).cloned() {
+            Some(Term::Var(_)) => resolved,
+            Some(Term::App {
+                constructor: TyCon::Generic(id),
+                ..
+            }) => *subst.entry(id).or_insert_with(|| {
+                let var = self.uni_cx.fresh_var();
+                term!(self.uni_cx, var var)
+            }),
+            Some(Term::App { constructor, args }) => {
+                let new_args = args
+                    .iter()
+                    .map(|&arg| self.instantiate_term(arg, subst))
+                    .collect();
+                term!(self.uni_cx, constructor => new_args)
+            }
+            None => resolved,
+        }
+    }
+
+    fn instantiate_path(&mut self, symbol: SymbolId, path: &Path) -> TermId {
+        match path.segments.last().and_then(|seg| seg.args.as_ref()) {
+            Some(generic_args) => {
+                let arg_tys: Vec<TermId> = generic_args
+                    .args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        GenericArg::Arg(ty) => Some(self.lower_ty(ty)),
+                        GenericArg::Constraint(_) => None,
+                    })
+                    .collect();
+
+                let max = self.symbols[symbol].generics.len();
+                let actual = arg_tys.len();
+                if actual != max {
+                    let message = format!(
+                        "expected {max} generic argument{}, found {actual}",
+                        if max == 1 { "" } else { "s" },
+                    );
+                    self.diagnostic(Diagnostic::error(generic_args.span, message));
+                }
+
+                self.instantiate_with(symbol, &arg_tys[..actual.min(max)])
+            }
+            None => self.instantiate(symbol),
+        }
+    }
+
+    fn is_self_or_sibling_fn(
+        &self,
+        parent_scope: ScopeId,
+        checking_fn: SymbolId,
+        symbol: SymbolId,
+    ) -> bool {
+        if symbol == checking_fn {
+            return true;
+        }
+        if !matches!(self.symbols[symbol].kind, SymbolKind::Fn(_)) {
+            return false;
+        }
+        let name = self.symbols[symbol].name;
+        self.scopes[parent_scope].values.get(&name) == Some(&symbol)
     }
 
     /// Inserts an existing symbol into the current scope.
@@ -479,11 +669,12 @@ impl TypeCheckContext {
                 [segment] if segment.ident.name == "float" => term!(self.uni_cx, TyCon::Float),
                 [segment] if segment.ident.name == "char" => term!(self.uni_cx, TyCon::Char),
                 [segment] if segment.ident.name == "String" => term!(self.uni_cx, TyCon::Str),
+                [segment] if segment.ident.name == "any" => term!(self.uni_cx, TyCon::Any),
                 _ => match self.resolve_path(path, Namespace::Type) {
                     Some(symbol) => match &self.symbols[symbol].kind {
                         SymbolKind::Struct => term!(self.uni_cx, TyCon::Struct(symbol)),
                         SymbolKind::Enum => term!(self.uni_cx, TyCon::Enum(symbol)),
-                        _ => self.symbols[symbol].ty,
+                        _ => self.instantiate_path(symbol, path),
                     },
                     None => term!(self.uni_cx, TyCon::Err),
                 },
@@ -553,6 +744,11 @@ impl TypeCheckContext {
                     .cloned()
                     .unwrap_or_else(|| "<unknown>".to_owned())
             }
+            TyCon::Generic(id) => self
+                .generic_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| "<generic>".to_owned()),
         }
     }
 
@@ -560,6 +756,17 @@ impl TypeCheckContext {
     /// additional information about what the type is expected to be.
     fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
         self.check_expr_expecting(expr, expected, None)
+    }
+
+    fn generic_name_of(&mut self, term: TermId) -> Option<String> {
+        let resolved = self.uni_cx.resolve(term);
+        match self.uni_cx.term(resolved)? {
+            Term::App {
+                constructor: TyCon::Generic(id),
+                ..
+            } => self.generic_names.get(id).cloned(),
+            _ => None,
+        }
     }
 
     fn check_expr_expecting(
@@ -570,6 +777,12 @@ impl TypeCheckContext {
     ) -> TermId {
         let actual = self.check_expr_kind(&expr.kind, expected);
         if let Some(expected) = expected {
+            let generic_on_expected = self.generic_name_of(expected);
+            let generic_on_actual = if generic_on_expected.is_none() {
+                self.generic_name_of(actual)
+            } else {
+                None
+            };
             if let Err(err) = self.uni_cx.unify(actual, expected) {
                 let expected = self.render_term(expected);
                 let actual = self.render_term(actual);
@@ -578,10 +791,19 @@ impl TypeCheckContext {
                         self.diagnostic(Diagnostic::cyclic_type(expr.span, &expected, &actual));
                     }
                     _ => {
-                        let diagnostic = Diagnostic::error(
+                        let mut diagnostic = Diagnostic::error(
                             expr.span,
                             format!("expected `{expected}`, found `{actual}`"),
                         );
+                        if let Some(name) = generic_on_expected {
+                            diagnostic = diagnostic.with_note(format!(
+                                "`{name}` is generic here and must work for every type, not just `{actual}`"
+                            ));
+                        } else if let Some(name) = generic_on_actual {
+                            diagnostic = diagnostic.with_note(format!(
+                                "`{name}` is generic here and must work for every type, not just `{expected}`"
+                            ));
+                        }
                         let diagnostic = match expected_span {
                             Some(span) => diagnostic.with_related(span, "expected due to this"),
                             None => diagnostic,
@@ -589,6 +811,7 @@ impl TypeCheckContext {
                         self.diagnostic(diagnostic);
                     }
                 }
+                return term!(self.uni_cx, TyCon::Err);
             }
         }
         actual
@@ -702,13 +925,29 @@ impl TypeCheckContext {
                 }
 
                 match self.resolve_path(path, Namespace::Value) {
-                    Some(symbol) => self.symbols[symbol].ty,
+                    Some(symbol) => {
+                        if let Some((checking_fn, parent_scope)) = self.checking {
+                            if self.is_self_or_sibling_fn(parent_scope, checking_fn, symbol) {
+                                self.self_or_sibling_referenced = true;
+                            }
+                        }
+
+                        self.instantiate_path(symbol, path)
+                    }
                     None => term!(self.uni_cx, TyCon::Err),
                 }
             }
             ExprKind::Call(callee, args) => {
                 // Check the type of the expression which is being called
                 let callee_ty = self.check_expr(callee, None);
+
+                let callee_param_spans: Vec<Span> = match &callee.kind {
+                    ExprKind::Path(None, path) => self
+                        .resolve_path(path, Namespace::Value)
+                        .map(|symbol| self.symbols[symbol].param_spans.clone())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
 
                 // If the callee's type is already known to be a Fn with
                 // the same number of parameters as this call has
@@ -773,7 +1012,8 @@ impl TypeCheckContext {
                     // on an arity mismatch.
                     for (i, arg) in args.iter().enumerate() {
                         let expected_ty = input_tys.get(i).copied();
-                        self.check_expr(arg, expected_ty);
+                        let expected_span = callee_param_spans.get(i).copied();
+                        self.check_expr_expecting(arg, expected_ty, expected_span);
                     }
 
                     output_term
@@ -1094,12 +1334,33 @@ impl Visitor for Resolver<'_> {
         match &item.kind {
             ItemKind::Fn(f) => {
                 let scope = self.new_scope();
-                self.cx.declare(&f.ident.name, SymbolKind::Fn(scope));
-                self.with_scope(scope, |this| item.walk(this));
+                let fn_symbol = self.cx.declare(&f.ident.name, SymbolKind::Fn(scope));
+
+                let mut generics = Vec::new();
+                self.with_scope(scope, |this| {
+                    for param in &f.generics.params {
+                        let (_, id) = this.cx.declare_generic_param(&param.ident.name);
+                        generics.push(id);
+                    }
+                    item.walk(this);
+                });
+                self.cx.symbols[fn_symbol].generics = generics;
                 return;
             }
             ItemKind::TyAlias(alias) => {
-                self.cx.declare(&alias.ident.name, SymbolKind::TyAlias);
+                let scope = self.new_scope();
+                let alias_symbol = self
+                    .cx
+                    .declare(&alias.ident.name, SymbolKind::TyAlias(scope));
+
+                let mut generics = Vec::new();
+                self.with_scope(scope, |this| {
+                    for param in &alias.generics.params {
+                        let (_, id) = this.cx.declare_generic_param(&param.ident.name);
+                        generics.push(id);
+                    }
+                });
+                self.cx.symbols[alias_symbol].generics = generics;
             }
             ItemKind::Enum(ident, _generics, _def) => {
                 self.cx.declare(&ident.name, SymbolKind::Enum);
@@ -1179,20 +1440,25 @@ impl Visitor for SignatureLowerer<'_> {
                     .cx
                     .lookup_in_scope(self.cx.current_scope, name, Namespace::Value);
 
-                if let Some(symbol) = symbol {
-                    let fn_term = self.lower_fn_sig(f);
-                    let symbol_ty = self.cx.symbols[symbol].ty;
-                    let _ = self.cx.uni_cx.unify(symbol_ty, fn_term);
-                }
-
-                // Recurse into the fn's own body scope, so nested (hoisted)
-                // items get their signatures lowered too.
                 let scope = symbol.and_then(|symbol| match &self.cx.symbols[symbol].kind {
                     SymbolKind::Fn(scope) => Some(*scope),
                     _ => None,
                 });
                 if let Some(scope) = scope {
-                    self.with_scope(scope, |this| item.walk(this));
+                    self.with_scope(scope, |this| {
+                        if let Some(symbol) = symbol {
+                            let fn_term = this.lower_fn_sig(f);
+                            let symbol_ty = this.cx.symbols[symbol].ty;
+                            let _ = this.cx.uni_cx.unify(symbol_ty, fn_term);
+                            this.cx.symbols[symbol].param_spans = f
+                                .sig
+                                .inputs
+                                .iter()
+                                .map(|p| p.ty.as_ref().map_or(p.span, |ty| ty.span))
+                                .collect();
+                        }
+                        item.walk(this);
+                    });
                 }
             }
             ItemKind::TyAlias(alias) => {
@@ -1200,10 +1466,18 @@ impl Visitor for SignatureLowerer<'_> {
                 let symbol = self
                     .cx
                     .lookup_in_scope(self.cx.current_scope, name, Namespace::Type);
-                if let (Some(symbol), Some(ty)) = (symbol, alias.ty.as_ref()) {
-                    let aliased = self.cx.lower_ty(ty);
-                    let symbol_ty = self.cx.symbols[symbol].ty;
-                    let _ = self.cx.uni_cx.unify(symbol_ty, aliased);
+
+                let scope = symbol.and_then(|symbol| match &self.cx.symbols[symbol].kind {
+                    SymbolKind::TyAlias(scope) => Some(*scope),
+                    _ => None,
+                });
+                if let (Some(symbol), Some(scope), Some(ty)) = (symbol, scope, alias.ty.as_ref())
+                {
+                    self.with_scope(scope, |this| {
+                        let aliased = this.cx.lower_ty(ty);
+                        let symbol_ty = this.cx.symbols[symbol].ty;
+                        let _ = this.cx.uni_cx.unify(symbol_ty, aliased);
+                    });
                 }
             }
             ItemKind::Mod(ident, ModKind::Loaded(_)) => {
@@ -1295,6 +1569,9 @@ impl Visitor for Checker<'_> {
             _ => return,
         };
 
+        let previous_checking = self.cx.checking.replace((symbol, self.cx.current_scope));
+        let previous_flag = std::mem::replace(&mut self.cx.self_or_sibling_referenced, false);
+
         // Enter the scope of the function body.
         self.with_scope(scope, |this| {
             // Here, we take the pattern of the parameter, which is the
@@ -1323,6 +1600,14 @@ impl Visitor for Checker<'_> {
                 }
             }
         });
+
+        let referenced_self_or_sibling = self.cx.self_or_sibling_referenced;
+        self.cx.checking = previous_checking;
+        self.cx.self_or_sibling_referenced = previous_flag;
+
+        if !referenced_self_or_sibling {
+            self.cx.generalize(symbol);
+        }
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt) {
