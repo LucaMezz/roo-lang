@@ -144,14 +144,20 @@ is [operator overloading](operator-overloading.md#the-right-hand-side-isnt-alway
 where the right-hand-side type of an operator is usually — but not always
 — the same as the left-hand side.
 
-## How generics interact with gradual typing
+## How generics interact with gradual typing and inference
 
 Generics are a purely static-typing feature: a generic parameter with no
 bound (`<T>`) still means "some specific, statically-tracked type, the same
 for every use of `T` in this signature," not "dynamically typed." If you
-want a genuinely dynamically-typed parameter, omit the type annotation
-entirely rather than reaching for a generic — see
-[Gradual Typing](../types/gradual-typing.md). The two features solve
-different problems: generics let one signature work polymorphically across
-many *static* types; gradual typing lets a binding opt out of static typing
-altogether.
+want a genuinely dynamically-typed parameter, annotate it `any` rather
+than reaching for a generic — see [Gradual Typing](../types/gradual-typing.md).
+The two features solve different problems: generics let one signature
+work polymorphically across many *static* types; gradual typing lets a
+binding opt out of static typing altogether, on purpose.
+
+Omitting a function's type annotations entirely does **not** default to
+dynamic typing either, and often produces a generic function anyway —
+just an *inferred* one, arrived at without writing `<T>` yourself. See
+[Type Inference](../types/inference.md) for the full story on when that
+happens and why the result is exactly the same kind of generic function
+as one you declare explicitly.

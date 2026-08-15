@@ -14,14 +14,23 @@ lifetimes, no `unsafe`, no raw pointers, no manual memory management or
 allocators, no FFI, and no macros. A full account of what was left out, and
 why, is in [Differences from Rust](design/differences-from-rust.md).
 
-On top of that smaller core, fig adds one thing Rust does not have: **gradual
-typing**, in the same sense that [Luau](https://luau.org/) (Roblox's dialect
-of Lua) and TypeScript use the term. Type annotations are optional almost
-everywhere. Write them and the compiler checks them; leave them off and the
-value is treated as dynamically typed, the way an untyped `any` is in Luau or
-TypeScript. This lets a script start as loose, ordinary scripting-language
-code and grow type annotations incrementally, in exactly the places where
-they earn their keep.
+On top of that smaller core, fig adds one thing Rust does not have: type
+annotations are optional almost everywhere. Write one and the compiler
+checks it; leave it off and fig **infers** the strongest type it can —
+which, for a whole function left completely unannotated, can mean
+inferring generic type parameters it was never told about, not just a
+single concrete type. This is stronger than the gradual typing
+[Luau](https://luau.org/) (Roblox's dialect of Lua) and TypeScript are
+usually compared to, which fall back to dynamic, run-time-checked typing
+wherever nothing's annotated — fig only falls back that far in the
+narrower set of places inference genuinely can't reach yet, or where the
+explicit `any` type asks for dynamic behavior on purpose. See
+[Type Inference](types/inference.md) and
+[Gradual Typing](types/gradual-typing.md) for the full rules, and
+[Design: Philosophy](design/philosophy.md#gradual-typing-vs-strong-inference)
+for why fig ended up here. Either way, a script can start as loose,
+ordinary-looking code with no type annotations at all and grow them
+incrementally, in exactly the places where they earn their keep.
 
 ## Who this book is for
 
@@ -36,13 +45,19 @@ design as future work.
 
 ## Project status
 
-fig is early. As of this writing, the only implemented piece is the
-`lexer` crate in the [fig-lang](https://github.com/LucaMezz/fig-lang)
-repository, which turns source text into tokens. There is no parser, type
-checker, or interpreter/compiler yet. This book documents the *intended*
+fig is early. As of this writing, the
+[fig-lang](https://github.com/LucaMezz/fig-lang) repository has a working
+lexer, a parser covering nearly all of the syntax this book documents,
+and a type checker that implements the inference/gradual-typing model
+described here — including generalizing untyped functions and type
+aliases into real generic types, the way [Type
+Inference](types/inference.md) describes. There is no interpreter,
+compiler, or standard library yet. This book documents the *intended*
 design of the language — the target this implementation is being built
-towards — not a shipped, battle-tested feature set. Expect it to change as
-the implementation reveals what does and doesn't work.
+towards — not a fully shipped, battle-tested feature set, and some
+corners (generic `struct`/`enum` types, traits, recursive-function
+generalization) are still ahead of what's actually implemented. Expect it
+to change as the implementation reveals what does and doesn't work.
 
 fig is being developed alongside
 [fig-engine](https://github.com/LucaMezz/fig-engine), a game engine, which it

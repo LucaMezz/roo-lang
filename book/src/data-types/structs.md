@@ -30,9 +30,14 @@ specific fields:
 let moved = Point { x: 5.0, ..origin }; // y comes from origin
 ```
 
-Fields can mix typed and untyped, exactly like function parameters — see
-[Gradual Typing](../types/gradual-typing.md). `payload: any` would mean the
-same thing as leaving the annotation off, just spelled out:
+Fields can mix typed and untyped, the same way a function's parameters
+can — but unlike an untyped parameter, an untyped field isn't inferred
+from usage; there's no single "the field is constructed here" site the
+way there's a single function body to check. It's genuinely dynamically
+typed instead — see [Gradual Typing](../types/gradual-typing.md) and
+[Type Inference: Where inference does not apply yet](../types/inference.md#where-inference-does-not-apply-yet).
+`payload: any` would mean the same thing as leaving the annotation off,
+just spelled out:
 
 ```fig
 struct Event {

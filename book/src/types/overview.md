@@ -18,11 +18,11 @@ determines when any of it is actually enforced.
   [Closures](../functions/closures.md).
 - **The unit type**, `()`: the type of expressions evaluated only for their
   side effects. Write `-> ()` on a function to statically guarantee it
-  returns nothing; *omitting* the return type annotation entirely does
-  **not** mean `()` — a return type has nothing local to infer from, so it's
-  dynamically typed instead (see
-  [Gradual Typing](gradual-typing.md) and
-  [Functions: Return type](../functions/functions.md#return-type)).
+  returns nothing regardless of later edits to the body; *omitting* the
+  return type annotation instead infers it from the body, which comes out
+  to exactly `()` whenever the body has no trailing expression — see
+  [Type Inference](inference.md) and
+  [Functions: Return type](../functions/functions.md#return-type).
 - **The `any` type**: written explicitly, it means "dynamically typed
   here," overriding whatever fig would otherwise have inferred — see
   [Gradual Typing: The explicit `any` type](gradual-typing.md#the-explicit-any-type).
@@ -44,11 +44,15 @@ struct Point { x: float, y: float }      // struct fields
 fn identity<T>(x: T) -> T { x }          // generic parameters
 ```
 
-Every one of these annotations is **optional** — omitting one either falls
-back to [type inference](inference.md) (for a `let` with an initializer) or
-leaves the position dynamically typed (everywhere else, or anywhere `any`
-is written explicitly). This is the core idea of gradual typing, covered in
-full in the next chapter, [Gradual Typing](gradual-typing.md).
+Every one of these annotations is **optional** — omitting one falls back
+to [type inference](inference.md) in most positions now, including a
+function's entire signature (parameters, return type, and even its own
+`<T>` list), not just a `let`'s initializer. Only struct/enum fields, a
+`let` with no initializer, and anywhere `any` is written explicitly still
+fall back to dynamic typing. That boundary — and why it's smaller than
+you might expect from a gradually-typed language — is the subject of the
+next two chapters, [Type Inference](inference.md) and
+[Gradual Typing](gradual-typing.md).
 
 ## No `null`, no implicit conversions
 

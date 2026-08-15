@@ -1,35 +1,50 @@
 # Gradual Typing
 
-This is fig's one major addition on top of "a subset of Rust": every type
-annotation in the language is optional. This chapter specifies exactly what
-that means.
+Every type annotation in fig is optional. This chapter specifies what's
+left of "dynamically typed" once you take into account how much fig
+actually infers instead — which, as of [Type Inference](inference.md), is
+most of what you'd expect to have to annotate, including entire function
+signatures. Gradual typing and type inference are easy to conflate, so
+it's worth being precise about the difference: inference is fig working
+out a static type you didn't write down; gradual typing is what happens
+in the positions where there's genuinely nothing to infer it from, or
+where you explicitly asked for dynamic behavior with `any`.
 
 ## No annotation doesn't mean one fixed thing
 
 In Rust, every binding has a static type, even when you don't write it out
 — `let x = 5;` still gives `x` the fully static type `i32`, inferred by the
-compiler. fig also infers types in some places, but not all — leaving a
-type annotation off resolves one of two ways, depending on whether fig has
-something local and unambiguous to infer a type *from*:
+compiler. fig also infers types — in more places than you might expect,
+covering entire function signatures via [real
+generalization](inference.md#untyped-functions-are-inferred-and-generalized-not-dynamically-typed),
+not just `let` — but not everywhere. Leaving a type annotation off
+resolves one of two ways, depending on whether fig has something to infer
+a type *from*:
 
-- A `let` binding's initializer is a local, unambiguous source — so fig
-  infers a static type from it, and the binding is statically checked from
-  then on, exactly as if you'd written the annotation yourself. See
-  [Type Inference](inference.md) for the full rules.
-- A function parameter, a struct/enum field, or a function's return type
-  has no such source at its declaration site — nothing there pins down a
-  single type — so these are **dynamically typed** when left unannotated,
-  checked at run time instead, the way a variable in Lua or Python is.
+- A `let` binding's initializer, or a function's own body, is a source fig
+  can infer from — so fig infers a static type (possibly a generic one)
+  and the position is statically checked from then on, exactly as if
+  you'd written the annotation yourself. See [Type Inference](inference.md)
+  for the full rules, including why an untyped function parameter is
+  *not* the same case as a struct field below.
+- A struct/enum field, or a `let` with no initializer at all, has no such
+  source — nothing pins down a single type, and there's no function body
+  to generalize over — so these stay **dynamically typed** when left
+  unannotated, checked at run time instead, the way a variable in Lua or
+  Python is.
 
 ```fig
-let count = 5;          // inferred: int (a local source exists) — statically checked from here on
-fn double(n) { n * 2 } // `n` has nothing local to infer from — dynamically typed
+let count = 5;    // inferred: int (a local source exists) — statically checked from here on
+fn double(n) { n * 2 } // inferred: fn double<T>(n: T) -> T — see Type Inference
+struct Item { label } // `label` has nothing to infer from — dynamically typed
 ```
 
-This is the same shape TypeScript's inference (`let x = 5` infers
-`number`) and Luau's inference (`local x = 5` infers `number`) already
-have — neither treats "no annotation" as a single, uniform "always
-dynamic" rule either.
+This is a stronger inference story than TypeScript's (`let x = 5` infers
+`number`) or Luau's (`local x = 5` infers `number`) — both only infer
+`let`-shaped locals, and leave an untyped function parameter or return
+type dynamically typed, which is what earlier versions of this design did
+too. See [Design: Philosophy](../design/philosophy.md#gradual-typing-vs-strong-inference)
+for why fig pushed further than that.
 
 ## The explicit `any` type
 
@@ -72,28 +87,51 @@ double("hi"); // type error: expected `int`, found `String`
 
 Annotating one thing doesn't force you to annotate anything else. A
 function can have some typed parameters and some untyped ones; a `struct`
-can have some typed fields and some untyped ones:
+can have some typed fields and some untyped ones — though these two
+"untyped" cases aren't the same anymore. A field falls back to gradual
+typing, this chapter's subject; a parameter gets inferred, [Type
+Inference](inference.md)'s:
 
 ```fig
-fn greet(name: String, title) {   // `title` is dynamically typed
-    print(title);
+fn greet(name: String, title) {   // `title` is inferred, not dynamic —
+    print(title);                 // fig generalizes it: <T>(name: String, title: T)
     print(name);
 }
+
+struct Config {
+    label: String,
+    note,   // `note` really is dynamically typed — no function body for
+}          // fig to generalize a field from
 ```
 
-## Return types are not an exception
+## Return types are inferred too, not an exception
 
 It's tempting to assume a function with no `-> Type` returns `()`, by
-analogy with Rust, where that's exactly what happens. In fig it isn't: a
-return type has no local source to infer from (see
-[above](#no-annotation-doesnt-mean-one-fixed-thing)), so an omitted one is
-dynamically typed, not statically pinned to `()` — writing `-> any` makes
-that explicit, if you want it spelled out. If you want fig to guarantee a
-function returns nothing, write `-> ()` instead. See
-[Functions: Return type](../functions/functions.md#return-type) for the
-full explanation, including why this doesn't change what a function
-actually *returns* at runtime — only whether that return value is
-statically checked.
+analogy with Rust, where that's exactly what happens. In fig, that
+intuition turns out to be *closer* to right than it first looks, just for
+a different reason: a return type left off isn't pinned to anything in
+particular — it's inferred from the body, the same as an untyped
+parameter is. If the body has no trailing expression, that inferred type
+genuinely comes out to `()`, because that's what the block itself
+evaluates to; if the body does have a trailing expression, the return
+type infers to whatever that expression's type is:
+
+```fig
+fn log(message: String) {
+    print(message);
+} // inferred: fn log(message: String) -> ()  — body has no trailing value
+
+fn describe(message: String) {
+    message
+} // inferred: fn describe(message: String) -> String — trailing value is message
+```
+
+Both are real, static, concrete return types — checked from here on
+exactly as if you'd written `-> ()` or `-> String` yourself. See
+[Functions: Return type](../functions/functions.md#return-type) for more,
+and [Type Inference](inference.md) for what happens when the body's
+trailing value doesn't pin down one single concrete type either (it
+generalizes, the same as a parameter would).
 
 ## The boundary between typed and untyped code
 
@@ -103,12 +141,20 @@ dynamically-typed value is allowed to flow into a statically-typed slot
 *without complaint at the boundary*, and is checked *when it's actually
 used* in a way that would violate the annotation.
 
+Because inference is now strong enough to give ordinary untyped function
+parameters and return types real static types (see
+[Type Inference](inference.md)), a genuinely dynamic value in fig today
+almost always traces back to an explicit `any`, a struct/enum field, or a
+`let` with no initializer and no annotation — the cases
+[above](#no-annotation-doesnt-mean-one-fixed-thing) that gradual typing
+still actually covers:
+
 ```fig
 fn takes_int(n: int) -> int {
     n + 1
 }
 
-let dynamic_value = load_config_value(); // untyped — could be anything
+let dynamic_value: any = load_config_value(); // explicitly opted out of inference
 takes_int(dynamic_value); // allowed statically; checked at the call
                            // — a runtime type error is raised here if
                            // `dynamic_value` doesn't actually hold an int
@@ -123,11 +169,14 @@ valid value of the dynamic world too; every type is a subtype of `any`.
 A function or closure is an ordinary value (see
 [Functions: Functions as values](../functions/functions.md#functions-as-values)),
 so the boundary rule above isn't just about parameters — it applies the
-same way to a function whose *return type* is dynamic, when that function
-is used somewhere expecting a concrete `Fn(...) -> T`:
+same way to a function whose *return type* is genuinely dynamic (written
+`-> any`, not just left off — see
+[above](#return-types-are-inferred-too-not-an-exception)
+for why an ordinary omitted return type doesn't qualify anymore), when
+that function is used somewhere expecting a concrete `Fn(...) -> T`:
 
 ```fig
-fn log(message: String) { print(message); } // dynamic return
+fn log(message: String) -> any { print(message); }
 
 let handler: Fn(String) -> () = log; // allowed — no complaint at assignment
 handler("hi");                        // fine: log's body has no trailing
@@ -137,7 +186,7 @@ handler("hi");                        // fine: log's body has no trailing
 ```
 
 ```fig
-fn oops(message: String) { message } // dynamic return, *does* return a value
+fn oops(message: String) -> any { message } // dynamic return, *does* return a value
 
 let handler: Fn(String) -> () = oops; // still allowed at assignment
 handler("hi"); // runtime type error here: `oops` actually returned a
@@ -151,6 +200,14 @@ without ever really "using" them; if the check were deferred to that
 point, a call whose result goes unused would silently skip it, and
 `Fn(...) -> T` would stop being a promise the type system actually keeps.
 Checking at the call keeps it honest.
+
+Compare this to the *same-shaped* `log`/`oops` pair with the `-> any`
+removed: without it, both return types are inferred from the body instead
+(`()` and `String` respectively, per
+[above](#return-types-are-inferred-too-not-an-exception)),
+and `let handler: Fn(String) -> () = oops;` becomes a static type error
+right at that `let` — no runtime check needed, because there's no longer
+anything dynamic in the picture for a runtime check to defer to.
 
 ## Structs and gradual typing
 
@@ -180,21 +237,34 @@ struct Config {
   [Generics](../abstraction/generics.md) and [Traits](../abstraction/traits.md)
   whenever they're used with type annotations present.
 - It is **not** the same mechanism as [type inference](inference.md), even
-  though both can be triggered by leaving an annotation off. Inference
-  produces a static type from a local source (today, only a `let`
-  initializer); gradual typing is what happens when there's no annotation
-  *and* no local source, or when `any` explicitly asks for it regardless.
+  though both can be triggered by leaving an annotation off, and inference
+  covers far more ground than it might first appear to (a whole function
+  signature, generic parameters included — not just a `let`). Gradual
+  typing is what's left over: no annotation *and* nothing to infer from
+  (a struct/enum field, a `let` with no initializer), or `any` explicitly
+  asking for dynamic behavior regardless of what could otherwise be
+  inferred.
 
 ## Why this design
 
-fig is meant to work well both as a quick, throwaway script (no annotations,
-behaves like Lua) and as a large, maintained codebase (fully annotated,
-behaves like Rust), with a smooth path between the two — exactly the
+fig is meant to work well both as a quick, throwaway script (few or no
+annotations) and as a large, maintained codebase (fully annotated,
+behaves like Rust), with a smooth path between the two — the same
 argument Luau and TypeScript make for gradual typing over their fully
-dynamic ancestors (Lua and JavaScript). Unlike those two languages, though,
-fig doesn't need a separate "strict mode" pragma: because annotations are
-opt-in per binding rather than per file, a single file can mix fully typed
-and fully untyped code freely, and the checked/unchecked boundary is exactly
-"is this position pinned to a concrete type — by inference or by
-annotation — or is it dynamic, whether by having nothing to infer from or
-by an explicit `any`."
+dynamic ancestors (Lua and JavaScript). Where fig departs from that
+argument is in *how* the "few or no annotations" end stays approachable:
+Luau and TypeScript get there by falling back to dynamic typing wherever
+nothing's annotated; fig gets there by inferring as much as it possibly
+can first, only actually landing on "dynamically typed" in the narrower
+set of places [Type Inference](inference.md) can't reach yet (struct/enum
+fields today) or where `any` asks for it on purpose. See
+[Design: Philosophy](../design/philosophy.md#gradual-typing-vs-strong-inference)
+for the reasoning behind that choice.
+
+fig doesn't need a separate "strict mode" pragma either way: because
+annotations are opt-in per binding rather than per file, a single file
+can mix fully typed, fully inferred, and fully untyped code freely, and
+the checked/unchecked boundary is exactly "is this position pinned to a
+concrete or generic type — by inference or by annotation — or is it
+dynamic, whether by having nothing to infer from or by an explicit
+`any`."
