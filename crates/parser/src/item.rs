@@ -358,7 +358,7 @@ mod tests {
     fn parses_a_named_field_with_a_type() {
         let tokens = tokens("x: int");
         let parsed = named_field(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.expect("should have an ident").name, "x");
@@ -369,7 +369,7 @@ mod tests {
     fn parses_a_named_field_with_no_type_as_dynamic() {
         let tokens = tokens("x");
         let parsed = named_field(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.ty.is_none());
@@ -379,7 +379,7 @@ mod tests {
     fn parses_a_pub_named_field() {
         let tokens = tokens("pub x: int");
         let parsed = named_field(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.vis.kind, VisibilityKind::Public));
@@ -389,7 +389,7 @@ mod tests {
     fn parses_a_pub_tuple_field() {
         let tokens = tokens("pub int");
         let parsed = tuple_field(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.ident.is_none());
@@ -400,7 +400,7 @@ mod tests {
     fn parses_a_struct_with_named_fields() {
         let tokens = tokens("{ x: int, y: int }");
         let parsed = struct_body(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let VariantData::Struct(fields) = parsed else {
@@ -413,7 +413,7 @@ mod tests {
     fn parses_a_tuple_struct_body() {
         let tokens = tokens("(int, float);");
         let parsed = struct_body(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let VariantData::Tuple(fields) = parsed else {
@@ -426,7 +426,7 @@ mod tests {
     fn parses_a_unit_struct_body() {
         let tokens = tokens(";");
         let parsed = struct_body(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed, VariantData::Unit));
@@ -436,7 +436,7 @@ mod tests {
     fn parses_an_enum_variant_with_no_data() {
         let tokens = tokens("None");
         let parsed = variant(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "None");
@@ -447,7 +447,7 @@ mod tests {
     fn parses_an_enum_variant_with_tuple_data() {
         let tokens = tokens("Some(int)");
         let parsed = variant(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let VariantData::Tuple(fields) = parsed.data else {
@@ -461,7 +461,7 @@ mod tests {
     fn parses_an_enum_variant_with_struct_data() {
         let tokens = tokens("Point { x: int, y: int }");
         let parsed = variant(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let VariantData::Struct(fields) = parsed.data else {
@@ -474,7 +474,7 @@ mod tests {
     fn parses_an_enum_def_with_multiple_variants() {
         let tokens = tokens("{ A, B(int), C { x: int } }");
         let parsed = enum_def(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.variants.len(), 3);
@@ -484,7 +484,7 @@ mod tests {
     fn parses_a_minimal_trait_associated_type() {
         let tokens = tokens("type Item;");
         let parsed = ty_alias(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "Item");
@@ -496,7 +496,7 @@ mod tests {
     fn parses_an_impl_associated_type() {
         let tokens = tokens("type Item = int;");
         let parsed = ty_alias(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.ty.is_some());
@@ -506,7 +506,7 @@ mod tests {
     fn parses_a_full_ty_alias_with_bounds_and_where_clauses() {
         let tokens = tokens("type Foo<T>: Display where T: Clone = int where T: Eq;");
         let parsed = ty_alias(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.generics.params.len(), 1);
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn parses_a_fn_item() {
         let tokens = tokens("fn add(a: int, b: int) -> int { a }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn parses_an_ambient_fn_item_with_no_body() {
         let tokens = tokens("fn add(a: int, b: int) -> int;");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -542,13 +542,16 @@ mod tests {
     #[test]
     fn parses_a_fn_item_with_an_immutable_self_param() {
         let tokens = tokens("fn describe(self) -> String { self.name }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
         assert_eq!(f.sig.inputs.len(), 1);
         let PatKind::Ident(is_mut, ident, _) = &f.sig.inputs[0].pat.kind else {
-            panic!("expected PatKind::Ident, got {:?}", f.sig.inputs[0].pat.kind);
+            panic!(
+                "expected PatKind::Ident, got {:?}",
+                f.sig.inputs[0].pat.kind
+            );
         };
         assert!(!is_mut);
         assert_eq!(ident.name, "self");
@@ -561,13 +564,16 @@ mod tests {
     #[test]
     fn parses_a_fn_item_with_a_mutable_self_param() {
         let tokens = tokens("fn heal(mut self, amount: int) { self.health += amount; }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
         assert_eq!(f.sig.inputs.len(), 2);
         let PatKind::Ident(is_mut, ident, _) = &f.sig.inputs[0].pat.kind else {
-            panic!("expected PatKind::Ident, got {:?}", f.sig.inputs[0].pat.kind);
+            panic!(
+                "expected PatKind::Ident, got {:?}",
+                f.sig.inputs[0].pat.kind
+            );
         };
         assert!(is_mut);
         assert_eq!(ident.name, "self");
@@ -576,7 +582,7 @@ mod tests {
     #[test]
     fn parses_a_generic_fn_item() {
         let tokens = tokens("fn id<T>(x: T) -> T { x }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -586,7 +592,7 @@ mod tests {
     #[test]
     fn parses_a_struct_item() {
         let tokens = tokens("struct Point { x: int, y: int }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Struct(ident, generics, data) = parsed.kind else {
             panic!("expected ItemKind::Struct");
         };
@@ -598,14 +604,14 @@ mod tests {
     #[test]
     fn parses_a_pub_struct_item() {
         let tokens = tokens("pub struct Point { x: int }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.vis.kind, VisibilityKind::Public));
     }
 
     #[test]
     fn parses_an_enum_item() {
         let tokens = tokens("enum Color { Red, Green, Blue }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Enum(ident, _, def) = parsed.kind else {
             panic!("expected ItemKind::Enum");
         };
@@ -616,7 +622,7 @@ mod tests {
     #[test]
     fn parses_a_use_item() {
         let tokens = tokens("use foo::bar;");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Use(tree) = parsed.kind else {
             panic!("expected ItemKind::Use");
         };
@@ -626,14 +632,14 @@ mod tests {
     #[test]
     fn parses_a_ty_alias_item() {
         let tokens = tokens("type Meters = float;");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.kind, ItemKind::TyAlias(_)));
     }
 
     #[test]
     fn parses_a_trait_item_with_a_supertrait_bound_and_members() {
         let tokens = tokens("trait Shape: Clone { fn area(self) -> float; type Unit; }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Trait(t) = parsed.kind else {
             panic!("expected ItemKind::Trait");
         };
@@ -647,7 +653,7 @@ mod tests {
     #[test]
     fn parses_an_inherent_impl() {
         let tokens = tokens("impl Point { fn zero() -> Point; }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Impl(i) = parsed.kind else {
             panic!("expected ItemKind::Impl");
         };
@@ -658,7 +664,7 @@ mod tests {
     #[test]
     fn parses_a_trait_impl() {
         let tokens = tokens("impl Clone for Point { fn clone(self) -> Point; }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Impl(i) = parsed.kind else {
             panic!("expected ItemKind::Impl");
         };
@@ -669,7 +675,7 @@ mod tests {
     #[test]
     fn parses_an_unloaded_mod_item() {
         let tokens = tokens("mod foo;");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Mod(ident, kind) = parsed.kind else {
             panic!("expected ItemKind::Mod");
         };
@@ -680,7 +686,7 @@ mod tests {
     #[test]
     fn parses_a_loaded_mod_item_with_nested_items() {
         let tokens = tokens("mod foo { struct A; fn b() {} }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Mod(_, ModKind::Loaded(items)) = parsed.kind else {
             panic!("expected ItemKind::Mod with ModKind::Loaded");
         };
@@ -690,7 +696,7 @@ mod tests {
     #[test]
     fn parses_annotations_on_an_item() {
         let tokens = tokens("#[component] struct Position { x: int }");
-        let parsed = item().parse(&tokens).into_result().expect("should parse");
+        let parsed = item().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.annotations.len(), 1);
     }
 }

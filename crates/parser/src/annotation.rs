@@ -63,7 +63,7 @@ mod tests {
     fn parses_a_word_meta_item() {
         let tokens = tokens("component");
         let parsed = meta_item()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.path.segments[0].ident.name, "component");
@@ -74,7 +74,7 @@ mod tests {
     fn parses_a_name_value_meta_item() {
         let tokens = tokens(r#"audio_cue = "jump""#);
         let parsed = meta_item()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.path.segments[0].ident.name, "audio_cue");
@@ -91,7 +91,7 @@ mod tests {
         // argument is a bare word.
         let tokens = tokens(r#"replicated(rename = "hp", skip_if(default))"#);
         let parsed = meta_item()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.path.segments[0].ident.name, "replicated");
@@ -126,7 +126,7 @@ mod tests {
     fn parses_an_outer_annotation() {
         let tokens = tokens("#[component]");
         let parsed = annotation()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.style, AnnotationStyle::Outer));
@@ -137,7 +137,7 @@ mod tests {
     fn parses_an_inner_annotation() {
         let tokens = tokens("#![replicated]");
         let parsed = annotation()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.style, AnnotationStyle::Inner));
@@ -157,7 +157,7 @@ mod tests {
         for src in cases {
             let tokens = tokens(src);
             annotation()
-                .parse(&tokens)
+                .parse(tokens)
                 .into_result()
                 .unwrap_or_else(|e| panic!("failed to parse {src:?}: {e:?}"));
         }
@@ -166,6 +166,6 @@ mod tests {
     #[test]
     fn rejects_an_annotation_missing_its_brackets() {
         let tokens = tokens("#component");
-        assert!(annotation().parse(&tokens).into_result().is_err());
+        assert!(annotation().parse(tokens).into_result().is_err());
     }
 }

@@ -1,0 +1,23 @@
+type Number = int;
+
+fn add(a: int, b: int) -> int {
+    a
+}
+
+fn identity(x) {
+    x
+}
+
+fn main() -> int {
+    let n: Number = 5;
+    let sum = add(n, 10);
+    let doubled = identity(sum);
+    let ratio = doubled as float;
+    let pair = (sum, doubled);
+    let nums = [1, 2, 3];
+    if true {
+        doubled
+    } else {
+        return 0;
+    }
+}

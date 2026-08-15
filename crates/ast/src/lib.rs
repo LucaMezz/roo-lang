@@ -313,7 +313,8 @@ pub struct FnDecl {
 
 #[derive(Clone, Debug, Walkable)]
 pub enum FnRetTy {
-    /// No return type specified. Defaults to dynamic typing.
+    /// No return type specified -- inferred from the fn's body, same as
+    /// an untyped parameter.
     Default(Span),
     Ty(Box<Ty>),
 }

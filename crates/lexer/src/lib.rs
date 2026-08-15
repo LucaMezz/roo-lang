@@ -14,24 +14,30 @@
 mod error;
 mod token;
 
+use std::ops::Range;
+
 pub use error::LexError;
 pub use logos::Logos;
 pub use token::{NumberKind, Token};
 
-/// Lexes `source` into a stream of tokens.
+/// Lexes `source` into a stream of tokens, each paired with the byte
+/// range in `source` it came from.
 ///
-/// Each item is `Ok(token)` for a successfully recognized token, or
-/// `Err(LexError)` at the first point the source text couldn't be turned
-/// into one (an unterminated string/char/raw-string/block comment, or a
-/// character that doesn't start any valid token).
-pub fn tokenize(source: &str) -> impl Iterator<Item = Result<Token<'_>, LexError>> {
+/// Each item is `Ok((token, span))` for a successfully recognized token,
+/// or `Err(LexError)` at the first point the source text couldn't be
+/// turned into one (an unterminated string/char/raw-string/block
+/// comment, or a character that doesn't start any valid token).
+pub fn tokenize(source: &str) -> impl Iterator<Item = Result<(Token<'_>, Range<usize>), LexError>> {
     Token::lexer(source)
+        .spanned()
+        .map(|(tok, span)| tok.map(|tok| (tok, span)))
 }
 
-/// Lexes `source` and collects every token, returning an error at the
-/// first one that fails. Useful for tests and other "just tell me it all
-/// lexed cleanly" callers; [`tokenize`] is the streaming version.
-pub fn tokenize_all(source: &str) -> Result<Vec<Token<'_>>, LexError> {
+/// Lexes `source` and collects every token (with its byte span),
+/// returning an error at the first one that fails. Useful for tests and
+/// other "just tell me it all lexed cleanly" callers; [`tokenize`] is
+/// the streaming version.
+pub fn tokenize_all(source: &str) -> Result<Vec<(Token<'_>, Range<usize>)>, LexError> {
     tokenize(source).collect()
 }
 
@@ -55,11 +61,11 @@ mod tests {
         assert_eq!(
             tokenize_all("let x = 5;"),
             Ok(vec![
-                Let,
-                Identifier("x"),
-                Eq,
-                Number(NumberKind::Int("5")),
-                Semi,
+                (Let, 0..3),
+                (Identifier("x"), 4..5),
+                (Eq, 6..7),
+                (Number(NumberKind::Int("5")), 8..9),
+                (Semi, 9..10),
             ])
         );
     }

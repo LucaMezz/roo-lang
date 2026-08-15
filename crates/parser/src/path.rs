@@ -209,7 +209,7 @@ mod tests {
     fn parses_a_single_segment_path() {
         let tokens = tokens("foo");
         let parsed = path(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 1);
@@ -220,7 +220,7 @@ mod tests {
     fn parses_a_multi_segment_path() {
         let tokens = tokens("foo::bar::baz");
         let parsed = path(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
@@ -234,14 +234,14 @@ mod tests {
     #[test]
     fn rejects_an_empty_path() {
         let tokens = tokens("");
-        assert!(path(ty()).parse(&tokens).into_result().is_err());
+        assert!(path(ty()).parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn parses_self_upper_as_a_bare_path() {
         let tokens = tokens("Self");
         let parsed = path(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 1);
@@ -252,7 +252,7 @@ mod tests {
     fn parses_self_upper_qualified_by_an_assoc_item() {
         let tokens = tokens("Self::Output");
         let parsed = path(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
@@ -267,7 +267,7 @@ mod tests {
     fn parses_a_super_relative_path() {
         let tokens = tokens("super::Foo");
         let parsed = path(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
@@ -282,7 +282,7 @@ mod tests {
     fn parses_a_path_segment_without_generics() {
         let tokens = tokens("foo");
         let parsed = path_segment(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "foo");
@@ -293,7 +293,7 @@ mod tests {
     fn parses_a_path_segment_with_generics() {
         let tokens = tokens("Vec<int>");
         let parsed = path_segment(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "Vec");
@@ -304,7 +304,7 @@ mod tests {
     fn parses_a_single_generic_arg() {
         let tokens = tokens("<int>");
         let parsed = generic_args(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.args.len(), 1);
@@ -314,7 +314,7 @@ mod tests {
     fn parses_multiple_generic_args() {
         let tokens = tokens("<int, float>");
         let parsed = generic_args(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.args.len(), 2);
@@ -323,14 +323,14 @@ mod tests {
     #[test]
     fn rejects_empty_generic_args() {
         let tokens = tokens("<>");
-        assert!(generic_args(ty()).parse(&tokens).into_result().is_err());
+        assert!(generic_args(ty()).parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn parses_a_plain_type_as_a_generic_arg() {
         let tokens = tokens("int");
         let parsed = generic_arg(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed, GenericArg::Arg(_)));
@@ -340,7 +340,7 @@ mod tests {
     fn parses_an_assoc_item_constraint_as_a_generic_arg() {
         let tokens = tokens("Item = int");
         let parsed = generic_arg(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let GenericArg::Constraint(constraint) = parsed else {
@@ -354,7 +354,7 @@ mod tests {
     fn parses_an_assoc_item_constraint_directly() {
         let tokens = tokens("Item = int");
         let parsed = assoc_item_constraint(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "Item");
@@ -365,7 +365,7 @@ mod tests {
     fn parses_an_assoc_item_constraint_with_its_own_generics() {
         let tokens = tokens("Elem<T> = int");
         let parsed = assoc_item_constraint(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "Elem");
@@ -383,7 +383,7 @@ mod tests {
     fn parses_a_plain_generic_param_with_no_annotations() {
         let tokens = tokens("T");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "T");
@@ -394,7 +394,7 @@ mod tests {
     fn parses_an_annotated_generic_param() {
         let tokens = tokens("#[opaque] T");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "T");
@@ -409,7 +409,7 @@ mod tests {
     fn parses_a_generic_param_with_stacked_annotations() {
         let tokens = tokens("#[a] #[b] T");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.annotations.len(), 2);
@@ -419,7 +419,7 @@ mod tests {
     fn parses_a_generic_param_with_a_bound() {
         let tokens = tokens("T: Display");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.bounds.len(), 1);
@@ -430,7 +430,7 @@ mod tests {
     fn parses_a_generic_param_with_multiple_bounds() {
         let tokens = tokens("T: Display + Clone");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.bounds.len(), 2);
@@ -440,7 +440,7 @@ mod tests {
     fn parses_a_generic_param_with_a_default() {
         let tokens = tokens("T = int");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.bounds.is_empty());
@@ -451,7 +451,7 @@ mod tests {
     fn parses_a_generic_param_with_a_bound_and_a_default() {
         let tokens = tokens("T: Display = int");
         let parsed = generic_param()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.bounds.len(), 1);
@@ -462,7 +462,7 @@ mod tests {
     fn parses_a_where_predicate() {
         let tokens = tokens("T: Display + Clone");
         let parsed = where_predicate()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.bounds.len(), 2);
@@ -471,14 +471,14 @@ mod tests {
     #[test]
     fn rejects_a_where_predicate_missing_its_colon() {
         let tokens = tokens("T Display");
-        assert!(where_predicate().parse(&tokens).into_result().is_err());
+        assert!(where_predicate().parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn parses_empty_generics_when_absent() {
         let tokens = tokens("");
         let parsed = generics()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.params.is_empty());
@@ -489,7 +489,7 @@ mod tests {
     fn parses_generics_with_params_only() {
         let tokens = tokens("<T, U: Display>");
         let parsed = generics()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.params.len(), 2);
@@ -500,7 +500,7 @@ mod tests {
     fn parses_generics_with_a_trailing_where_clause() {
         let tokens = tokens("<T> where T: Display");
         let parsed = generics()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.params.len(), 1);
@@ -511,7 +511,7 @@ mod tests {
     fn parses_a_bare_where_clause_with_no_generic_params() {
         let tokens = tokens("where T: Display");
         let parsed = generics()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(parsed.params.is_empty());
@@ -522,7 +522,7 @@ mod tests {
     fn parses_a_turbofish_path_segment() {
         let tokens = tokens("Vec::<int>");
         let parsed = path_segment_turbofish(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "Vec");
@@ -536,7 +536,7 @@ mod tests {
         let tokens = tokens("Vec<int>");
         assert!(
             path_segment_turbofish(ty())
-                .parse(&tokens)
+                .parse(tokens)
                 .into_result()
                 .is_err()
         );
@@ -547,7 +547,7 @@ mod tests {
         // No `::<...>` at all is still just a plain segment.
         let tokens = tokens("foo");
         let parsed = path_segment_turbofish(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "foo");
@@ -562,7 +562,7 @@ mod tests {
         // separator as turbofish has to cleanly fail and backtrack here.
         let tokens = tokens("foo::bar::baz");
         let parsed = path_turbofish(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
@@ -577,7 +577,7 @@ mod tests {
     fn parses_a_turbofish_path_with_generics_mid_path() {
         let tokens = tokens("Vec::<int>::new");
         let parsed = path_turbofish(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 2);

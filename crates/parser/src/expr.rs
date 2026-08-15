@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn parses_a_bare_literal_expr() {
         let tokens = tokens("5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.kind, ExprKind::Lit(_)));
     }
 
@@ -581,7 +581,7 @@ mod tests {
     fn multiplication_binds_tighter_than_addition() {
         // 1 + 2 * 3 must be 1 + (2 * 3), not (1 + 2) * 3.
         let tokens = tokens("1 + 2 * 3");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -600,7 +600,7 @@ mod tests {
     fn multiplication_still_binds_tighter_when_written_first() {
         // 1 * 2 + 3 must be (1 * 2) + 3, not 1 * (2 + 3).
         let tokens = tokens("1 * 2 + 3");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -619,7 +619,7 @@ mod tests {
     fn subtraction_is_left_associative() {
         // 1 - 2 - 3 must be (1 - 2) - 3, not 1 - (2 - 3).
         let tokens = tokens("1 - 2 - 3");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn parses_a_unary_expression_combined_with_binary() {
         let tokens = tokens("-1 + 2");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -648,13 +648,13 @@ mod tests {
         // Comparisons are Fixity::None (non-associative) — `1 < 2 < 3`
         // isn't a single valid expression.
         let tokens = tokens("1 < 2 < 3");
-        assert!(expr().parse(&tokens).into_result().is_err());
+        assert!(expr().parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn parses_an_array_of_expressions_with_operators() {
         let tokens = tokens("[1 + 2, 3]");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Array(elems) = parsed.kind else {
             panic!("expected ExprKind::Array, got {:?}", parsed.kind);
         };
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn parses_a_method_call_postfix_on_a_literal_atom() {
         let tokens = tokens("5.foo()");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::MethodCall(call) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
@@ -680,7 +680,7 @@ mod tests {
         // Proves the postfix Pratt operator actually loops: each `.foo()`
         // becomes the receiver for the next one, left to right.
         let tokens = tokens("5.foo().bar()");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::MethodCall(outer) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
@@ -699,7 +699,7 @@ mod tests {
     fn method_calls_bind_tighter_than_binary_operators() {
         // 1 + 2.foo() must be 1 + (2.foo()), not (1 + 2).foo().
         let tokens = tokens("1 + 2.foo()");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn parses_a_turbofish_method_call() {
         let tokens = tokens("5.foo::<int>()");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::MethodCall(call) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn parses_a_parenthesized_expr_as_paren_not_tuple() {
         let tokens = tokens("(1 + 2)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Paren(inner) = parsed.kind else {
             panic!("expected ExprKind::Paren, got {:?}", parsed.kind);
         };
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn parses_a_single_trailing_comma_expr_as_a_one_tuple() {
         let tokens = tokens("(1,)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Tup(elems) = parsed.kind else {
             panic!("expected ExprKind::Tup, got {:?}", parsed.kind);
         };
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn parses_unit_as_an_empty_tuple() {
         let tokens = tokens("()");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Tup(elems) = parsed.kind else {
             panic!("expected ExprKind::Tup, got {:?}", parsed.kind);
         };
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn parses_a_multi_element_tuple() {
         let tokens = tokens("(1, 2, 3)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Tup(elems) = parsed.kind else {
             panic!("expected ExprKind::Tup, got {:?}", parsed.kind);
         };
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn parses_a_multi_segment_path_expr() {
         let tokens = tokens("Foo::Bar");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Path(qself, path) = parsed.kind else {
             panic!("expected ExprKind::Path, got {:?}", parsed.kind);
         };
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn parses_a_bare_ident_as_a_single_segment_path() {
         let tokens = tokens("foo");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Path(_, path) = parsed.kind else {
             panic!("expected ExprKind::Path, got {:?}", parsed.kind);
         };
@@ -783,14 +783,14 @@ mod tests {
     #[test]
     fn parses_an_underscore_expr() {
         let tokens = tokens("_");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.kind, ExprKind::Underscore));
     }
 
     #[test]
     fn parses_a_no_start_half_open_range() {
         let tokens = tokens("..5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Range(start, end, limits) = parsed.kind else {
             panic!("expected ExprKind::Range, got {:?}", parsed.kind);
         };
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn parses_a_bare_no_start_no_end_range() {
         let tokens = tokens("..");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Range(start, end, _) = parsed.kind else {
             panic!("expected ExprKind::Range, got {:?}", parsed.kind);
         };
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn parses_a_with_start_half_open_range() {
         let tokens = tokens("0..5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Range(start, end, limits) = parsed.kind else {
             panic!("expected ExprKind::Range, got {:?}", parsed.kind);
         };
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn parses_a_with_start_closed_range() {
         let tokens = tokens("0..=5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Range(start, end, limits) = parsed.kind else {
             panic!("expected ExprKind::Range, got {:?}", parsed.kind);
         };
@@ -837,7 +837,7 @@ mod tests {
     #[test]
     fn parses_a_with_start_range_with_no_end() {
         let tokens = tokens("0..");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Range(start, end, _) = parsed.kind else {
             panic!("expected ExprKind::Range, got {:?}", parsed.kind);
         };
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn parses_a_bare_break() {
         let tokens = tokens("break");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Break(label, value) = parsed.kind else {
             panic!("expected ExprKind::Break, got {:?}", parsed.kind);
         };
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn parses_a_break_with_a_labeled_target_and_a_value() {
         let tokens = tokens("break outer 5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Break(label, value) = parsed.kind else {
             panic!("expected ExprKind::Break, got {:?}", parsed.kind);
         };
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn parses_a_continue_with_a_label() {
         let tokens = tokens("continue outer");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Continue(label) = parsed.kind else {
             panic!("expected ExprKind::Continue, got {:?}", parsed.kind);
         };
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn parses_a_bare_return() {
         let tokens = tokens("return");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Ret(value) = parsed.kind else {
             panic!("expected ExprKind::Ret, got {:?}", parsed.kind);
         };
@@ -893,7 +893,7 @@ mod tests {
     #[test]
     fn parses_a_return_with_a_value() {
         let tokens = tokens("return 5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Ret(value) = parsed.kind else {
             panic!("expected ExprKind::Ret, got {:?}", parsed.kind);
         };
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     fn parses_an_if_else_chain() {
         let tokens = tokens("if a { 1 } else if b { 2 } else { 3 }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::If(cond, then_block, else_branch) = parsed.kind else {
             panic!("expected ExprKind::If, got {:?}", parsed.kind);
         };
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn parses_an_if_with_no_else() {
         let tokens = tokens("if a { 1 }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::If(_, _, else_branch) = parsed.kind else {
             panic!("expected ExprKind::If, got {:?}", parsed.kind);
         };
@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn parses_an_if_let_expression() {
         let tokens = tokens("if let Some(x) = maybe { x } else { 0 }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::If(cond, ..) = parsed.kind else {
             panic!("expected ExprKind::If, got {:?}", parsed.kind);
         };
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn parses_a_while_loop() {
         let tokens = tokens("while running { go(); }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::While(cond, body, label) = parsed.kind else {
             panic!("expected ExprKind::While, got {:?}", parsed.kind);
         };
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn parses_a_labeled_while_let_loop() {
         let tokens = tokens("outer: while let Some(x) = it { }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::While(cond, _, label) = parsed.kind else {
             panic!("expected ExprKind::While, got {:?}", parsed.kind);
         };
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn parses_a_for_loop() {
         let tokens = tokens("for item in items { }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::ForLoop {
             pat,
             iter,
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn parses_a_labeled_loop() {
         let tokens = tokens("outer: loop { break; }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Loop(body, label, _) = parsed.kind else {
             panic!("expected ExprKind::Loop, got {:?}", parsed.kind);
         };
@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn parses_a_bare_block_as_an_expression() {
         let tokens = tokens("{ 5 }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Block(block, label) = parsed.kind else {
             panic!("expected ExprKind::Block, got {:?}", parsed.kind);
         };
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn parses_a_match_with_multiple_arms_and_a_guard() {
         let tokens = tokens("match n { x if x < 0 => 1, _ => 2, }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Match(scrutinee, arms) = parsed.kind else {
             panic!("expected ExprKind::Match, got {:?}", parsed.kind);
         };
@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn parses_a_struct_literal_expr_with_shorthand_and_explicit_fields() {
         let tokens = tokens("Point { x: 1, y }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Struct(s) = parsed.kind else {
             panic!("expected ExprKind::Struct, got {:?}", parsed.kind);
         };
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn parses_a_struct_literal_with_a_base_initializer() {
         let tokens = tokens("Point { x: 1, ..other }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Struct(s) = parsed.kind else {
             panic!("expected ExprKind::Struct, got {:?}", parsed.kind);
         };
@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn parses_an_untyped_closure() {
         let tokens = tokens("|a, b| a + b");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Closure(closure) = parsed.kind else {
             panic!("expected ExprKind::Closure, got {:?}", parsed.kind);
         };
@@ -1058,7 +1058,7 @@ mod tests {
     #[test]
     fn parses_a_typed_closure_with_a_return_type_and_block_body() {
         let tokens = tokens("|a: int, b: int| -> int { a + b }");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Closure(closure) = parsed.kind else {
             panic!("expected ExprKind::Closure, got {:?}", parsed.kind);
         };
@@ -1070,7 +1070,7 @@ mod tests {
     #[test]
     fn parses_a_call_expr() {
         let tokens = tokens("foo(1, 2)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Call(callee, args) = parsed.kind else {
             panic!("expected ExprKind::Call, got {:?}", parsed.kind);
         };
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn parses_a_call_with_a_trailing_comma() {
         let tokens = tokens("foo(1, 2,)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Call(_, args) = parsed.kind else {
             panic!("expected ExprKind::Call, got {:?}", parsed.kind);
         };
@@ -1091,7 +1091,7 @@ mod tests {
     #[test]
     fn parses_a_method_call_with_a_trailing_comma() {
         let tokens = tokens("5.foo(1, 2,)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::MethodCall(call) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
@@ -1101,7 +1101,7 @@ mod tests {
     #[test]
     fn parses_a_field_access() {
         let tokens = tokens("foo.bar");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!("expected ExprKind::Field, got {:?}", parsed.kind);
         };
@@ -1112,7 +1112,7 @@ mod tests {
     #[test]
     fn parses_a_tuple_index_field_access() {
         let tokens = tokens("foo.0");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!("expected ExprKind::Field, got {:?}", parsed.kind);
         };
@@ -1128,7 +1128,7 @@ mod tests {
         // callee itself, not a further `.method()`) should still compose
         // as Field then Call rather than erroring.
         let tokens = tokens("foo.bar(1)");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         // `.bar(1)` right after a field/path must be read as a method
         // call, never as Field(foo, bar) followed by a bare Call.
         assert!(matches!(parsed.kind, ExprKind::MethodCall(_)));
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn parses_an_index_expr() {
         let tokens = tokens("foo[0]");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Index(receiver, index, _) = parsed.kind else {
             panic!("expected ExprKind::Index, got {:?}", parsed.kind);
         };
@@ -1148,7 +1148,7 @@ mod tests {
     #[test]
     fn parses_a_try_expr() {
         let tokens = tokens("foo()?");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Try(inner) = parsed.kind else {
             panic!("expected ExprKind::Try, got {:?}", parsed.kind);
         };
@@ -1158,7 +1158,7 @@ mod tests {
     #[test]
     fn parses_chained_call_field_index_and_try() {
         let tokens = tokens("world.entities[0].get_component(kind)?.value");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!(
                 "expected the outermost node to be ExprKind::Field, got {:?}",
@@ -1172,7 +1172,7 @@ mod tests {
     #[test]
     fn parses_a_plain_assignment() {
         let tokens = tokens("x = 5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Assign(lhs, rhs, _) = parsed.kind else {
             panic!("expected ExprKind::Assign, got {:?}", parsed.kind);
         };
@@ -1183,7 +1183,7 @@ mod tests {
     #[test]
     fn parses_a_compound_assignment() {
         let tokens = tokens("x += 1");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::AssignOp(op, ..) = parsed.kind else {
             panic!("expected ExprKind::AssignOp, got {:?}", parsed.kind);
         };
@@ -1194,7 +1194,7 @@ mod tests {
     fn assignment_is_right_associative() {
         // x = y = 5 must be x = (y = 5), not (x = y) = 5.
         let tokens = tokens("x = y = 5");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Assign(lhs, rhs, _) = parsed.kind else {
             panic!("expected ExprKind::Assign, got {:?}", parsed.kind);
         };
@@ -1205,7 +1205,7 @@ mod tests {
     #[test]
     fn parses_a_cast_expr() {
         let tokens = tokens("x as float");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Cast(lhs, ty) = parsed.kind else {
             panic!("expected ExprKind::Cast, got {:?}", parsed.kind);
         };
@@ -1217,7 +1217,7 @@ mod tests {
     fn cast_binds_tighter_than_addition() {
         // 1 + x as float must be 1 + (x as float), not (1 + x) as float.
         let tokens = tokens("1 + x as float");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
             panic!("expected ExprKind::Binary, got {:?}", parsed.kind);
         };
@@ -1230,7 +1230,7 @@ mod tests {
     fn assignment_binds_looser_than_binary_operators() {
         // x = 1 + 2 must be x = (1 + 2), not (x = 1) + 2.
         let tokens = tokens("x = 1 + 2");
-        let parsed = expr().parse(&tokens).into_result().expect("should parse");
+        let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Assign(_, rhs, _) = parsed.kind else {
             panic!("expected ExprKind::Assign, got {:?}", parsed.kind);
         };

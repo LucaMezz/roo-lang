@@ -17,7 +17,7 @@ fn walks_a_whole_fn_item_and_collects_every_ident() {
     let source = "fn add(a: int, b: int) -> int { a + b }";
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let item = parser::item()
-        .parse(&tokens)
+        .parse(parser::input(tokens))
         .into_result()
         .expect("should parse");
 

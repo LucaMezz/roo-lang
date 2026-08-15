@@ -130,72 +130,51 @@ mod tests {
     #[test]
     fn parses_a_plain_char_literal() {
         let tokens = tokens("'a'");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Char('a'));
-        assert_eq!(parsed.span, ast::Span { start: 0, end: 1 });
+        assert_eq!(parsed.span, ast::Span { start: 0, end: 3 });
     }
 
     #[test]
     fn parses_a_char_literal_with_a_simple_escape() {
         let tokens = tokens(r"'\n'");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Char('\n'));
     }
 
     #[test]
     fn parses_a_char_literal_with_a_unicode_escape() {
         let tokens = tokens(r"'\u{1F980}'");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Char('🦀'));
     }
 
     #[test]
     fn parses_a_plain_string_literal() {
         let tokens = tokens(r#""hello, world""#);
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Str("hello, world".to_owned()));
-        assert_eq!(parsed.span, ast::Span { start: 0, end: 1 });
+        assert_eq!(parsed.span, ast::Span { start: 0, end: 14 });
     }
 
     #[test]
     fn parses_a_string_literal_with_escapes() {
         let tokens = tokens(r#""a\nb\tc""#);
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Str("a\nb\tc".to_owned()));
     }
 
     #[test]
     fn parses_a_raw_string_literal_without_processing_escapes() {
         let tokens = tokens(r#"r"C:\Users\name""#);
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Str(r"C:\Users\name".to_owned()));
     }
 
     #[test]
     fn parses_a_hashed_raw_string_literal_containing_a_quote() {
         let tokens = tokens(r###"r#"she said "hi""#"###);
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Str(r#"she said "hi""#.to_owned()));
     }
 
@@ -211,10 +190,7 @@ mod tests {
         ];
         for (src, expected) in cases {
             let tokens = tokens(src);
-            let parsed = literal()
-                .parse(&tokens)
-                .into_result()
-                .expect("should parse");
+            let parsed = literal().parse(tokens).into_result().expect("should parse");
             assert_eq!(parsed.kind, LitKind::Int(expected), "input: {src}");
         }
     }
@@ -222,30 +198,21 @@ mod tests {
     #[test]
     fn parses_a_float_literal_as_raw_text() {
         let tokens = tokens("3.14");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Float("3.14".to_owned()));
     }
 
     #[test]
     fn parses_the_true_literal() {
         let tokens = tokens("true");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Bool(true));
     }
 
     #[test]
     fn parses_the_false_literal() {
         let tokens = tokens("false");
-        let parsed = literal()
-            .parse(&tokens)
-            .into_result()
-            .expect("should parse");
+        let parsed = literal().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.kind, LitKind::Bool(false));
     }
 }

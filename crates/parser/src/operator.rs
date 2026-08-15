@@ -94,9 +94,16 @@ mod tests {
         ];
         for (src, expected) in cases {
             let tokens = tokens(src);
-            let parsed = bin_op().parse(&tokens).into_result().expect("should parse");
+            let parsed = bin_op().parse(tokens).into_result().expect("should parse");
             assert_eq!(parsed.kind, expected, "input: {src}");
-            assert_eq!(parsed.span, ast::Span { start: 0, end: 1 }, "input: {src}");
+            assert_eq!(
+                parsed.span,
+                ast::Span {
+                    start: 0,
+                    end: src.len()
+                },
+                "input: {src}"
+            );
         }
     }
 
@@ -117,18 +124,25 @@ mod tests {
         for (src, expected) in cases {
             let tokens = tokens(src);
             let parsed = assign_op()
-                .parse(&tokens)
+                .parse(tokens)
                 .into_result()
                 .expect("should parse");
             assert_eq!(parsed.kind, expected, "input: {src}");
-            assert_eq!(parsed.span, ast::Span { start: 0, end: 1 }, "input: {src}");
+            assert_eq!(
+                parsed.span,
+                ast::Span {
+                    start: 0,
+                    end: src.len()
+                },
+                "input: {src}"
+            );
         }
     }
 
     #[test]
     fn rejects_plain_eq_as_an_assign_op() {
         let tokens = tokens("=");
-        assert!(assign_op().parse(&tokens).into_result().is_err());
+        assert!(assign_op().parse(tokens).into_result().is_err());
     }
 
     #[test]
@@ -136,7 +150,7 @@ mod tests {
         let cases = [("!", UnOp::Not), ("-", UnOp::Neg)];
         for (src, expected) in cases {
             let tokens = tokens(src);
-            let parsed = un_op().parse(&tokens).into_result().expect("should parse");
+            let parsed = un_op().parse(tokens).into_result().expect("should parse");
             assert_eq!(parsed, expected, "input: {src}");
         }
     }

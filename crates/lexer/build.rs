@@ -28,7 +28,8 @@ fn main() {
     generate_example_file_tests(&examples_dir, &mut out);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    fs::write(out_dir.join("book_snippets_tests.rs"), out).expect("failed to write generated tests");
+    fs::write(out_dir.join("book_snippets_tests.rs"), out)
+        .expect("failed to write generated tests");
 }
 
 /// Walks every `.md` file under `book_src`, pulls out every ```` ```fig ````
@@ -73,15 +74,17 @@ fn generate_example_file_tests(examples_dir: &Path, out: &mut String) {
     }
 }
 
-fn write_lex_ok_test(out: &mut String, test_name: &str, display_path: &str, block_index: usize, source: &str) {
+fn write_lex_ok_test(
+    out: &mut String,
+    test_name: &str,
+    display_path: &str,
+    block_index: usize,
+    source: &str,
+) {
     writeln!(out, "#[test]").unwrap();
     writeln!(out, "fn {test_name}() {{").unwrap();
     writeln!(out, "    let source = {source:?};").unwrap();
-    writeln!(
-        out,
-        "    if let Err(err) = lexer::tokenize_all(source) {{"
-    )
-    .unwrap();
+    writeln!(out, "    if let Err(err) = lexer::tokenize_all(source) {{").unwrap();
     writeln!(
         out,
         "        panic!(\"failed to lex {display_path} block {block_index}: {{err:?}}\\n---\\n{{source}}\\n---\");",

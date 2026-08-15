@@ -232,7 +232,7 @@ mod tests {
     fn parses_a_shorthand_pat_field() {
         let tokens = tokens("x");
         let parsed = pat_field(dummy_pat())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "x");
@@ -249,7 +249,7 @@ mod tests {
     fn parses_a_shorthand_mut_pat_field() {
         let tokens = tokens("mut x");
         let parsed = pat_field(dummy_pat())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "x");
@@ -263,7 +263,7 @@ mod tests {
     fn parses_a_named_pat_field() {
         let tokens = tokens("x: y");
         let parsed = pat_field(dummy_pat())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "x");
@@ -277,7 +277,7 @@ mod tests {
     fn parses_an_annotated_pat_field() {
         let tokens = tokens("#[foo] x: y");
         let parsed = pat_field(dummy_pat())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.annotations.len(), 1);
@@ -291,7 +291,7 @@ mod tests {
     fn parses_an_annotated_shorthand_pat_field() {
         let tokens = tokens("#[foo] mut x");
         let parsed = pat_field(dummy_pat())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.annotations.len(), 1);
@@ -305,7 +305,7 @@ mod tests {
     fn parses_an_empty_struct_pattern() {
         let tokens = tokens("Point {}");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(qself, path, fields, rest) = parsed.kind else {
@@ -321,7 +321,7 @@ mod tests {
     fn parses_a_struct_pattern_with_shorthand_fields() {
         let tokens = tokens("Point { x, mut y }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, rest) = parsed.kind else {
@@ -337,7 +337,7 @@ mod tests {
     fn parses_a_struct_pattern_with_a_trailing_comma() {
         let tokens = tokens("Point { x, y, }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, _) = parsed.kind else {
@@ -350,7 +350,7 @@ mod tests {
     fn parses_a_struct_pattern_with_a_rest_marker() {
         let tokens = tokens("Point { x, .. }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, rest) = parsed.kind else {
@@ -364,7 +364,7 @@ mod tests {
     fn parses_a_struct_pattern_that_is_only_a_rest_marker() {
         let tokens = tokens("Point { .. }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, rest) = parsed.kind else {
@@ -380,7 +380,7 @@ mod tests {
         // own field can itself be a full struct pattern.
         let tokens = tokens("Outer { inner: Inner { x } }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, outer_path, fields, _) = parsed.kind else {
@@ -405,7 +405,7 @@ mod tests {
     fn parses_an_annotated_field_inside_a_struct_pattern() {
         let tokens = tokens("Point { #[range(min = 0, max = 100)] x }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, _) = parsed.kind else {
@@ -418,7 +418,7 @@ mod tests {
     fn parses_a_wild_pattern() {
         let tokens = tokens("_");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Wild));
@@ -428,7 +428,7 @@ mod tests {
     fn parses_a_rest_pattern() {
         let tokens = tokens("..");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Rest));
@@ -438,7 +438,7 @@ mod tests {
     fn parses_a_never_pattern() {
         let tokens = tokens("!");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Never));
@@ -448,7 +448,7 @@ mod tests {
     fn parses_a_parenthesized_pattern() {
         let tokens = tokens("(Point {})");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Paren(inner) = parsed.kind else {
@@ -461,7 +461,7 @@ mod tests {
     fn parses_a_doubly_parenthesized_pattern() {
         let tokens = tokens("((_))");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Paren(inner) = parsed.kind else {
@@ -474,7 +474,7 @@ mod tests {
     fn parses_a_plain_binding_pattern() {
         let tokens = tokens("x");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Ident(is_mut, ident, sub) = parsed.kind else {
@@ -489,7 +489,7 @@ mod tests {
     fn parses_a_mut_binding_pattern() {
         let tokens = tokens("mut x");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Ident(is_mut, ident, _) = parsed.kind else {
@@ -503,7 +503,7 @@ mod tests {
     fn parses_a_captured_pattern() {
         let tokens = tokens("n @ _");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Ident(_, ident, sub) = parsed.kind else {
@@ -521,7 +521,7 @@ mod tests {
         // the bare identifier and stop before `{ x }` is ever seen.
         let tokens = tokens("Point { x }");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Struct(..)));
@@ -531,7 +531,7 @@ mod tests {
     fn parses_a_tuple_struct_pattern() {
         let tokens = tokens("Some(x)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::TupleStruct(qself, path, elems) = parsed.kind else {
@@ -546,7 +546,7 @@ mod tests {
     fn parses_an_empty_tuple_struct_pattern() {
         let tokens = tokens("Unit()");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::TupleStruct(_, _, elems) = parsed.kind else {
@@ -559,7 +559,7 @@ mod tests {
     fn parses_a_tuple_struct_pattern_with_a_multi_segment_path() {
         let tokens = tokens("foo::Bar(x)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::TupleStruct(_, path, elems) = parsed.kind else {
@@ -573,7 +573,7 @@ mod tests {
     fn parses_a_multi_segment_path_pattern() {
         let tokens = tokens("Color::Red");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Path(qself, path) = parsed.kind else {
@@ -590,7 +590,7 @@ mod tests {
         // vs. reference to a unit const/variant" needs name resolution.
         let tokens = tokens("Foo");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Ident(..)));
@@ -600,7 +600,7 @@ mod tests {
     fn parses_the_unit_pattern() {
         let tokens = tokens("()");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Tuple(elems) = parsed.kind else {
@@ -613,7 +613,7 @@ mod tests {
     fn parses_a_parenthesized_pattern_as_paren_not_a_one_tuple() {
         let tokens = tokens("(x)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(
@@ -627,7 +627,7 @@ mod tests {
     fn parses_a_trailing_comma_as_a_one_tuple_pattern() {
         let tokens = tokens("(x,)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Tuple(elems) = parsed.kind else {
@@ -640,7 +640,7 @@ mod tests {
     fn parses_a_multi_element_tuple_pattern() {
         let tokens = tokens("(x, y)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Tuple(elems) = parsed.kind else {
@@ -653,7 +653,7 @@ mod tests {
     fn parses_an_array_pattern() {
         let tokens = tokens("[x, y]");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Array(elems) = parsed.kind else {
@@ -666,7 +666,7 @@ mod tests {
     fn parses_an_array_pattern_with_a_rest_marker() {
         let tokens = tokens("[first, .., last]");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Array(elems) = parsed.kind else {
@@ -680,7 +680,7 @@ mod tests {
     fn parses_a_bare_literal_as_an_expr_pattern() {
         let tokens = tokens("5");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Expr(_)));
@@ -690,7 +690,7 @@ mod tests {
     fn parses_a_range_pattern_with_start_and_end() {
         let tokens = tokens("1..5");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Range(start, end, range_end, _) = parsed.kind else {
@@ -705,7 +705,7 @@ mod tests {
     fn parses_an_inclusive_range_pattern() {
         let tokens = tokens("1..=5");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Range(_, _, range_end, _) = parsed.kind else {
@@ -718,7 +718,7 @@ mod tests {
     fn parses_a_range_pattern_with_only_a_start() {
         let tokens = tokens("1..");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Range(start, end, ..) = parsed.kind else {
@@ -732,7 +732,7 @@ mod tests {
     fn parses_a_range_pattern_with_only_an_end() {
         let tokens = tokens("..5");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Range(start, end, ..) = parsed.kind else {
@@ -746,7 +746,7 @@ mod tests {
     fn parses_a_boundless_dot_dot_as_rest_not_an_empty_range() {
         let tokens = tokens("..");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Rest));
@@ -756,7 +756,7 @@ mod tests {
     fn parses_an_or_pattern() {
         let tokens = tokens("1 | 2 | 3");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Or(alts) = parsed.kind else {
@@ -769,7 +769,7 @@ mod tests {
     fn does_not_wrap_a_single_pattern_in_or() {
         let tokens = tokens("x");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.kind, PatKind::Ident(..)));
@@ -781,7 +781,7 @@ mod tests {
         // handle, not just at the top level.
         let tokens = tokens("(1 | 2)");
         let parsed = pat(dummy_expr())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let PatKind::Paren(inner) = parsed.kind else {

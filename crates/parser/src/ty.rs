@@ -74,21 +74,21 @@ mod tests {
     #[test]
     fn parses_the_never_type() {
         let tokens = tokens("!");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.kind, TyKind::Never));
     }
 
     #[test]
     fn parses_the_infer_type() {
         let tokens = tokens("_");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         assert!(matches!(parsed.kind, TyKind::Infer));
     }
 
     #[test]
     fn parses_a_simple_path_type() {
         let tokens = tokens("int");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn parses_an_array_type() {
         let tokens = tokens("[int]");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Array(elem) = parsed.kind else {
             panic!("expected TyKind::Array, got {:?}", parsed.kind);
         };
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn parses_the_unit_type() {
         let tokens = tokens("()");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Tup(elems) = parsed.kind else {
             panic!("expected TyKind::Tup, got {:?}", parsed.kind);
         };
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn parses_a_parenthesized_type_as_paren_not_a_one_tuple() {
         let tokens = tokens("(int)");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         assert!(
             matches!(parsed.kind, TyKind::Paren(_)),
             "got {:?}",
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn parses_a_trailing_comma_as_a_one_tuple() {
         let tokens = tokens("(int,)");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Tup(elems) = parsed.kind else {
             panic!("expected TyKind::Tup, got {:?}", parsed.kind);
         };
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn parses_a_multi_element_tuple_type() {
         let tokens = tokens("(int, float)");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Tup(elems) = parsed.kind else {
             panic!("expected TyKind::Tup, got {:?}", parsed.kind);
         };
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn parses_an_fn_type_with_inputs_and_an_explicit_output() {
         let tokens = tokens("Fn(int, int) -> int");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Fn(fn_ty) = parsed.kind else {
             panic!("expected TyKind::Fn, got {:?}", parsed.kind);
         };
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn parses_an_fn_type_with_no_inputs_and_a_default_output() {
         let tokens = tokens("Fn()");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Fn(fn_ty) = parsed.kind else {
             panic!("expected TyKind::Fn, got {:?}", parsed.kind);
         };
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn parses_a_generic_path_type() {
         let tokens = tokens("Vec<int>");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn parses_a_nested_array_of_fn_types() {
         let tokens = tokens("[Fn(int) -> int]");
-        let parsed = ty().parse(&tokens).into_result().expect("should parse");
+        let parsed = ty().parse(tokens).into_result().expect("should parse");
         let TyKind::Array(elem) = parsed.kind else {
             panic!("expected TyKind::Array, got {:?}", parsed.kind);
         };
@@ -201,7 +201,7 @@ mod tests {
     fn parses_an_explicit_fn_return_type() {
         let tokens = tokens("-> int");
         let parsed = fn_ret_ty(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed, FnRetTy::Ty(_)));
@@ -211,7 +211,7 @@ mod tests {
     fn parses_a_default_fn_return_type_when_no_arrow_is_present() {
         let tokens = tokens("");
         let parsed = fn_ret_ty(ty())
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed, FnRetTy::Default(_)));

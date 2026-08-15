@@ -62,7 +62,7 @@ fn write_parse_ok_test(out: &mut String, test_name: &str, display_path: &str, so
     .unwrap();
     writeln!(
         out,
-        "    if let Err(errs) = parser::module().parse(&tokens).into_result() {{"
+        "    if let Err(errs) = parser::module().parse(parser::input(tokens)).into_result() {{"
     )
     .unwrap();
     writeln!(

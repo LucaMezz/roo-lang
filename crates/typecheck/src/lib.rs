@@ -19,10 +19,82 @@ use std::collections::HashMap;
 use ast::visit::{Visitor, Walkable};
 use ast::{
     Block, Expr, ExprKind, Fn, FnRetTy, FnTy, Item, ItemKind, LitKind, Local, LocalKind, ModKind,
-    Pat, PatKind, Path, Stmt, StmtKind, Ty, TyKind, VariantData,
+    Pat, PatKind, Path, Span, Stmt, StmtKind, Ty, TyKind, VariantData,
 };
 use slotmap::SlotMap;
-use unify::{Term, TermId, UnificationContext, term};
+use unify::{Term, TermId, UnificationContext, UnifyError, term};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Level {
+    Error,
+    Warning,
+    Note,
+    Help,
+}
+
+/// A single diagnostic produced while type checking -- an error,
+/// warning, or note, with the span it applies to. Checking never
+/// aborts on one of these; they're collected in
+/// [`TypeCheckContext::diagnostics`] and returned all together once
+/// checking finishes.
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    primary_span: Span,
+    level: Level,
+    message: String,
+    related: Vec<(Span, String)>,
+    notes: Vec<String>,
+}
+
+impl Diagnostic {
+    fn error(span: Span, message: impl Into<String>) -> Self {
+        Self::new(span, Level::Error, message)
+    }
+
+    fn warning(span: Span, message: impl Into<String>) -> Self {
+        Self::new(span, Level::Warning, message)
+    }
+
+    fn note(span: Span, message: impl Into<String>) -> Self {
+        Self::new(span, Level::Note, message)
+    }
+
+    fn help(span: Span, message: impl Into<String>) -> Self {
+        Self::new(span, Level::Help, message)
+    }
+
+    fn new(span: Span, level: Level, message: impl Into<String>) -> Self {
+        Self {
+            primary_span: span,
+            level,
+            message: message.into(),
+            related: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    fn with_related(mut self, span: Span, message: impl Into<String>) -> Self {
+        self.related.push((span, message.into()));
+        self
+    }
+
+    fn with_note(mut self, message: impl Into<String>) -> Self {
+        self.notes.push(message.into());
+        self
+    }
+
+    /// The diagnostic for an occurs-check failure -- unifying `expected`
+    /// and `actual` (already rendered as source-like text) would
+    /// require an infinitely self-referential type. Every unify call
+    /// site needs the exact same treatment for this regardless of what
+    /// triggered it, so it's centralized here rather than rebuilt at
+    /// each one.
+    fn cyclic_type(span: Span, expected: &str, actual: &str) -> Self {
+        Self::error(span, "cyclic type of infinite size")
+            .with_note(format!("expected type `{expected}`"))
+            .with_note(format!("found type `{actual}`"))
+    }
+}
 
 /// Type constructor enum. This enum's variants are all of the possible
 /// types.
@@ -72,7 +144,7 @@ struct NameId(usize);
 /// value symbols get their own namespaces so that typa and
 /// value names are allowed to overlap without conflicting.
 #[derive(Clone, Copy)]
-enum Namespace {
+pub enum Namespace {
     /// Contains types including structs, enums, traits, type
     /// aliases, and modules.
     Type,
@@ -169,7 +241,7 @@ impl NameInterner {
 }
 
 /// Contains all data and all methods required for type checking.
-struct TypeCheckContext {
+pub struct TypeCheckContext {
     /// Used to track type inference variables and their equivalence
     /// classes, and facilitates the unification of different type
     /// terms.
@@ -189,6 +261,17 @@ struct TypeCheckContext {
 
     /// The current scope being checked.
     current_scope: ScopeId,
+
+    /// Diagnostics collected while type checking. Errors are pushed
+    /// here rather than aborting, so checking always runs to completion
+    /// over the whole file.
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Default for TypeCheckContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeCheckContext {
@@ -208,7 +291,19 @@ impl TypeCheckContext {
             scopes,
             symbols: SlotMap::with_key(),
             current_scope: root,
+            diagnostics: Vec::new(),
         }
+    }
+
+    fn diagnostic(&mut self, diagnostic: Diagnostic) {
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// The diagnostics collected so far -- checking never aborts early,
+    /// so this accumulates across the whole file rather than stopping
+    /// at the first problem.
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
     }
 
     /// Does the first pass of the AST which creates all scopes
@@ -234,6 +329,15 @@ impl TypeCheckContext {
         let mut lowerer = SignatureLowerer { cx: self };
         for item in items {
             lowerer.visit_item(item);
+        }
+    }
+
+    /// Third pass, run after `lower_signatures`: checks every item's body
+    /// (currently just `Fn` bodies) against its already-lowered signature.
+    pub fn check(&mut self, items: &[Box<Item>]) {
+        let mut checker = Checker { cx: self };
+        for item in items {
+            checker.visit_item(item);
         }
     }
 
@@ -360,7 +464,10 @@ impl TypeCheckContext {
                 let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
                 let inputs_term = term!(self.uni_cx, TyCon::Tuple => input_args);
                 let output_term = match output {
-                    FnRetTy::Default(_) => term!(self.uni_cx, TyCon::Tuple),
+                    FnRetTy::Default(_) => {
+                        let var = self.uni_cx.fresh_var();
+                        term!(self.uni_cx, var var)
+                    }
                     FnRetTy::Ty(ty) => self.lower_ty(ty),
                 };
                 term!(self.uni_cx, TyCon::Fn => [inputs_term, output_term])
@@ -395,12 +502,94 @@ impl TypeCheckContext {
         }
     }
 
+    fn block_value_span(block: &Block) -> Span {
+        match block.stmts.last() {
+            Some(Stmt {
+                kind: StmtKind::Expr(expr),
+                ..
+            }) => expr.span,
+            _ => block.span,
+        }
+    }
+
+    /// Renders a term as fig source-like text, for use in diagnostic
+    /// messages. Resolves through any bound inference variables first --
+    /// an unresolved variable renders as `_`, since it doesn't have a
+    /// concrete type to show yet.
+    fn render_term(&mut self, term: TermId) -> String {
+        let resolved = self.uni_cx.resolve(term);
+        let Some(term) = self.uni_cx.term(resolved).cloned() else {
+            return "<error>".to_owned();
+        };
+
+        let (constructor, args) = match term {
+            Term::Var(_) => return "_".to_owned(),
+            Term::App { constructor, args } => (constructor, args),
+        };
+
+        match constructor {
+            TyCon::Any => "any".to_owned(),
+            TyCon::Never => "!".to_owned(),
+            TyCon::Int => "int".to_owned(),
+            TyCon::Float => "float".to_owned(),
+            TyCon::Bool => "bool".to_owned(),
+            TyCon::Char => "char".to_owned(),
+            TyCon::Str => "String".to_owned(),
+            TyCon::Err => "<error>".to_owned(),
+            TyCon::Array => format!("[{}]", self.render_term(args[0])),
+            TyCon::Tuple => {
+                let elems: Vec<String> = args.iter().map(|&arg| self.render_term(arg)).collect();
+                format!("({})", elems.join(", "))
+            }
+            TyCon::Fn => {
+                let inputs = self.render_term(args[0]);
+                let output = self.render_term(args[1]);
+                format!("Fn{inputs} -> {output}")
+            }
+            TyCon::Struct(symbol) | TyCon::Enum(symbol) => {
+                let name = self.symbols[symbol].name;
+                self.names
+                    .name(name)
+                    .cloned()
+                    .unwrap_or_else(|| "<unknown>".to_owned())
+            }
+        }
+    }
+
     /// Determines the type of an Expression node from the AST, possibly given
     /// additional information about what the type is expected to be.
     fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
+        self.check_expr_expecting(expr, expected, None)
+    }
+
+    fn check_expr_expecting(
+        &mut self,
+        expr: &Expr,
+        expected: Option<TermId>,
+        expected_span: Option<Span>,
+    ) -> TermId {
         let actual = self.check_expr_kind(&expr.kind, expected);
         if let Some(expected) = expected {
-            let _ = self.uni_cx.unify(actual, expected);
+            if let Err(err) = self.uni_cx.unify(actual, expected) {
+                let expected = self.render_term(expected);
+                let actual = self.render_term(actual);
+                match err {
+                    UnifyError::OccursCheck(_) => {
+                        self.diagnostic(Diagnostic::cyclic_type(expr.span, &expected, &actual));
+                    }
+                    _ => {
+                        let diagnostic = Diagnostic::error(
+                            expr.span,
+                            format!("expected `{expected}`, found `{actual}`"),
+                        );
+                        let diagnostic = match expected_span {
+                            Some(span) => diagnostic.with_related(span, "expected due to this"),
+                            None => diagnostic,
+                        };
+                        self.diagnostic(diagnostic);
+                    }
+                }
+            }
         }
         actual
     }
@@ -427,7 +616,42 @@ impl TypeCheckContext {
                     .as_ref()
                     .map(|els| self.check_expr(els, expected))
                     .unwrap_or(unit_term);
-                let _ = self.uni_cx.unify(body_ty, els_ty);
+
+                if let Err(err) = self.uni_cx.unify(body_ty, els_ty) {
+                    let body_span = Self::block_value_span(body);
+                    let els_span = match els.as_deref() {
+                        Some(Expr {
+                            kind: ExprKind::Block(block, _),
+                            ..
+                        }) => Self::block_value_span(block),
+                        Some(els) => els.span,
+                        None => body_span,
+                    };
+
+                    let body_rendered = self.render_term(body_ty);
+                    let els_rendered = self.render_term(els_ty);
+                    match err {
+                        UnifyError::OccursCheck(_) => {
+                            self.diagnostic(Diagnostic::cyclic_type(
+                                els_span,
+                                &body_rendered,
+                                &els_rendered,
+                            ));
+                        }
+                        _ => {
+                            let diagnostic = Diagnostic::error(
+                                els_span,
+                                format!("expected `{body_rendered}`, found `{els_rendered}`"),
+                            );
+                            let diagnostic = if els.is_some() {
+                                diagnostic.with_related(body_span, "expected because of this")
+                            } else {
+                                diagnostic
+                            };
+                            self.diagnostic(diagnostic);
+                        }
+                    }
+                }
 
                 self.prefer_non_never(body_ty, els_ty)
             }
@@ -486,25 +710,85 @@ impl TypeCheckContext {
                 // Check the type of the expression which is being called
                 let callee_ty = self.check_expr(callee, None);
 
-                // Check the type of all of the arguments in the call
-                let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
+                // If the callee's type is already known to be a Fn with
+                // the same number of parameters as this call has
+                // arguments, pull those parameter types out.
+                let resolved_callee = self.uni_cx.resolve(callee_ty);
+                let fn_shape = match self.uni_cx.term(resolved_callee) {
+                    Some(Term::App {
+                        constructor: TyCon::Fn,
+                        args: fn_args,
+                    }) => Some((fn_args[0], fn_args[1])),
+                    _ => None,
+                };
+                let known_inputs = if let Some((inputs_term, output_term)) = fn_shape {
+                    let resolved_inputs = self.uni_cx.resolve(inputs_term);
+                    match self.uni_cx.term(resolved_inputs) {
+                        Some(Term::App {
+                            constructor: TyCon::Tuple,
+                            args: input_tys,
+                        }) => Some((input_tys.clone(), output_term)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
 
-                // Build a tuple with the input types
-                let inputs_term = term!(self.uni_cx, TyCon::Tuple => arg_tys);
+                if let Some((input_tys, output_term)) = known_inputs {
+                    let expected = input_tys.len();
+                    let actual = args.len();
+                    if expected != actual {
+                        let message = format!(
+                            "this function takes {expected} argument{} but {actual} argument{} {} supplied",
+                            if expected == 1 { "" } else { "s" },
+                            if actual == 1 { "" } else { "s" },
+                            if actual == 1 { "was" } else { "were" },
+                        );
+                        let span = if actual < expected {
+                            let end = args
+                                .last()
+                                .map(|arg| arg.span.end)
+                                .unwrap_or(callee.span.end);
+                            Span {
+                                start: callee.span.start,
+                                end,
+                            }
+                        } else {
+                            Span {
+                                start: args[expected].span.start,
+                                end: args
+                                    .last()
+                                    .expect("actual > expected implies at least one arg")
+                                    .span
+                                    .end,
+                            }
+                        };
+                        self.diagnostic(Diagnostic::error(span, message));
+                    }
 
-                // Just based on the call we know the type of all the arguments to
-                // the function, except the return type. So we introduce a new
-                // inference variable to represent the return type.
-                let ret_var = self.uni_cx.fresh_var();
-                let ret_term = term!(self.uni_cx, var ret_var);
+                    // Check every argument we have against its declared
+                    // parameter type where one exists, regardless of
+                    // whether the arity matched -- still type-checks as
+                    // much as possible instead of bailing out entirely
+                    // on an arity mismatch.
+                    for (i, arg) in args.iter().enumerate() {
+                        let expected_ty = input_tys.get(i).copied();
+                        self.check_expr(arg, expected_ty);
+                    }
 
-                // Enforce the constraint that the type of the callee must match
-                // this new function type we have created. This fills in the
-                // return type of the callee function if it is known, etc.
-                let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
-                let _ = self.uni_cx.unify(callee_ty, fn_term);
-
-                ret_term
+                    output_term
+                } else {
+                    // Callee's shape isnt known yet. Not enough information
+                    // to individually check types of arguments to expected
+                    // types of parameters.
+                    let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
+                    let inputs_term = term!(self.uni_cx, TyCon::Tuple => arg_tys);
+                    let ret_var = self.uni_cx.fresh_var();
+                    let ret_term = term!(self.uni_cx, var ret_var);
+                    let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
+                    let _ = self.uni_cx.unify(callee_ty, fn_term);
+                    ret_term
+                }
             }
             ExprKind::Cast(_expr, ty) => {
                 // TODO Check if expr can actually be cast to ty
@@ -574,7 +858,22 @@ impl TypeCheckContext {
 
     /// Checks the type of a Block node from the AST.
     fn check_block(&mut self, block: &Block, expected: Option<TermId>) -> TermId {
+        self.check_block_expecting(block, expected, None)
+    }
+
+    fn check_block_expecting(
+        &mut self,
+        block: &Block,
+        expected: Option<TermId>,
+        expected_span: Option<Span>,
+    ) -> TermId {
         let mut ty = term!(self.uni_cx, TyCon::Tuple);
+        // Whether any statement so far diverges (has type Never), e.g. a
+        // `return 0;` with a trailing semicolon. Everything after such a
+        // statement is unreachable, so the block itself never actually
+        // produces `ty` -- it diverges too, regardless of what its
+        // syntactic tail expression would otherwise type-check to.
+        let mut diverges = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
             let is_last = i == block.stmts.len() - 1;
             match &stmt.kind {
@@ -586,14 +885,17 @@ impl TypeCheckContext {
                 // Type check the expression, with the constraint that its type
                 // much match the expected type of the block.
                 StmtKind::Expr(expr) if is_last => {
-                    ty = self.check_expr(expr, expected);
+                    ty = self.check_expr_expecting(expr, expected, expected_span);
                 }
 
                 // Type check the statements, however, since they are not the last
                 // expression in the block, they are not related to the return type
                 // of the block.
                 StmtKind::Expr(expr) | StmtKind::Semi(expr) => {
-                    self.check_expr(expr, None);
+                    let stmt_ty = self.check_expr(expr, None);
+                    if self.is_never(stmt_ty) {
+                        diverges = true;
+                    }
                 }
 
                 // Nothing to do. Items are already traversed as part of the resolve
@@ -601,13 +903,30 @@ impl TypeCheckContext {
                 StmtKind::Item(_) | StmtKind::Empty => {}
             }
         }
-        ty
+        if diverges {
+            term!(self.uni_cx, TyCon::Never)
+        } else {
+            ty
+        }
+    }
+
+    /// Whether `term` resolves to the Never `!` type.
+    fn is_never(&mut self, term: TermId) -> bool {
+        let resolved = self.uni_cx.resolve(term);
+        matches!(
+            self.uni_cx.term(resolved),
+            Some(Term::App {
+                constructor: TyCon::Never,
+                ..
+            })
+        )
     }
 
     /// Type checks a `Local` statement.
     fn check_local(&mut self, local: &Local) {
         // The type annotation for this local, which it may not have.
         let ascribed = local.ty.as_ref().map(|ty| self.lower_ty(ty));
+        let ascribed_span = local.ty.as_ref().map(|ty| ty.span);
 
         let expected = match &local.kind {
             // Local declaration.
@@ -627,7 +946,7 @@ impl TypeCheckContext {
             // the local should have type which matches the actual type
             // of the expression its being initialised with.
             LocalKind::Init(init) => {
-                let actual = self.check_expr(init, ascribed);
+                let actual = self.check_expr_expecting(init, ascribed, ascribed_span);
                 Some(ascribed.unwrap_or(actual))
             }
 
@@ -638,7 +957,7 @@ impl TypeCheckContext {
             // the `else` clause, which should be required to diverge (and
             // so have return type Never).
             LocalKind::InitElse(init, else_block) => {
-                let actual = self.check_expr(init, ascribed);
+                let actual = self.check_expr_expecting(init, ascribed, ascribed_span);
                 // TODO The else block should be required to diverge
                 // (Never). Not enforced yet, no diagnostics to report
                 // it with.
@@ -666,14 +985,7 @@ impl TypeCheckContext {
     /// Given two types, it will chose the type which is not the Never `!` type.
     /// In the case where neither is never, it will just return the first one.
     fn prefer_non_never(&mut self, a: TermId, b: TermId) -> TermId {
-        let resolved_a = self.uni_cx.resolve(a);
-        match self.uni_cx.term(resolved_a) {
-            Some(Term::App {
-                constructor: TyCon::Never,
-                ..
-            }) => b,
-            _ => a,
-        }
+        if self.is_never(a) { b } else { a }
     }
 
     /// Checks that a pattern's shape correctly fits a value of the
@@ -848,7 +1160,10 @@ impl SignatureLowerer<'_> {
             .collect();
         let inputs_term = term!(self.cx.uni_cx, TyCon::Tuple => inputs);
         let output_term = match &f.sig.output {
-            FnRetTy::Default(_) => term!(self.cx.uni_cx, TyCon::Tuple),
+            FnRetTy::Default(_) => {
+                let var = self.cx.uni_cx.fresh_var();
+                term!(self.cx.uni_cx, var var)
+            }
             FnRetTy::Ty(ty) => self.cx.lower_ty(ty),
         };
         term!(self.cx.uni_cx, TyCon::Fn => [inputs_term, output_term])
@@ -993,7 +1308,12 @@ impl Visitor for Checker<'_> {
             // Type-check the body of the function, with the constraint
             // that the body of the function must return a value of type
             // consistent with the return type of the function.
-            this.cx.check_block(body, Some(output_term));
+            let output_span = match &f.sig.output {
+                FnRetTy::Default(span) => *span,
+                FnRetTy::Ty(ty) => ty.span,
+            };
+            this.cx
+                .check_block_expecting(body, Some(output_term), Some(output_span));
 
             // Recurse into any items hoisted into this fn's own body, so
             // nested fns get their bodies checked too.
@@ -1023,7 +1343,7 @@ mod tests {
     fn resolve(source: &str) -> TypeCheckContext {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         let items = parser::module()
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse");
 
@@ -1035,7 +1355,7 @@ mod tests {
     fn resolve_and_lower(source: &str) -> TypeCheckContext {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         let items = parser::module()
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse");
 
@@ -1076,7 +1396,7 @@ mod tests {
     fn expr(source: &str) -> Expr {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         parser::expr()
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse")
     }
@@ -1084,7 +1404,7 @@ mod tests {
     fn ty(source: &str) -> Ty {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         parser::ty()
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse")
     }
@@ -1092,7 +1412,7 @@ mod tests {
     fn pat(source: &str) -> Pat {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         parser::pat(parser::expr())
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse")
     }
@@ -1100,7 +1420,7 @@ mod tests {
     fn block(source: &str) -> Block {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         parser::block(parser::expr())
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse")
     }
@@ -1305,14 +1625,12 @@ mod tests {
     }
 
     #[test]
-    fn lower_ty_fn_with_no_return_type_defaults_to_unit() {
+    fn lower_ty_fn_with_no_return_type_defaults_to_a_fresh_unbound_var() {
         let mut cx = TypeCheckContext::new();
         let t = cx.lower_ty(&ty("Fn(!)"));
         let (_, args) = resolved_args(&mut cx, t).expect("should be an App term");
-        let (output_con, output_args) =
-            resolved_args(&mut cx, args[1]).expect("should be an App term");
-        assert_eq!(output_con, TyCon::Tuple);
-        assert!(output_args.is_empty());
+        let resolved = cx.uni_cx.resolve(args[1]);
+        assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
     }
 
     #[test]
@@ -1624,6 +1942,18 @@ mod tests {
         assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
     }
 
+    #[test]
+    fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges_via_a_semicolon() {
+        // Regression test: `return 0;` (with a trailing semicolon) is a
+        // Semi statement, not a bare tail Expr, so check_block used to
+        // fall through to its default Tuple/unit type instead of
+        // propagating the statement's Never type -- making this `if`
+        // wrongly fail to unify `int` against `()`.
+        let mut cx = TypeCheckContext::new();
+        let t = cx.check_expr(&expr("if true { 5 } else { return 0; }"), None);
+        assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    }
+
     // -- check_block --------------------------------------------------------
 
     #[test]
@@ -1647,6 +1977,13 @@ mod tests {
         // Expr -- check_block should treat it the same as an empty block.
         let t = cx.check_block(&block("{ 5; }"), None);
         assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Tuple));
+    }
+
+    #[test]
+    fn check_block_a_semicolon_terminated_return_makes_the_block_never() {
+        let mut cx = TypeCheckContext::new();
+        let t = cx.check_block(&block("{ return 0; }"), None);
+        assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
     }
 
     #[test]
@@ -1789,7 +2126,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_signatures_fn_with_no_return_type_is_unit() {
+    fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
         let mut cx = resolve_and_lower("fn foo() {}");
         let symbol = cx
             .resolve_path(&path(&["foo"]), Namespace::Value)
@@ -1797,10 +2134,8 @@ mod tests {
         let symbol_ty = cx.symbols[symbol].ty;
 
         let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-        let (output_con, output_args) =
-            resolved_args(&mut cx, args[1]).expect("should be a Tuple term");
-        assert_eq!(output_con, TyCon::Tuple);
-        assert!(output_args.is_empty());
+        let resolved = cx.uni_cx.resolve(args[1]);
+        assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
     }
 
     #[test]
@@ -1885,16 +2220,14 @@ mod tests {
     fn check_all(source: &str) -> TypeCheckContext {
         let tokens = lexer::tokenize_all(source).expect("should lex");
         let items = parser::module()
-            .parse(&tokens)
+            .parse(parser::input(tokens))
             .into_result()
             .expect("should parse");
 
         let mut cx = TypeCheckContext::new();
         cx.resolve(&items);
         cx.lower_signatures(&items);
-        for item in &items {
-            Checker { cx: &mut cx }.visit_item(item);
-        }
+        cx.check(&items);
         cx
     }
 
@@ -1935,5 +2268,89 @@ mod tests {
             .expect("x should be declared as inner's param");
         let x_ty = cx.symbols[x_symbol].ty;
         assert_eq!(resolved_con(&mut cx, x_ty), Some(TyCon::Int));
+    }
+
+    #[test]
+    fn check_all_call_reports_the_specific_mismatching_argument_not_the_whole_call() {
+        let source = r#"
+fn add(a: int, b: int) {}
+fn main() {
+    add("wrong", 5);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(
+            &source[d.primary_span.start..d.primary_span.end],
+            "\"wrong\""
+        );
+        assert_eq!(d.message, "expected `int`, found `String`");
+    }
+
+    #[test]
+    fn check_all_call_keeps_checking_later_arguments_after_an_earlier_one_mismatches() {
+        let source = r#"
+fn add(a: int, b: int) {}
+fn main() {
+    add("wrong1", "wrong2");
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+
+        assert_eq!(
+            &source[diagnostics[0].primary_span.start..diagnostics[0].primary_span.end],
+            "\"wrong1\""
+        );
+        assert_eq!(
+            &source[diagnostics[1].primary_span.start..diagnostics[1].primary_span.end],
+            "\"wrong2\""
+        );
+    }
+
+    #[test]
+    fn check_all_call_reports_too_few_arguments() {
+        let source = r#"
+fn add(a: int, b: int) {}
+fn main() {
+    add(1);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.message,
+            "this function takes 2 arguments but 1 argument was supplied"
+        );
+        // No closing-paren tracking, so the span runs from the callee
+        // through the last argument given, not including `)`.
+        assert_eq!(&source[d.primary_span.start..d.primary_span.end], "add(1");
+    }
+
+    #[test]
+    fn check_all_call_reports_too_many_arguments_pointing_at_the_extra_ones() {
+        let source = r#"
+fn add(a: int, b: int) {}
+fn main() {
+    add(1, 2, 3);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.message,
+            "this function takes 2 arguments but 3 arguments were supplied"
+        );
+        assert_eq!(&source[d.primary_span.start..d.primary_span.end], "3");
     }
 }

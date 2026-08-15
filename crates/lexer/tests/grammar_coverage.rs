@@ -5,10 +5,14 @@
 //! literal form and edge case, and a handful of larger synthetic snippets
 //! assembled directly from grammar constructs.
 
-use lexer::{tokenize_all, LexError, NumberKind, Token};
+use lexer::{LexError, NumberKind, Token, tokenize_all};
 
 fn lex(src: &str) -> Vec<Token<'_>> {
-    tokenize_all(src).unwrap_or_else(|err| panic!("expected {src:?} to lex cleanly, got {err:?}"))
+    tokenize_all(src)
+        .unwrap_or_else(|err| panic!("expected {src:?} to lex cleanly, got {err:?}"))
+        .into_iter()
+        .map(|(tok, _)| tok)
+        .collect()
 }
 
 fn assert_tokens(src: &str, expected: &[Token]) {
@@ -95,8 +99,8 @@ mod strict_keywords {
 #[test]
 fn removed_rust_keywords_lex_as_plain_identifiers() {
     for word in [
-        "unsafe", "move", "static", "extern", "ref", "box", "async", "await", "yield",
-        "abstract", "final", "override", "priv", "typeof", "unsized", "virtual", "crate",
+        "unsafe", "move", "static", "extern", "ref", "box", "async", "await", "yield", "abstract",
+        "final", "override", "priv", "typeof", "unsized", "virtual", "crate",
     ] {
         assert_single(word, Token::Identifier(word));
     }
@@ -358,7 +362,11 @@ mod numeric_literals {
     fn trailing_dot_before_underscore_is_not_absorbed_either() {
         assert_tokens(
             "5._foo",
-            &[Token::Number(Int("5")), Token::Dot, Token::Identifier("_foo")],
+            &[
+                Token::Number(Int("5")),
+                Token::Dot,
+                Token::Identifier("_foo"),
+            ],
         );
     }
 
@@ -366,11 +374,19 @@ mod numeric_literals {
     fn trailing_dot_before_range_is_not_absorbed() {
         assert_tokens(
             "0..5",
-            &[Token::Number(Int("0")), Token::DotDot, Token::Number(Int("5"))],
+            &[
+                Token::Number(Int("0")),
+                Token::DotDot,
+                Token::Number(Int("5")),
+            ],
         );
         assert_tokens(
             "0..=5",
-            &[Token::Number(Int("0")), Token::DotDotEq, Token::Number(Int("5"))],
+            &[
+                Token::Number(Int("0")),
+                Token::DotDotEq,
+                Token::Number(Int("5")),
+            ],
         );
     }
 
@@ -378,11 +394,19 @@ mod numeric_literals {
     fn tuple_field_access_is_not_confused_with_a_float() {
         assert_tokens(
             "point.0",
-            &[Token::Identifier("point"), Token::Dot, Token::Number(Int("0"))],
+            &[
+                Token::Identifier("point"),
+                Token::Dot,
+                Token::Number(Int("0")),
+            ],
         );
         assert_tokens(
             "point.1",
-            &[Token::Identifier("point"), Token::Dot, Token::Number(Int("1"))],
+            &[
+                Token::Identifier("point"),
+                Token::Dot,
+                Token::Number(Int("1")),
+            ],
         );
     }
 
@@ -468,7 +492,9 @@ mod string_and_char_literals {
 
     #[test]
     fn char_escapes() {
-        for c in ["'\\n'", "'\\r'", "'\\t'", "'\\\\'", "'\\0'", "'\\\"'", "'\\''"] {
+        for c in [
+            "'\\n'", "'\\r'", "'\\t'", "'\\\\'", "'\\0'", "'\\\"'", "'\\''",
+        ] {
             assert_single(c, Token::CharLiteral(c));
         }
     }
@@ -544,7 +570,13 @@ mod comments {
     fn line_comment_trailing_code() {
         assert_tokens(
             "let x = 1; // trailing",
-            &[Token::Let, Token::Identifier("x"), Token::Eq, Token::Number(NumberKind::Int("1")), Token::Semi],
+            &[
+                Token::Let,
+                Token::Identifier("x"),
+                Token::Eq,
+                Token::Number(NumberKind::Int("1")),
+                Token::Semi,
+            ],
         );
     }
 
@@ -555,7 +587,10 @@ mod comments {
 
     #[test]
     fn multiline_block_comment_is_skipped() {
-        assert_tokens("/*\n * spans\n * lines\n */\nlet x = 1;", &lex("let x = 1;"));
+        assert_tokens(
+            "/*\n * spans\n * lines\n */\nlet x = 1;",
+            &lex("let x = 1;"),
+        );
     }
 
     #[test]
@@ -574,7 +609,10 @@ mod comments {
     #[test]
     fn unterminated_block_comment_is_a_lex_error() {
         assert_lex_error("/* never closed", LexError::UnterminatedBlockComment);
-        assert_lex_error("/* outer /* inner */ still unterminated", LexError::UnterminatedBlockComment);
+        assert_lex_error(
+            "/* outer /* inner */ still unterminated",
+            LexError::UnterminatedBlockComment,
+        );
     }
 
     #[test]

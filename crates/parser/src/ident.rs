@@ -35,33 +35,33 @@ mod tests {
     #[test]
     fn parses_an_ident_with_its_span() {
         let tokens = tokens("foo");
-        let parsed = ident().parse(&tokens).into_result().expect("should parse");
+        let parsed = ident().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.name, "foo");
-        assert_eq!(parsed.span, ast::Span { start: 0, end: 1 });
+        assert_eq!(parsed.span, ast::Span { start: 0, end: 3 });
     }
 
     #[test]
     fn rejects_underscore_as_an_ordinary_identifier() {
         let tokens = tokens("_");
-        assert!(ident().parse(&tokens).into_result().is_err());
+        assert!(ident().parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn parses_a_label() {
         let tokens = tokens("outer:");
-        let parsed = label().parse(&tokens).into_result().expect("should parse");
+        let parsed = label().parse(tokens).into_result().expect("should parse");
         assert_eq!(parsed.ident.name, "outer");
     }
 
     #[test]
     fn rejects_an_identifier_with_no_colon() {
         let tokens = tokens("outer");
-        assert!(label().parse(&tokens).into_result().is_err());
+        assert!(label().parse(tokens).into_result().is_err());
     }
 
     #[test]
     fn rejects_underscore_as_a_label() {
         let tokens = tokens("_:");
-        assert!(label().parse(&tokens).into_result().is_err());
+        assert!(label().parse(tokens).into_result().is_err());
     }
 }

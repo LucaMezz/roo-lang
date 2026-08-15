@@ -39,7 +39,7 @@ mod tests {
     fn parses_a_simple_use() {
         let tokens = tokens("foo");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.prefix.segments.len(), 1);
@@ -50,7 +50,7 @@ mod tests {
     fn parses_a_renamed_use() {
         let tokens = tokens("foo as bar");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Simple(Some(rename)) = parsed.kind else {
@@ -63,7 +63,7 @@ mod tests {
     fn parses_a_multi_segment_prefix() {
         let tokens = tokens("foo::bar");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.prefix.segments.len(), 2);
@@ -74,7 +74,7 @@ mod tests {
     fn parses_a_glob_use() {
         let tokens = tokens("foo::*");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.prefix.segments.len(), 1);
@@ -85,7 +85,7 @@ mod tests {
     fn parses_a_nested_use_group() {
         let tokens = tokens("foo::{a, b}");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
@@ -100,7 +100,7 @@ mod tests {
     fn parses_a_nested_group_with_varied_items() {
         let tokens = tokens("foo::{a::b, c::*, d as e}");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
@@ -120,7 +120,7 @@ mod tests {
     fn parses_a_nested_group_containing_another_nested_group() {
         let tokens = tokens("foo::{a, b::{c, d}}");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
@@ -137,7 +137,7 @@ mod tests {
     fn parses_a_trailing_comma_in_a_nested_group() {
         let tokens = tokens("foo::{a, b,}");
         let parsed = use_tree()
-            .parse(&tokens)
+            .parse(tokens)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
