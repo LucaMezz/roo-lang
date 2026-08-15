@@ -38,11 +38,11 @@ Captured variables follow the same rules as any other value binding or
 parameter passing in fig: a captured primitive is copied into the closure,
 and a captured reference type (a `struct`, array, `String`, ...) is shared
 with the closure, so mutations through either the outer binding or the
-closure are visible to both, provided the relevant binding is `mut` — see
+closure are visible to both — see
 [The Value Model](../design/values-and-mutation.md).
 
 ```fig
-let mut counter = Counter { value: 0 };
+let counter = Counter { value: 0 };
 let increment = || {
     counter.value += 1; // mutates the same Counter `counter` refers to
 };

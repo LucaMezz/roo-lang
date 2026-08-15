@@ -49,9 +49,9 @@ Always reserved:
 ```text
 as        break     continue  else      enum       false
 fn        for       if        impl      in         let
-loop      match     mod       mut       pub        return
-self      Self      struct    super     trait      true
-type      use       where     while
+loop      match     mod       pub       return     self
+Self      struct    super     trait     true       type
+use       where     while
 ```
 
 ### Reserved, currently unused
@@ -60,7 +60,7 @@ Reserved so they stay available if fig needs them later, but no current
 fig syntax gives them meaning:
 
 - `dyn` — see [Differences from Rust](../design/differences-from-rust.md).
-- `const` — fig has no separate constant-binding form; an immutable,
+- `const` — fig has no separate constant-binding form; an ordinary
   module-level `let` covers the need (see
   [Variables: Module-level bindings](../bindings/variables.md#module-level-bindings)).
   Reserved rather than freed up, in case fig later wants a binding form
@@ -73,12 +73,14 @@ Words that are reserved keywords in Rust but have no meaning in fig, because
 the feature they belong to doesn't exist, are **not** reserved and may be
 used freely as identifiers: `unsafe`, `move`, `static`, `extern`, `ref`,
 `box`, `async`, `await`, `yield`, `abstract`, `final`, `override`, `priv`,
-`typeof`, `unsized`, `virtual`, and `crate`. This is a deliberate consequence
-of removing the features that needed them — see
+`typeof`, `unsized`, `virtual`, `crate`, and `mut`. This is a deliberate
+consequence of removing the features that needed them — see
 [Differences from Rust](../design/differences-from-rust.md) for the full
 list of removed concepts. `crate` specifically is freed up because fig has
 modules but no crate-level compilation unit above them — see
-[Modules and Visibility](../modules/modules.md).
+[Modules and Visibility](../modules/modules.md). `mut` is freed up because
+every binding is mutable by default and there's no immutable binding form
+for it to distinguish from — see [Variables](../bindings/variables.md).
 
 `Self` (capital-S) is reserved as the keyword referring to "the type this
 `impl`/`trait` block is for" — see [Structs](../data-types/structs.md) and

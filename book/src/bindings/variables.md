@@ -3,45 +3,29 @@
 ## `let` bindings
 
 A variable is introduced with `let`, optionally with a type annotation, and
-is **immutable by default** — exactly as in Rust, and unlike most scripting
-languages:
+is **mutable by default** — unlike Rust, and like most scripting languages.
+There is no `mut` keyword and no way to declare a binding immutable:
 
 ```fig
 let x = 5;
-x = 6; // error: cannot assign twice to immutable variable `x`
-```
-
-## `mut`
-
-Add `mut` to allow reassignment:
-
-```fig
-let mut x = 5;
 x = 6; // ok
 ```
 
-As covered in [The Value Model](../design/values-and-mutation.md), `mut`
-controls two things for a given binding: whether the binding itself can be
-reassigned, and — for reference types — whether you can mutate through it
-(assign to a field, index, etc.):
+As covered in [The Value Model](../design/values-and-mutation.md), a
+binding can always be reassigned, and — for reference types — mutated
+through (assign to a field, index, etc.):
 
 ```fig
-let mut point = Point { x: 0, y: 0 };
-point.x = 5;                       // ok: point is mut
-point = Point { x: 1, y: 1 };      // ok: point is mut
+let point = Point { x: 0, y: 0 };
+point.x = 5;                       // ok
+point = Point { x: 1, y: 1 };      // ok
 ```
-
-`mut` here isn't special to `let` — `let mut x = ...` is `let` applied to
-the pattern `mut x`, the same `mut`-on-a-binding mechanism available in any
-pattern (`Some(mut x)`, `(mut a, b)`, ...). See
-[Pattern Matching: Mutable bindings](../data-types/pattern-matching.md#mutable-bindings)
-for the general form.
 
 ## Shadowing
 
 A new `let` with the same name **shadows** the previous binding rather than
-mutating it — a different mechanism from `mut`, and, as in Rust, legal even
-if the new binding has a different type:
+reassigning it — a different mechanism from plain assignment, and, as in
+Rust, legal even if the new binding has a different type:
 
 ```fig
 let spaces = "   ";
@@ -97,12 +81,13 @@ let greeting = "hello";
 ```
 
 fig has no separate `const` keyword. Rust's `const` earns its keep by
-guaranteeing an initializer is evaluable *before the program runs at all* —
-a guarantee Rust needs for things like fixed-size array lengths and
+guaranteeing an initializer is evaluable *before the program runs at all*
+— a guarantee Rust needs for things like fixed-size array lengths and
 `static` initialization order, none of which fig has (see
 [Differences from Rust](../design/differences-from-rust.md)). Without a
-use for that guarantee, an immutable, module-level `let` covers the same
-need. By convention (not enforced by the compiler), a top-level binding
+use for that guarantee, an ordinary module-level `let` covers the same
+need — nothing stops it from being reassigned later, the same as any other
+binding. By convention (not enforced by the compiler), a top-level binding
 meant to be read as a fixed, tunable value is named in
 `SCREAMING_SNAKE_CASE`, the same convention Rust uses for `const`:
 

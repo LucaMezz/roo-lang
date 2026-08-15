@@ -35,9 +35,6 @@ function    ::= "fn" ident generics? "(" params? ")" ("->" type)? (block | ";")
               (* a ";" body declares an ambient function — see Ambient Modules *)
 params      ::= param ("," param)* ","?
 param       ::= pattern (":" type)?
-              (* no separate "mut" slot here either, same reasoning as
-                 let_stmt — "fn bump(mut p: Point)" is "mut p" as a
-                 pattern, not a modifier on the parameter *)
 
 struct_def  ::= "pub"? "struct" ident generics? struct_body
 struct_body ::= "{" field ("," field)* ","? "}"
@@ -84,9 +81,9 @@ statement   ::= let_stmt | item | expr ";" | block_expr
 let_stmt    ::= "pub"? "let" pattern (":" type)? ("=" expr)? ";"
               | "let" pattern (":" type)? "=" expr "else" block ";"  (* let-else *)
               (* "pub" is only meaningful at module scope — see
-                 Modules and Visibility. There's no separate "mut" slot
-                 here: "let mut x = 5;" is just "let" applied to the
-                 pattern "mut x" — see the pattern grammar below. *)
+                 Modules and Visibility. Every binding a pattern produces
+                 is reassignable/mutate-through-able by default; there is
+                 no "mut" keyword and no way to opt out. *)
 block_expr  ::= block | if_expr | match_expr | loop_expr | while_expr | for_expr
 
 block       ::= "{" statement* expr? "}"
@@ -130,22 +127,15 @@ index_expr  ::= expr "[" expr "]"
 (* -------------------------------------------------------------- *)
 (* Patterns *)
 
-pattern     ::= "_" | "mut"? ident ("@" pattern)? | literal
+pattern     ::= "_" | ident ("@" pattern)? | literal
               | range_pattern | tuple_pattern | array_pattern
               | struct_pattern | path tuple_pattern? | pattern "|" pattern
-              (* "mut" marks just that one binding as reassignable/
-                 mutate-through-able; unrelated bindings elsewhere in the
-                 same pattern are unaffected *)
 
 range_pattern  ::= expr (".." | "..=") expr
 tuple_pattern  ::= "(" (pattern ",")* pattern? ")"
 array_pattern  ::= "[" (pattern ("," pattern)* (",", "..")?)? "]"
 struct_pattern ::= path "{" (field_pattern ("," field_pattern)*)? (",", "..")? "}"
-field_pattern  ::= "mut"? ident (":" pattern)?   (* "mut" only applies to
-                                                      the shorthand form —
-                                                      "x: pattern" puts any
-                                                      "mut" inside `pattern`
-                                                      instead *)
+field_pattern  ::= ident (":" pattern)?
 
 (* -------------------------------------------------------------- *)
 (* Types *)

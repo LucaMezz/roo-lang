@@ -99,7 +99,7 @@ mod ecs {
             Store { slots: [] }
         }
 
-        pub fn set(mut self, id: EntityId, value: T) {
+        pub fn set(self, id: EntityId, value: T) {
             while self.slots.len() <= id.0 {
                 self.slots.push(Option::None);
             }
@@ -135,7 +135,7 @@ mod ecs {
             }
         }
 
-        pub fn spawn(mut self, position: Position, velocity: Velocity) -> EntityId {
+        pub fn spawn(self, position: Position, velocity: Velocity) -> EntityId {
             let id = EntityId::new(self.next_id);
             self.next_id += 1;
             self.positions.set(id, position);
@@ -160,15 +160,15 @@ use ecs::{EntityId, Position, Velocity, Health, World};
 // whatever World the previous call (or #[setup], on the first frame)
 // left it holding.
 #[system]
-fn movement_system(mut world: World) -> () {
+fn movement_system(world: World) -> () {
     let dt = engine::delta_time();
-    let mut i = 0;
+    let i = 0;
     while i < world.next_id {
         let id = EntityId::new(i);
         let velocity = world.velocities.get(id);
         if let Option::Some(v) = velocity {
             let position = world.positions.get(id);
-            if let Option::Some(mut p) = position {
+            if let Option::Some(p) = position {
                 p.x += v.dx * dt;
                 p.y += v.dy * dt;
             }
@@ -179,7 +179,7 @@ fn movement_system(mut world: World) -> () {
 
 #[system]
 fn render_system(world: World) -> () {
-    let mut i = 0;
+    let i = 0;
     while i < world.next_id {
         let position = world.positions.get(EntityId::new(i));
         let Option::Some(p) = position else {
@@ -199,7 +199,7 @@ fn find_nearby(world: World, x: float, y: float, radius: float) -> Option<Entity
     let primary = [0, 1, 2];
     let fallback = [3, 4, 5];
 
-    let mut found: Option<EntityId> = Option::None;
+    let found: Option<EntityId> = Option::None;
 
     search: for candidates in [primary, fallback] {
         for raw_id in candidates {
@@ -226,7 +226,7 @@ fn find_nearby(world: World, x: float, y: float, radius: float) -> Option<Entity
 // be the one holding onto `World` between frames.
 #[setup]
 fn setup() -> World {
-    let mut world = World::new();
+    let world = World::new();
 
     let player = world.spawn(
         Position { x: 0.0, y: 0.0 },

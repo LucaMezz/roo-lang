@@ -8,7 +8,7 @@ fig has the same three loop forms as Rust: `loop`, `while`, and `for`, plus
 An unconditional loop that runs until a `break`:
 
 ```fig
-let mut count = 0;
+let count = 0;
 loop {
     count += 1;
     if count == 5 {
@@ -24,7 +24,7 @@ evaluate to something other than `()` — useful for retry-until-success
 logic:
 
 ```fig
-let mut attempts = 0;
+let attempts = 0;
 let result = loop {
     attempts += 1;
     if let Some(value) = try_connect() {
@@ -42,7 +42,7 @@ Runs its body as long as a `bool` condition holds, checked before each
 iteration:
 
 ```fig
-let mut n = 10;
+let n = 10;
 while n > 0 {
     print(n);
     n -= 1;

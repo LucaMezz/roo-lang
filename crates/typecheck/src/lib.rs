@@ -1001,7 +1001,7 @@ impl TypeCheckContext {
         match kind {
             // The Wildcard pattern `_` deliberately matches with anything.
             PatKind::Wild => expected,
-            PatKind::Ident(_is_mutable, ident, sub) => {
+            PatKind::Ident(ident, sub) => {
                 let symbol = self.declare(&ident.name, SymbolKind::Local);
                 let _ = self.uni_cx.unify(self.symbols[symbol].ty, expected);
 

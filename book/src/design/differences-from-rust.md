@@ -25,6 +25,7 @@ runtime, a job fig's runtime does for you.
 | `Rc<T>`, `Arc<T>`, `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `Box<T>` as a distinct owning pointer | Removed as language concepts. Every reference type in fig already behaves like a shared, mutable, runtime-managed pointer, so none of these wrapper types are needed to get that behavior. |
 | `static` items, interior mutability of globals | Removed. Use an ordinary [module-level `let`](../bindings/variables.md#module-level-bindings) instead. |
 | Threads, `Send`/`Sync`, atomics | Not part of the language. Concurrency (if any) is a future runtime/standard-library concern, not language syntax. |
+| `mut`, immutable-by-default bindings | Removed. Every `let`, function/closure parameter, and `self` is reassignable and writable-through by default, with no way to declare one immutable. See [Variables](../bindings/variables.md) and [The Value Model](values-and-mutation.md#every-binding-is-mutable). |
 
 ## Simplified
 
@@ -37,17 +38,17 @@ precision that a scripting language doesn't need.
 | `i8`/`i16`/`i32`/`i64`/`i128`/`isize` and `u8`/.../`usize`, `f32`/`f64` | One `int` and one `float` type. | Choosing an exact bit width is a memory-layout/performance concern, the same category as manual memory management. See [Primitive Types](../types/primitives.md). |
 | `[T; N]` (fixed-size array) vs. `&[T]` (slice) vs. `Vec<T>` (growable, owned) | One `[T]` array type: always growable, always a reference type, indexed the same way `Vec<T>` is. | The three-way split exists so Rust can choose stack vs. heap layout and enforce borrowing on views into a buffer. Without ownership/borrowing there's no distinction left to preserve. See [Arrays and Tuples](../types/arrays-and-tuples.md). |
 | `str` (borrowed) vs. `String` (owned) | One `String` type. | Same reasoning as arrays — the split exists to distinguish a borrowed view from an owned buffer. See [Strings and Characters](../types/strings-and-chars.md). |
-| `self` / `&self` / `&mut self` | Just `self`. | Since parameters are already references for reference types, there's no separate "borrow `self` mutably" mode to opt into. See [Structs](../data-types/structs.md#methods). |
+| `self` / `&self` / `&mut self` | Just `self`. | Since parameters are already references for reference types, and every binding is mutable, there's no separate "borrow `self` mutably" mode to opt into — every method can write through `self` already. See [Structs](../data-types/structs.md#methods). |
 | `Fn` / `FnMut` / `FnOnce`, `move` closures | One closure kind, capturing the same way any function parameter binds (see [The Value Model](values-and-mutation.md)). | The three-trait split exists to track *how* a closure interacts with ownership of its captures; with no ownership, there's one behavior. See [Closures](../functions/closures.md). |
 | `dyn Trait`, trait objects, object safety, `Box<dyn Trait>` | A trait name used directly in type position means "anything implementing this trait," dynamically checked, no `dyn` or box needed. | Trait objects in Rust exist to put an unsized, dynamically-dispatched value behind a pointer explicitly. Since reference types are already runtime-managed pointers, that's the default behavior for trait-typed values in fig — no separate spelling required. See [Traits](../abstraction/traits.md). |
 | Enum explicit discriminants (`enum E { A = 1 }`) | Not supported. | This exists in Rust primarily for FFI/C interop layout control. |
-| `const` (separate keyword, compile-time-only-evaluable initializer, required type annotation) | An ordinary, immutable, module-level `let` — no separate keyword. | `const`'s compile-time-evaluation guarantee backs fixed-size array lengths, `static` initialization order, and const generics in Rust — none of which fig has. Without a use for the guarantee, a second binding form isn't earning its keep; `let` already covers "an immutable, module-level value." (Luau itself has no separate `const` form either — just `local x <const> = value`.) `const` stays a reserved word in case fig later wants that guarantee back. See [Variables: Module-level bindings](../bindings/variables.md#module-level-bindings). |
+| `const` (separate keyword, compile-time-only-evaluable initializer, required type annotation) | An ordinary module-level `let` — no separate keyword. | `const`'s compile-time-evaluation guarantee backs fixed-size array lengths, `static` initialization order, and const generics in Rust — none of which fig has. Without a use for the guarantee, a second binding form isn't earning its keep; `let` already covers "a fixed, tunable, module-level value," by convention rather than compiler-enforced immutability. (Luau itself has no separate `const` form either — just `local x <const> = value`.) `const` stays a reserved word in case fig later wants that guarantee back. See [Variables: Module-level bindings](../bindings/variables.md#module-level-bindings). |
 | `#[attribute]`s | Same `#[...]` syntax, but inert at the language level — fig itself assigns no meaning to any annotation name, built-in or otherwise. All interpretation comes from the host embedding fig, which registers and reads them back. No macro expansion, no compiler built-ins like `cfg`/`repr`. See [Annotations](../annotations/annotations.md). |
 
 ## Kept as-is
 
 Everything else you'd expect from Rust is kept, deliberately unchanged in
-spelling and meaning, including: `let`/`let mut`/shadowing,
+spelling and meaning, including: `let`/shadowing,
 `if`/`else` and `if let`/`let else` as expressions, `loop`/`while`/`while
 let`/`for`, `match` with full pattern matching (destructuring, ranges,
 guards, `|`-patterns, `@`-bindings), `struct`s (named/tuple/unit), `enum`s

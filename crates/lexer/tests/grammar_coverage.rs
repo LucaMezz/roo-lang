@@ -61,7 +61,6 @@ mod strict_keywords {
     keyword_test!(loop_, "loop", Token::Loop);
     keyword_test!(match_, "match", Token::Match);
     keyword_test!(mod_, "mod", Token::Mod);
-    keyword_test!(mut_, "mut", Token::Mut);
     keyword_test!(pub_, "pub", Token::Pub);
     keyword_test!(return_, "return", Token::Return);
     keyword_test!(self_lower, "self", Token::SelfLower);
@@ -100,7 +99,7 @@ mod strict_keywords {
 fn removed_rust_keywords_lex_as_plain_identifiers() {
     for word in [
         "unsafe", "move", "static", "extern", "ref", "box", "async", "await", "yield", "abstract",
-        "final", "override", "priv", "typeof", "unsized", "virtual", "crate",
+        "final", "override", "priv", "typeof", "unsized", "virtual", "crate", "mut",
     ] {
         assert_single(word, Token::Identifier(word));
     }
@@ -802,7 +801,7 @@ mod composite_constructs {
     #[test]
     fn all_compound_assignment_operators_in_one_function() {
         lex(r#"
-            fn f(mut x: int) {
+            fn f(x: int) {
                 x += 1;
                 x -= 1;
                 x *= 2;
@@ -831,7 +830,7 @@ mod composite_constructs {
     #[test]
     fn gradual_typing_any_and_unannotated_positions() {
         lex(r#"
-            let mut selected: any = "";
+            let selected: any = "";
             fn describe(name: String, value) -> any {
                 print(value);
                 name
@@ -900,7 +899,7 @@ mod composite_constructs {
                 if shapes.len() == 0 {
                     return Option::None;
                 }
-                let mut best = shapes[0];
+                let best = shapes[0];
                 for shape in shapes {
                     if shape.area() > best.area() {
                         best = shape;

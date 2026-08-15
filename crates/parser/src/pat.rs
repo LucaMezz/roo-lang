@@ -10,16 +10,13 @@ pub fn pat_field<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<
         .then(pat)
         .map(|(ident, pattern)| (ident, Box::new(pattern)));
 
-    let shorthand = just(Token::Mut)
-        .or_not()
-        .then(ident())
-        .map_with(|(mut_kw, ident), e| {
-            let pat = Box::new(Pat {
-                kind: PatKind::Ident(mut_kw.is_some(), ident.clone(), None),
-                span: span(e),
-            });
-            (ident, pat)
+    let shorthand = ident().map_with(|ident, e| {
+        let pat = Box::new(Pat {
+            kind: PatKind::Ident(ident.clone(), None),
+            span: span(e),
         });
+        (ident, pat)
+    });
 
     annotations()
         .then(full.or(shorthand))
@@ -109,11 +106,9 @@ fn pat_path<'src>() -> impl FigParser<'src, PatKind> {
 }
 
 fn pat_ident<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatKind> {
-    just(Token::Mut)
-        .or_not()
-        .then(ident())
+    ident()
         .then(just(Token::At).ignore_then(pat).map(Box::new).or_not())
-        .map(|((mut_kw, ident), sub)| PatKind::Ident(mut_kw.is_some(), ident, sub))
+        .map(|(ident, sub)| PatKind::Ident(ident, sub))
 }
 
 fn pat_expr_or_range<'src>(
@@ -208,11 +203,11 @@ mod tests {
 
     // `pat()` doesn't exist yet, so `pat_field()`'s tests stand in a
     // minimal placeholder pattern parser just to exercise pat_field's
-    // own logic (annotations, shorthand vs `name: pattern`, `mut`) in
+    // own logic (annotations, shorthand vs `name: pattern`) in
     // isolation.
     fn dummy_pat<'src>() -> impl FigParser<'src, Pat> {
         ident().map_with(|ident, e| Pat {
-            kind: PatKind::Ident(false, ident, None),
+            kind: PatKind::Ident(ident, None),
             span: span(e),
         })
     }
@@ -237,26 +232,11 @@ mod tests {
             .expect("should parse");
         assert_eq!(parsed.ident.name, "x");
         assert!(parsed.annotations.is_empty());
-        let PatKind::Ident(is_mut, ident, sub) = parsed.pat.kind else {
+        let PatKind::Ident(ident, sub) = parsed.pat.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
         };
-        assert!(!is_mut);
         assert_eq!(ident.name, "x");
         assert!(sub.is_none());
-    }
-
-    #[test]
-    fn parses_a_shorthand_mut_pat_field() {
-        let tokens = tokens("mut x");
-        let parsed = pat_field(dummy_pat())
-            .parse(tokens)
-            .into_result()
-            .expect("should parse");
-        assert_eq!(parsed.ident.name, "x");
-        let PatKind::Ident(is_mut, ..) = parsed.pat.kind else {
-            panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
-        };
-        assert!(is_mut);
     }
 
     #[test]
@@ -267,7 +247,7 @@ mod tests {
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.ident.name, "x");
-        let PatKind::Ident(_, ident, _) = parsed.pat.kind else {
+        let PatKind::Ident(ident, _) = parsed.pat.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
         };
         assert_eq!(ident.name, "y");
@@ -289,16 +269,13 @@ mod tests {
 
     #[test]
     fn parses_an_annotated_shorthand_pat_field() {
-        let tokens = tokens("#[foo] mut x");
+        let tokens = tokens("#[foo] x");
         let parsed = pat_field(dummy_pat())
             .parse(tokens)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.annotations.len(), 1);
-        let PatKind::Ident(is_mut, ..) = parsed.pat.kind else {
-            panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
-        };
-        assert!(is_mut);
+        assert!(matches!(parsed.pat.kind, PatKind::Ident(..)));
     }
 
     #[test]
@@ -319,7 +296,7 @@ mod tests {
 
     #[test]
     fn parses_a_struct_pattern_with_shorthand_fields() {
-        let tokens = tokens("Point { x, mut y }");
+        let tokens = tokens("Point { x, y }");
         let parsed = pat(dummy_expr())
             .parse(tokens)
             .into_result()
@@ -477,26 +454,11 @@ mod tests {
             .parse(tokens)
             .into_result()
             .expect("should parse");
-        let PatKind::Ident(is_mut, ident, sub) = parsed.kind else {
+        let PatKind::Ident(ident, sub) = parsed.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.kind);
         };
-        assert!(!is_mut);
         assert_eq!(ident.name, "x");
         assert!(sub.is_none());
-    }
-
-    #[test]
-    fn parses_a_mut_binding_pattern() {
-        let tokens = tokens("mut x");
-        let parsed = pat(dummy_expr())
-            .parse(tokens)
-            .into_result()
-            .expect("should parse");
-        let PatKind::Ident(is_mut, ident, _) = parsed.kind else {
-            panic!("expected PatKind::Ident, got {:?}", parsed.kind);
-        };
-        assert!(is_mut);
-        assert_eq!(ident.name, "x");
     }
 
     #[test]
@@ -506,7 +468,7 @@ mod tests {
             .parse(tokens)
             .into_result()
             .expect("should parse");
-        let PatKind::Ident(_, ident, sub) = parsed.kind else {
+        let PatKind::Ident(ident, sub) = parsed.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.kind);
         };
         assert_eq!(ident.name, "n");

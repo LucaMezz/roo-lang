@@ -84,8 +84,7 @@ Like every non-primitive type, a `struct` value follows reference
 semantics: assigning or passing a struct value shares the same underlying
 data rather than copying it. See
 [The Value Model](../design/values-and-mutation.md) for the full rules,
-including how `mut` on a binding controls whether you can mutate fields
-through it.
+including how every binding can mutate fields through it.
 
 ## Methods
 
@@ -106,13 +105,13 @@ impl Point {
         (self.x * self.x + self.y * self.y).sqrt()
     }
 
-    fn translate(mut self, dx: float, dy: float) {
+    fn translate(self, dx: float, dy: float) {
         self.x += dx;
         self.y += dy;
     }
 }
 
-let mut p = Point::new(3.0, 4.0);
+let p = Point::new(3.0, 4.0);
 print(p.magnitude()); // 5.0
 p.translate(1.0, 1.0); // mutates p directly, no `&mut self` needed
 ```
@@ -122,12 +121,10 @@ or `&mut self`, because that's where the borrow checker's rules attach.
 fig only ever has `self` as the receiver's name — since a struct value is
 already a reference type, `self` inside a method refers to the same value
 the caller called the method on, with no separate borrowed-receiver type to
-opt into. Whether the method body may write to `self`'s fields is governed
-by the same `mut`-on-a-binding rule as everywhere else in fig (see
-[The Value Model](../design/values-and-mutation.md#mut-still-controls-the-binding-not-the-data)):
-write `mut self` to allow it, plain `self` for a read-only method. Either
-way, no `&` is ever written, and calling the method looks identical from
-the outside. See [Differences from Rust](../design/differences-from-rust.md).
+opt into, and no `mut` to write either: every method body may write to
+`self`'s fields, unconditionally. No `&` is ever written, and calling the
+method looks identical from the outside. See
+[Differences from Rust](../design/differences-from-rust.md).
 
 Multiple `impl` blocks for the same struct are allowed, and traits are
 implemented for a struct the same way — see [Traits](../abstraction/traits.md).

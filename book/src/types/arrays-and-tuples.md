@@ -9,7 +9,7 @@ an array is a **reference type** — see
 
 ```fig
 let numbers: [int] = [1, 2, 3];
-let mut names = ["Ada", "Grace"]; // [String], inferred
+let names = ["Ada", "Grace"]; // [String], inferred
 
 names[0];          // indexing: "Ada"
 names[0] = "Judith"; // assignment through an index
@@ -49,7 +49,7 @@ Operations beyond literals, indexing, and iteration — appending, removing,
 slicing out a sub-array, mapping, filtering, sorting — are standard-library
 methods on `[T]`, not core syntax, and aren't finalized yet (see
 [Introduction](../introduction.md)). The language guarantees `[T]` is
-growable and mutable through a `mut` binding; the exact method surface is
+growable and mutable through any binding; the exact method surface is
 future work.
 
 ## Tuples
@@ -95,7 +95,7 @@ one is visible through the other.
 
 ```fig
 let a = (1, 2);
-let mut b = a;   // b aliases the same tuple as a
+let b = a;   // b aliases the same tuple as a
 b.0 = 99;
 print(a.0);       // 99 — a and b share storage
 ```

@@ -153,28 +153,24 @@ fn ty_alias<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, T
 }
 
 fn self_param<'src>() -> impl FigParser<'src, Param> {
-    just(Token::Mut)
-        .or_not()
-        .then_ignore(just(Token::SelfLower))
-        .map_with(|mut_kw, e| Param {
-            annotations: Vec::new(),
-            ty: Some(Box::new(Ty {
-                kind: TyKind::ImplicitSelf,
-                span: span(e),
-            })),
-            pat: Box::new(Pat {
-                kind: PatKind::Ident(
-                    mut_kw.is_some(),
-                    Ident {
-                        name: "self".to_owned(),
-                        span: span(e),
-                    },
-                    None,
-                ),
-                span: span(e),
-            }),
+    just(Token::SelfLower).map_with(|_, e| Param {
+        annotations: Vec::new(),
+        ty: Some(Box::new(Ty {
+            kind: TyKind::ImplicitSelf,
             span: span(e),
-        })
+        })),
+        pat: Box::new(Pat {
+            kind: PatKind::Ident(
+                Ident {
+                    name: "self".to_owned(),
+                    span: span(e),
+                },
+                None,
+            ),
+            span: span(e),
+        }),
+        span: span(e),
+    })
 }
 
 fn fn_param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Param> {
@@ -540,20 +536,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_fn_item_with_an_immutable_self_param() {
+    fn parses_a_fn_item_with_a_self_param() {
         let tokens = tokens("fn describe(self) -> String { self.name }");
         let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
         assert_eq!(f.sig.inputs.len(), 1);
-        let PatKind::Ident(is_mut, ident, _) = &f.sig.inputs[0].pat.kind else {
+        let PatKind::Ident(ident, _) = &f.sig.inputs[0].pat.kind else {
             panic!(
                 "expected PatKind::Ident, got {:?}",
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert!(!is_mut);
         assert_eq!(ident.name, "self");
         assert!(matches!(
             f.sig.inputs[0].ty.as_deref().map(|ty| &ty.kind),
@@ -562,20 +557,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_fn_item_with_a_mutable_self_param() {
-        let tokens = tokens("fn heal(mut self, amount: int) { self.health += amount; }");
+    fn parses_a_fn_item_with_a_self_param_and_more_params() {
+        let tokens = tokens("fn heal(self, amount: int) { self.health += amount; }");
         let parsed = item().parse(tokens).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
         assert_eq!(f.sig.inputs.len(), 2);
-        let PatKind::Ident(is_mut, ident, _) = &f.sig.inputs[0].pat.kind else {
+        let PatKind::Ident(ident, _) = &f.sig.inputs[0].pat.kind else {
             panic!(
                 "expected PatKind::Ident, got {:?}",
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert!(is_mut);
         assert_eq!(ident.name, "self");
     }
 

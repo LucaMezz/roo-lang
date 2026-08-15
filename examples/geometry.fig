@@ -107,7 +107,7 @@ impl Shape2D for Shape {
 }
 
 fn total_area(shapes: [Shape]) -> float {
-    let mut total = 0.0;
+    let total = 0.0;
     for shape in shapes {
         total += shape.area();
     }
@@ -119,7 +119,7 @@ fn total_area(shapes: [Shape]) -> float {
 // as intrinsically implementing ordering — no custom comparison trait
 // needed here.
 fn largest<T: Shape2D>(shapes: [T]) -> T {
-    let mut best = shapes[0];
+    let best = shapes[0];
     for shape in shapes {
         if shape.area() > best.area() {
             best = shape;

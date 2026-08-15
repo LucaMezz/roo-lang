@@ -76,9 +76,6 @@ pub enum Token<'src> {
     /// `mod`
     #[token("mod")]
     Mod,
-    /// `mut`
-    #[token("mut")]
-    Mut,
     /// `pub`
     #[token("pub")]
     Pub,

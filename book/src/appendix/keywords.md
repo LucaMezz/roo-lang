@@ -21,7 +21,6 @@ Always reserved; can't be used as an identifier.
 | `loop` | Unconditional loop | [Loops](../control-flow/loops.md) |
 | `match` | Pattern-match an expression | [match](../control-flow/match.md) |
 | `mod` | Declare a module | [Modules and Visibility](../modules/modules.md) |
-| `mut` | Mark a binding as mutable | [Variables](../bindings/variables.md) |
 | `pub` | Make an item visible outside its module | [Modules and Visibility](../modules/modules.md) |
 | `return` | Return a value from a function early | [Functions](../functions/functions.md) |
 | `self` | The receiver parameter of a method | [Structs](../data-types/structs.md) |
@@ -59,5 +58,10 @@ are ordinary, usable identifiers in fig — see
 ```text
 unsafe   move    static   extern   ref     box
 async    await   yield    abstract final   override
-priv     typeof  unsized  virtual  crate
+priv     typeof  unsized  virtual  crate   mut
 ```
+
+`mut` in particular isn't just unreserved — it never had meaning in fig to
+begin with. Every binding is mutable by default and there's no way to
+declare one immutable, so there's nothing left for a `mut` keyword to mark.
+See [Variables](../bindings/variables.md).

@@ -25,6 +25,10 @@
     color: #d73a49;
 }
 
+.fig-highlight .fig-attribute {
+    color: #986801;
+}
+
 .fig-highlight .fig-type,
 .fig-highlight .fig-type-builtin,
 .fig-highlight .fig-constructor {
@@ -94,6 +98,13 @@ html.coal .fig-highlight .fig-keyword,
 html.ayu .fig-highlight .fig-keyword,
 html.rust .fig-highlight .fig-keyword {
     color: #f97583;
+}
+
+html.navy .fig-highlight .fig-attribute,
+html.coal .fig-highlight .fig-attribute,
+html.ayu .fig-highlight .fig-attribute,
+html.rust .fig-highlight .fig-attribute {
+    color: #d4a72c;
 }
 
 html.navy .fig-highlight .fig-type,

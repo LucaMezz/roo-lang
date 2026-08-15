@@ -477,7 +477,7 @@ pub struct Pat {
 pub enum PatKind {
     Missing,
     Wild,
-    Ident(bool, Ident, Option<Box<Pat>>),
+    Ident(Ident, Option<Box<Pat>>),
     Struct(Option<Box<QSelf>>, Path, Vec<PatField>, PatFieldsRest),
     TupleStruct(Option<Box<QSelf>>, Path, Vec<Pat>),
     Or(Vec<Pat>),

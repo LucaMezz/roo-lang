@@ -9,7 +9,7 @@ produce `String` values directly.
 
 ```fig
 let name: String = "Ada";
-let mut greeting = "Hello, ";
+let greeting = "Hello, ";
 greeting += name; // string concatenation with +=
 ```
 

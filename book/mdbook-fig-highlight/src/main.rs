@@ -13,6 +13,7 @@ use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, H
 /// becomes a `fig-<name-with-dots-as-dashes>` CSS class on the rendered
 /// `<span>`. Keep in sync with `tree-sitter-fig/queries/highlights.scm`.
 const HIGHLIGHT_NAMES: &[&str] = &[
+    "attribute",
     "boolean",
     "comment",
     "comment.documentation",

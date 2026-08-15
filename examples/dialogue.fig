@@ -31,7 +31,7 @@ fn heal(current: int, amount: int) -> int {
     current + amount
 }
 
-fn use_item(mut health: int, item: Item) -> int {
+fn use_item(health: int, item: Item) -> int {
     if item.kind == "potion" {
         // `item.data` is dynamically typed; `heal` is not. This is the
         // boundary-crossing case from gradual-typing.md: allowed here
@@ -65,7 +65,7 @@ impl InventoryScript {
         // `any` opts it out, on purpose, since it's meant to hold
         // whichever item's name was clicked on last, or nothing at all
         // yet.
-        let mut selected: any = "";
+        let selected: any = "";
 
         // This has to be a closure, not a plain `fn` — a plain `fn` is
         // hoisted (visible throughout this method, even above this
@@ -102,7 +102,7 @@ impl InventoryScript {
             }
         }
 
-        let mut health = 80;
+        let health = 80;
         for item in inventory {
             health = use_item(health, item);
         }

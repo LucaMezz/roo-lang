@@ -21,7 +21,7 @@ can never affect the other.
 ```fig
 let a: int = 1;
 let b = a;      // b gets its own copy of the value 1
-let mut c = a;
+let c = a;
 c += 1;
 print(a); // 1 — unaffected by mutating c
 ```
@@ -39,12 +39,12 @@ variable to another.
 ```fig
 struct Point { x: int, y: int }
 
-let mut a = Point { x: 1, y: 2 };
-let mut b = a;      // b refers to the same Point as a
+let a = Point { x: 1, y: 2 };
+let b = a;      // b refers to the same Point as a
 b.x = 99;
 print(a.x);          // 99 — a and b share one Point
 
-fn bump(mut p: Point) {
+fn bump(p: Point) {
     p.x += 1;        // mutates the caller's Point directly
 }
 
@@ -56,12 +56,12 @@ This is the single biggest semantic difference from idiomatic Rust: passing
 a `struct` to a function in fig always shares the caller's data, the way
 passing `&mut T` in Rust does — there is no by-value-vs-by-reference
 *aliasing* choice to make, and no `&`/`&mut`/`.clone()` ceremony to get a
-shared reference. What `mut` on the parameter still chooses, exactly as it
-does for a `let` (see [below](#mut-still-controls-the-binding-not-the-data)),
-is whether the function body is allowed to mutate *through that binding* —
-`bump` needed `mut p`, not just `p`, to be allowed to write `p.x += 1`. If
-you need an independent copy rather than a shared reference at all, ask for
-one explicitly (see [Cloning](#cloning-explicit-copies) below); by default,
+shared reference. Every binding — `let`, function/closure parameter, or
+`self` — can always be reassigned and mutated through (see
+[below](#every-binding-is-mutable)); `bump` above needed nothing beyond an
+ordinary parameter to be allowed to write `p.x += 1`. If you need an
+independent copy rather than a shared reference at all, ask for one
+explicitly (see [Cloning](#cloning-explicit-copies) below); by default,
 every reference type aliases.
 
 ## Why fig does this
@@ -77,37 +77,31 @@ eventually replace in [fig-engine](https://github.com/LucaMezz/fig-engine) —
 so scripts written against fig's object model should feel familiar to
 scripters coming from that world.
 
-## `mut` still controls the *binding*, not the data
+## Every binding is mutable
 
-Removing ownership doesn't remove `let` vs. `let mut`. `mut` on a binding
-still controls whether *that variable* can be reassigned, and whether you
-can mutate fields/elements *through* it:
+Removing ownership also removes the reason for a separate `let` vs.
+`let mut` distinction: there is no `mut` keyword in fig at all. Every
+binding — `let`, function/closure parameter, or `self` — can always be
+reassigned, and you can always mutate fields/elements through it:
 
 ```fig
 let p = Point { x: 1, y: 2 };
-p.x = 5;        // error: `p` is not a mutable binding
-
-let mut q = Point { x: 1, y: 2 };
-q.x = 5;        // ok
-q = Point { x: 0, y: 0 }; // ok — q can be reassigned entirely
+p.x = 5;        // ok
+p = Point { x: 0, y: 0 }; // ok — p can be reassigned entirely
 ```
 
 Because reference types alias, two different bindings to the same
-underlying value can have different mutability. In the example above, if
-`let r = q;` were added after `q` is declared `mut`, `r` would be an
-*immutable* binding to the same `Point` `q` points to — `r.x = 5` would be
-rejected even though mutating the same point via `q.x = 5` is allowed.
-Mutability is a property of how you're looking at a value, not of the value
-itself.
+underlying value are always equally able to mutate it — there is no way for
+one binding to a `Point` to be able to write through it while another
+binding to that same `Point` cannot. Mutability isn't a property you choose
+per binding; it's simply always available.
 
-This rule is uniform across every kind of binding, not just `let`: a
-function parameter needs `mut name: Type` (as `bump` did above) to mutate
-through it, and a method needs `mut self` to mutate `self`'s fields — see
-[Functions](../functions/functions.md) and
+This is uniform across every kind of binding: a function parameter can
+always mutate through it (as `bump` did above), and a method can always
+mutate `self`'s fields — see [Functions](../functions/functions.md) and
 [Structs: Methods](../data-types/structs.md#methods).
 
-See [Variables](../bindings/variables.md) for the full rules on `let` and
-`mut`.
+See [Variables](../bindings/variables.md) for the full rules on `let`.
 
 ## Equality compares values, not identity
 
