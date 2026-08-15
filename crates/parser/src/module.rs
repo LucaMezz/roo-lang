@@ -2,19 +2,19 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-fn inner_doc_comments<'src>() -> impl FigParser<'src, ()> {
+fn inner_doc_comments<'src>() -> impl RooParser<'src, ()> {
     select! { Token::InnerDocComment(_) => () }
         .repeated()
         .ignored()
 }
 
 pub fn module_body<'src>(
-    item: impl FigParser<'src, Item> + 'src,
-) -> impl FigParser<'src, Vec<Box<Item>>> {
+    item: impl RooParser<'src, Item> + 'src,
+) -> impl RooParser<'src, Vec<Box<Item>>> {
     inner_doc_comments().ignore_then(item.map(Box::new).repeated().collect::<Vec<_>>())
 }
 
-pub fn mod_kind<'src>(item: impl FigParser<'src, Item> + 'src) -> impl FigParser<'src, ModKind> {
+pub fn mod_kind<'src>(item: impl RooParser<'src, Item> + 'src) -> impl RooParser<'src, ModKind> {
     choice((
         just(Token::Semi).to(ModKind::Unloaded),
         module_body(item)
@@ -23,7 +23,7 @@ pub fn mod_kind<'src>(item: impl FigParser<'src, Item> + 'src) -> impl FigParser
     ))
 }
 
-pub fn module<'src>() -> impl FigParser<'src, Vec<Box<Item>>> {
+pub fn module<'src>() -> impl RooParser<'src, Vec<Box<Item>>> {
     module_body(item())
 }
 

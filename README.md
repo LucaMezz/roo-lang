@@ -1,4 +1,4 @@
-# fig-lang
+# roo-lang
 
 An embeddable, gradually-typed scripting language written from scratch in
 Rust — a subset of Rust itself (no lifetimes or other low-level machinery),
@@ -6,7 +6,7 @@ with optional type annotations: anything left untyped is skipped by type
 checking, the same way Luau or TypeScript treat `any`.
 
 This is a learning project, developed alongside
-[fig-engine](https://github.com/LucaMezz/fig-engine), which it's intended to
+[roo-engine](https://github.com/LucaMezz/roo-engine), which it's intended to
 eventually replace Luau/`mlua` as the scripting language for. Expect the API
 (and the language itself) to change as it grows.
 
@@ -19,7 +19,7 @@ codegen yet.
 ## Structure
 
 A Cargo workspace, one crate per stage of the pipeline (mirroring
-fig-engine's own `crates/*` layout):
+roo-engine's own `crates/*` layout):
 
 - [`crates/lexer`](crates/lexer) — turns source text into tokens, using
   [`logos`](https://docs.rs/logos). Implemented, and tested against every
@@ -31,7 +31,7 @@ fig-engine's own `crates/*` layout):
 ## Documentation
 
 The language itself — every kind of statement, expression, declaration, and
-type fig understands — is specified in [The fig Programming
+type roo understands — is specified in [The roo Programming
 Language](book), an [mdBook](https://github.com/rust-lang/mdBook) built from
 [`book/src`](book/src). It documents the language's intended design, ahead
 of the implementation. Build it locally with:

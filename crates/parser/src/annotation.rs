@@ -1,12 +1,12 @@
-//! Fig's `#[...]`/`#![...]` annotation system (`Annotation`/`MetaItem`).
+//! Roo's `#[...]`/`#![...]` annotation system (`Annotation`/`MetaItem`).
 
 use crate::*;
 use ast::*;
 use lexer::Token;
 
 fn meta_item_list<'src>(
-    meta_item: impl FigParser<'src, MetaItem> + 'src,
-) -> impl FigParser<'src, MetaItemKind> {
+    meta_item: impl RooParser<'src, MetaItem> + 'src,
+) -> impl RooParser<'src, MetaItemKind> {
     choice((
         meta_item.map(MetaItemInner::MetaItem),
         literal().map(MetaItemInner::Lit),
@@ -18,13 +18,13 @@ fn meta_item_list<'src>(
     .map(MetaItemKind::List)
 }
 
-fn meta_item_name_value<'src>() -> impl FigParser<'src, MetaItemKind> {
+fn meta_item_name_value<'src>() -> impl RooParser<'src, MetaItemKind> {
     just(Token::Eq)
         .ignore_then(literal())
         .map(MetaItemKind::NameValue)
 }
 
-pub fn meta_item<'src>() -> impl FigParser<'src, MetaItem> {
+pub fn meta_item<'src>() -> impl RooParser<'src, MetaItem> {
     recursive(|meta_item| {
         path(ty())
             .then(choice((
@@ -40,7 +40,7 @@ pub fn meta_item<'src>() -> impl FigParser<'src, MetaItem> {
     })
 }
 
-pub fn annotation<'src>() -> impl FigParser<'src, Annotation> {
+pub fn annotation<'src>() -> impl RooParser<'src, Annotation> {
     just(Token::Pound)
         .ignore_then(choice((
             just(Token::Bang).map(|_| AnnotationStyle::Inner),
@@ -50,7 +50,7 @@ pub fn annotation<'src>() -> impl FigParser<'src, Annotation> {
         .map(|(style, item)| Annotation { style, item })
 }
 
-pub fn annotations<'src>() -> impl FigParser<'src, AnnotationVec> {
+pub fn annotations<'src>() -> impl RooParser<'src, AnnotationVec> {
     annotation().repeated().collect::<Vec<_>>()
 }
 
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn parses_a_recursively_nested_list_meta_item() {
-        // The exact shape used in examples/ecs.fig's `#[replicated(...)]`:
+        // The exact shape used in examples/ecs.roo's `#[replicated(...)]`:
         // a list containing a name-value pair and a nested list, whose own
         // argument is a bare word.
         let tokens = tokens(r#"replicated(rename = "hp", skip_if(default))"#);

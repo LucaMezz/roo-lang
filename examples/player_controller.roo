@@ -1,4 +1,4 @@
-//! A smaller companion to ecs.fig: instead of a whole entity-component
+//! A smaller companion to ecs.roo: instead of a whole entity-component
 //! system, this is the kind of single-object "controller" script you'd
 //! attach directly to one game object — closer to how Roblox/Unity/Godot
 //! scripting usually looks day to day.
@@ -6,21 +6,21 @@
 //! Exercises: bare-named lifecycle functions (`_ready`/`_update`) as one
 //! possible entry-point convention a host could recognize — a module's
 //! top level holds only items now, no executable statements, so
-//! something outside fig has to decide where a script starts running;
-//! see ecs.fig for an annotation-driven convention instead
-//! (`#[setup]`/`#[system]`) and dialogue.fig for a marked-struct one.
-//! Also: reusing ecs.fig's exact `engine` ambient module signatures for
+//! something outside roo has to decide where a script starts running;
+//! see ecs.roo for an annotation-driven convention instead
+//! (`#[setup]`/`#[system]`) and dialogue.roo for a marked-struct one.
+//! Also: reusing ecs.roo's exact `engine` ambient module signatures for
 //! consistency; an enum-driven state machine; annotations on enum
 //! variants and a struct field — `#[replicated]`, `#[range(...)]`, and
-//! `#[audio_cue = "..."]` below are all fig-engine's own vocabulary, not
-//! a fig compiler feature (see ecs.fig for a compiler-defined one,
+//! `#[audio_cue = "..."]` below are all roo-engine's own vocabulary, not
+//! a roo compiler feature (see ecs.roo for a compiler-defined one,
 //! `#[must_use]`, and the book's Annotations chapter for the full
 //! picture); and passing mutable state through an explicit function
 //! parameter — the only option now, since there's no module-level
 //! `let player` for `_update` to even try closing over. See
 //! decisions/0009 for why hoisted `fn`s can never
 //! capture `let` bindings regardless (only closures can), and
-//! decisions/0017 for the still-open question of whether fig should
+//! decisions/0017 for the still-open question of whether roo should
 //! ever grow a way to share state like this without threading it
 //! through every call.
 
@@ -38,7 +38,7 @@ enum State {
     Jumping,
 }
 
-// #[replicated] on the whole struct: fig-engine would sync every field to
+// #[replicated] on the whole struct: roo-engine would sync every field to
 // other clients in a multiplayer game. `#[range(...)]` below is
 // unrelated — editor-facing metadata for an inspector slider, not
 // anything to do with networking.
@@ -72,14 +72,14 @@ fn move_speed_for(state: State) -> float {
     }
 }
 
-// fig-engine calls this once, by name, to get the initial value it then
+// roo-engine calls this once, by name, to get the initial value it then
 // threads into every `_update` call below — the bare-named-function
-// counterpart to ecs.fig's `#[setup]`.
+// counterpart to ecs.roo's `#[setup]`.
 fn _ready() -> Player {
     Player::new()
 }
 
-// fig-engine calls this every frame, by name, passing back whatever the
+// roo-engine calls this every frame, by name, passing back whatever the
 // previous call (or `_ready`, on the first frame) left `player` holding.
 fn _update(player: Player, dt: float) {
     let moving = engine::is_key_down("d") || engine::is_key_down("a");

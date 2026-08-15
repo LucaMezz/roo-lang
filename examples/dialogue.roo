@@ -1,18 +1,21 @@
 //! A loose, mostly-untyped inventory/dialogue script — the "quick
-//! throwaway script" end of fig, deliberately leaning on gradual typing
+//! throwaway script" end of roo, deliberately leaning on gradual typing
 //! instead of the heavier trait/generic machinery the other examples use.
 //!
-//! Exercises: unannotated bindings/fields/parameters, the explicit `any`
-//! type, dynamic arrays, closures with untyped parameters, the
-//! typed/untyped boundary (a dynamic value flowing into a statically
-//! typed function, checked at the call); and a marked-struct entry
-//! point — `#[script]` tags `InventoryScript` as "the thing fig-engine
-//! instantiates and runs," and `#[entry]` on one of its methods is what
-//! actually gets called. A module's top level holds only items now, no
-//! executable statements, so every one of these examples has to answer
-//! "where does this actually start running" somehow; see ecs.fig for an
+//! Exercises: the genuinely-still-dynamic surface of the language — an
+//! untyped struct field, the explicit `any` type, dynamic arrays, and
+//! closures with untyped parameters (unlike an untyped `fn` parameter,
+//! which infers and generalizes instead of staying dynamic — see
+//! inference.roo for that story) — plus the typed/untyped boundary (a
+//! dynamic value flowing into a statically typed function, checked at
+//! the call); and a marked-struct entry point — `#[script]` tags
+//! `InventoryScript` as "the thing roo-engine instantiates and runs,"
+//! and `#[entry]` on one of its methods is what actually gets called. A
+//! module's top level holds only items now, no executable statements,
+//! so every one of these examples has to answer "where does this
+//! actually start running" somehow; see ecs.roo for an
 //! annotated-loose-function take on the same problem (`#[setup]`/
-//! `#[system]`) and player_controller.fig for a bare-named-function one
+//! `#[system]`) and player_controller.roo for a bare-named-function one
 //! (`_ready`/`_update`).
 
 // Every item carries wildly different extra data depending on `kind` — a
@@ -43,12 +46,12 @@ fn use_item(health: int, item: Item) -> int {
 }
 
 // A unit struct — no data of its own is needed here, it exists purely
-// as something for fig-engine to recognize via #[script] and instantiate.
+// as something for roo-engine to recognize via #[script] and instantiate.
 #[script]
 struct InventoryScript;
 
 impl InventoryScript {
-    // fig-engine calls this because it's #[entry] — nothing inside this
+    // roo-engine calls this because it's #[entry] — nothing inside this
     // script does.
     #[entry]
     fn on_start(self) {

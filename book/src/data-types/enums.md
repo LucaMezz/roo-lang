@@ -1,13 +1,13 @@
 # Enums
 
 An `enum` defines a type by enumerating its possible variants. Unlike
-enums in most C-family languages, and exactly like Rust, a fig `enum`
+enums in most C-family languages, and exactly like Rust, a roo `enum`
 variant can carry data, and different variants of the same enum can carry
 different, independently-shaped data.
 
 ## Fieldless variants
 
-```fig
+```roo
 enum Direction {
     North,
     South,
@@ -23,7 +23,7 @@ let heading = Direction::North;
 A variant can carry positional data (like a tuple struct) or named fields
 (like a struct), and different variants can mix both styles:
 
-```fig
+```roo
 enum Shape {
     Circle(float),                       // tuple-style: one field
     Rectangle { width: float, height: float }, // struct-style: named fields
@@ -41,7 +41,7 @@ let c = Shape::Point;
 data — see [match](../control-flow/match.md) and
 [Pattern Matching](pattern-matching.md):
 
-```fig
+```roo
 fn area(shape: Shape) -> float {
     match shape {
         Shape::Circle(radius) => 3.14159 * radius * radius,
@@ -61,7 +61,7 @@ Like structs, an enum value follows reference semantics — see
 Enums can have `impl` blocks exactly like structs, including methods and
 associated functions:
 
-```fig
+```roo
 impl Shape {
     fn area(self) -> float {
         match self {
@@ -83,7 +83,7 @@ Like structs and functions, enums can be parameterized over types — see
 or `Result`-shaped standard-library type would be defined, once the
 standard library exists (see [Error Handling](../errors/error-handling.md)):
 
-```fig
+```roo
 enum Option<T> {
     Some(T),
     None,
@@ -94,7 +94,7 @@ enum Option<T> {
 
 Rust allows fieldless enums to specify an explicit numeric discriminant
 (`enum Status { Ok = 200, NotFound = 404 }`), primarily so the value can be
-cast to an integer matching some external (often C/FFI) representation. fig
+cast to an integer matching some external (often C/FFI) representation. roo
 omits this — see
 [Differences from Rust](../design/differences-from-rust.md) — since it has
 no FFI story for that representation to matter to.

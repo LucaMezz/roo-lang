@@ -2,7 +2,7 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-fn named_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FieldDef> {
+fn named_field<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, FieldDef> {
     annotations()
         .then(visibility())
         .then(ident())
@@ -16,7 +16,7 @@ fn named_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src
         })
 }
 
-fn tuple_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FieldDef> {
+fn tuple_field<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, FieldDef> {
     annotations()
         .then(visibility())
         .then(ty)
@@ -29,7 +29,7 @@ fn tuple_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src
         })
 }
 
-fn enum_tuple_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FieldDef> {
+fn enum_tuple_field<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, FieldDef> {
     annotations()
         .then(ty)
         .map_with(|(annotations, ty), e| FieldDef {
@@ -44,7 +44,7 @@ fn enum_tuple_field<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser
         })
 }
 
-fn struct_body<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, VariantData> {
+fn struct_body<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, VariantData> {
     choice((
         named_field(ty.clone())
             .separated_by(just(Token::Comma))
@@ -64,8 +64,8 @@ fn struct_body<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src
 }
 
 fn enum_variant_data<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, VariantData> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, VariantData> {
     choice((
         named_field(ty.clone())
             .separated_by(just(Token::Comma))
@@ -84,7 +84,7 @@ fn enum_variant_data<'src>(
     .map(|data| data.unwrap_or(VariantData::Unit))
 }
 
-fn variant<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, Variant> {
+fn variant<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, Variant> {
     annotations()
         .then(ident())
         .then(enum_variant_data(ty))
@@ -100,7 +100,7 @@ fn variant<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, Va
         })
 }
 
-fn enum_def<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, EnumDef> {
+fn enum_def<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, EnumDef> {
     variant(ty)
         .separated_by(just(Token::Comma))
         .allow_trailing()
@@ -109,7 +109,7 @@ fn enum_def<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, E
         .map(|variants| EnumDef { variants })
 }
 
-fn ty_alias<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, TyAlias> {
+fn ty_alias<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, TyAlias> {
     just(Token::Type)
         .ignore_then(ident())
         .then(
@@ -152,7 +152,7 @@ fn ty_alias<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, T
         )
 }
 
-fn self_param<'src>() -> impl FigParser<'src, Param> {
+fn self_param<'src>() -> impl RooParser<'src, Param> {
     just(Token::SelfLower).map_with(|_, e| Param {
         annotations: Vec::new(),
         ty: Some(Box::new(Ty {
@@ -173,14 +173,14 @@ fn self_param<'src>() -> impl FigParser<'src, Param> {
     })
 }
 
-fn fn_param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Param> {
+fn fn_param<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Param> {
     choice((self_param(), param(expr)))
 }
 
 fn fn_item<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Fn> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Fn> {
     just(Token::Fn)
         .ignore_then(ident())
         .then(generics())
@@ -202,9 +202,9 @@ fn fn_item<'src>(
 }
 
 fn assoc_item_kind<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, AssocItemKind> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, AssocItemKind> {
     choice((
         fn_item(expr, block).map(Box::new).map(AssocItemKind::Fn),
         ty_alias(ty()).map(Box::new).map(AssocItemKind::Type),
@@ -212,9 +212,9 @@ fn assoc_item_kind<'src>(
 }
 
 fn assoc_item<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, AssocItem> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, AssocItem> {
     annotations()
         .then(visibility())
         .then(assoc_item_kind(expr, block))
@@ -227,9 +227,9 @@ fn assoc_item<'src>(
 }
 
 fn trait_def<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Trait> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Trait> {
     just(Token::Trait)
         .ignore_then(ident())
         .then(generics())
@@ -255,9 +255,9 @@ fn trait_def<'src>(
 }
 
 fn impl_def<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Impl> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Impl> {
     just(Token::Impl)
         .ignore_then(generics())
         .then(choice((
@@ -283,10 +283,10 @@ fn impl_def<'src>(
 }
 
 fn item_kind<'src>(
-    item: impl FigParser<'src, Item> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, ItemKind> {
+    item: impl RooParser<'src, Item> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, ItemKind> {
     choice((
         just(Token::Use)
             .ignore_then(use_tree())
@@ -323,9 +323,9 @@ fn item_kind<'src>(
 /// this for item-statements without recreating them, which would
 /// recurse forever: `expr -> block -> stmt -> item -> expr -> ...`.
 pub(crate) fn item_with<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Item> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Item> {
     recursive(|item| {
         annotations()
             .then(visibility())
@@ -339,7 +339,7 @@ pub(crate) fn item_with<'src>(
     })
 }
 
-pub fn item<'src>() -> impl FigParser<'src, Item> {
+pub fn item<'src>() -> impl RooParser<'src, Item> {
     let expr = expr();
     let block = block(expr.clone());
     item_with(expr, block)

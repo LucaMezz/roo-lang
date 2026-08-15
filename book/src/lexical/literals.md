@@ -5,26 +5,26 @@
 Decimal by default, with optional `_` digit separators anywhere between
 digits:
 
-```fig
+```roo
 let a = 42;
 let b = 1_000_000;
 ```
 
 Other bases use the same prefixes Rust does:
 
-```fig
+```roo
 let hex = 0xFF;      // 255
 let oct = 0o17;       // 15
 let bin = 0b1010_1010; // 170
 ```
 
-There is no suffix syntax (`42i32`, `10u8`) — fig has a single integer type,
+There is no suffix syntax (`42i32`, `10u8`) — roo has a single integer type,
 [`int`](../types/primitives.md), so there is nothing for a suffix to select
 between.
 
 ## Float literals
 
-```fig
+```roo
 let pi = 3.14159;
 let big = 1_000.0;
 let short = 5.;      // trailing-dot form is allowed, like Rust
@@ -37,7 +37,7 @@ an `int`. Write `5.0` (or annotate: `let x: float = 5;`) to get a `float`.
 
 ## Boolean literals
 
-```fig
+```roo
 true
 false
 ```
@@ -46,7 +46,7 @@ false
 
 A `char` literal is a single Unicode scalar value in single quotes:
 
-```fig
+```roo
 let c = 'a';
 let newline = '\n';
 let emoji = '🦀';
@@ -58,7 +58,7 @@ let quote = '\'';
 A `String` literal is UTF-8 text in double quotes, supporting the same
 escape sequences as Rust:
 
-```fig
+```roo
 let s = "hello, world";
 let multiline = "line one
 line two";
@@ -83,7 +83,7 @@ A raw string ignores escape sequences entirely, which is useful for text
 containing lots of backslashes or quotes (regular expressions, file paths,
 embedded code):
 
-```fig
+```roo
 let path = r"C:\Users\name";
 let quoted = r#"she said "hello""#;
 ```
@@ -95,6 +95,6 @@ string itself needs to contain `"#`.
 
 Rust's numeric literal *type suffixes* (`1u8`, `2.0f32`, `3i64`) and byte
 literals/byte strings (`b'a'`, `b"..."`) are tied to Rust's fixed-width
-integer types and byte-buffer APIs, neither of which fig has — see
+integer types and byte-buffer APIs, neither of which roo has — see
 [Differences from Rust](../design/differences-from-rust.md). C-string
-literals (`c"..."`) are FFI-only and likewise don't exist in fig.
+literals (`c"..."`) are FFI-only and likewise don't exist in roo.

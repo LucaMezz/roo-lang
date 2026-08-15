@@ -1,11 +1,11 @@
 # Ambient Modules
 
-Every function shown so far has had a body. fig also allows a function
+Every function shown so far has had a body. roo also allows a function
 signature with **no** body, ending in `;` instead of a block — the same
 allowance [trait method declarations](../abstraction/traits.md) already
 have:
 
-```fig
+```roo
 mod engine {
     struct Vector3 { x: float, y: float, z: float }
 
@@ -16,20 +16,20 @@ mod engine {
 }
 ```
 
-A bodyless function isn't implemented in fig at all — it's a promise that
-*something outside this fig program* provides it. A module built entirely
+A bodyless function isn't implemented in roo at all — it's a promise that
+*something outside this roo program* provides it. A module built entirely
 out of such signatures is an **ambient module**: a description of an API
-surface the host embedding fig (for [fig-engine](https://github.com/LucaMezz/fig-engine),
+surface the host embedding roo (for [roo-engine](https://github.com/LucaMezz/roo-engine),
 code written in Rust) makes available to scripts, given in exactly the same
 syntax as a module you'd write yourself.
 
 ## Using one
 
 From a script's point of view, there is no difference at all between an
-ambient module and a fig-authored one. Same `use`, same paths, same
+ambient module and a roo-authored one. Same `use`, same paths, same
 `::`/`.` call syntax, same static type checking:
 
-```fig
+```roo
 use engine::Vector3;
 
 let position = Vector3::new(1.0, 2.0, 3.0);
@@ -47,22 +47,22 @@ calling one with a default implementation.
 
 Rust's equivalent tool, `extern "C" { fn foo(...); }`, exists to describe a
 C ABI boundary: calling convention, memory layout, raw pointers — all of
-the low-level detail fig has no use for (see
+the low-level detail roo has no use for (see
 [Differences from Rust](../design/differences-from-rust.md)). An ambient
-module describes none of that. It's a normal, gradually-typed fig
+module describes none of that. It's a normal, gradually-typed roo
 signature; the type checker treats it exactly like any other module's
 public API, and everything about *how* the host actually fulfills it is
-outside fig's concern.
+outside roo's concern.
 
 ## How the host fulfills one
 
-fig doesn't mandate an implementation strategy for this — it's a property
-of whatever's embedding fig, not of the language. What follows is how it
-works today, for fig-engine specifically, since that's the motivating case
+roo doesn't mandate an implementation strategy for this — it's a property
+of whatever's embedding roo, not of the language. What follows is how it
+works today, for roo-engine specifically, since that's the motivating case
 this feature was designed around.
 
-fig currently compiles by transpiling to Luau, run on a Luau VM embedded in
-fig-engine. Before a transpiled script runs, fig-engine registers the
+roo currently compiles by transpiling to Luau, run on a Luau VM embedded in
+roo-engine. Before a transpiled script runs, roo-engine registers the
 implementation behind each ambient module into that VM's globals — one
 global table per top-level ambient module, so `engine::Vector3` becomes a
 Luau global table named `Vector3`. The transpiler's half of the deal is
@@ -74,17 +74,17 @@ engine functionality as ambient globals (Roblox's `Vector3`, `game`, and
 `workspace` all work this way) rather than through Luau's module system.
 
 This is a different resolution story from
-[fig's own modules](modules.md), which are resolved entirely at compile
-time by the fig→Luau transpiler and never touch the Luau VM's globals or
+[roo's own modules](modules.md), which are resolved entirely at compile
+time by the roo→Luau transpiler and never touch the Luau VM's globals or
 its `require` at all. Ambient modules are the one
 place where "this value comes from outside the compiled program" is true.
 
 ## Keeping declarations in sync with Rust
 
-How fig-engine actually produces and maintains these ambient declarations —
+How roo-engine actually produces and maintains these ambient declarations —
 hand-written stub files alongside the Rust implementation, or generated
 automatically from the real Rust types and `impl` blocks by a macro or
-build step — is a fig-engine tooling decision, not part of the fig
+build step — is a roo-engine tooling decision, not part of the roo
 language. The language only specifies the shape (a module of bodyless
 signatures) and the guarantee (it type-checks and is called exactly like
 any other module).

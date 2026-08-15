@@ -6,7 +6,7 @@ Rust.
 
 ## Generic functions
 
-```fig
+```roo
 fn first<T>(items: [T]) -> T {
     items[0]
 }
@@ -18,13 +18,13 @@ first(["a", "b", "c"]);     // T = String
 Type arguments are usually inferred at the call site (see
 [Type Inference](../types/inference.md)) and can also be given explicitly:
 
-```fig
+```roo
 let x = first::<int>([1, 2, 3]);
 ```
 
 ## Generic structs and enums
 
-```fig
+```roo
 struct Pair<T> {
     first: T,
     second: T,
@@ -34,7 +34,7 @@ let p = Pair { first: 1, second: 2 };       // Pair<int>
 let q = Pair { first: "a", second: "b" };   // Pair<String>
 ```
 
-```fig
+```roo
 enum Either<L, R> {
     Left(L),
     Right(R),
@@ -48,7 +48,7 @@ no methods usable on it. A **trait bound** restricts the parameter to types
 implementing a given trait, which is what makes it possible to call that
 trait's methods on values of type `T`:
 
-```fig
+```roo
 fn largest<T: PartialOrd>(items: [T]) -> T {
     let best = items[0];
     for item in items {
@@ -62,7 +62,7 @@ fn largest<T: PartialOrd>(items: [T]) -> T {
 
 Multiple bounds combine with `+`:
 
-```fig
+```roo
 fn print_and_compare<T: Display + PartialOrd>(a: T, b: T) {
     print(a);
     print(b);
@@ -75,7 +75,7 @@ fn print_and_compare<T: Display + PartialOrd>(a: T, b: T) {
 For functions with several bounded parameters, a `where` clause after the
 signature is equivalent to inline bounds but easier to read:
 
-```fig
+```roo
 fn process<T, U>(a: T, b: U) -> bool
 where
     T: PartialOrd,
@@ -90,7 +90,7 @@ where
 Methods can be defined generically, and can also be restricted to specific
 type arguments:
 
-```fig
+```roo
 impl<T> Pair<T> {
     fn new(first: T, second: T) -> Pair<T> {
         Pair { first, second }
@@ -108,7 +108,7 @@ impl<T: PartialOrd> Pair<T> {
 
 A trait itself can be generic:
 
-```fig
+```roo
 trait Converter<T> {
     fn convert(self) -> T;
 }
@@ -119,7 +119,7 @@ trait Converter<T> {
 A generic parameter can declare a default, filled in whenever it's left
 unspecified at the `impl`/use site:
 
-```fig
+```roo
 trait Converter<T = String> {
     fn convert(self) -> T;
 }

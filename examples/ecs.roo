@@ -6,24 +6,24 @@
 //! annotations, and the value/mutability model.
 //!
 //! Two kinds of annotation appear below. `#[must_use]` is compiler-
-//! defined: fig itself warns if the annotated function's return value is
+//! defined: roo itself warns if the annotated function's return value is
 //! discarded. Everything else (`#[component]`, `#[range(...)]`,
 //! `#[replicated(...)]`, `#[setup]`, `#[system]`, `#[audio_cue = "..."]`)
-//! is made up by fig-engine — the fig compiler assigns them no meaning
+//! is made up by roo-engine — the roo compiler assigns them no meaning
 //! at all, it only parses `#[...]` into structured data and hands it
 //! back to whatever host reads it. See Annotations in the book.
 //!
 //! `#[setup]`/`#[system]` specifically are this file's answer to a
-//! question every one of these examples has to answer somehow: a fig
+//! question every one of these examples has to answer somehow: a roo
 //! module's top level holds only items (structs, fns, ...), never
-//! executable statements, so something outside fig has to decide where
+//! executable statements, so something outside roo has to decide where
 //! a script actually starts running. Here that's an engine-defined
 //! annotation on ordinary functions — `#[setup]` runs once to build the
 //! initial `World`, `#[system]` runs every frame after that. See
-//! player_controller.fig for a bare-named-function convention instead
-//! (`_ready`/`_update`), and dialogue.fig for a marked-struct one.
+//! player_controller.roo for a bare-named-function convention instead
+//! (`_ready`/`_update`), and dialogue.roo for a marked-struct one.
 //!
-//! fig has no standard library yet, so `Option<T>` is redefined locally
+//! roo has no standard library yet, so `Option<T>` is redefined locally
 //! here, the same way `errors/error-handling.md` does in the book — this
 //! is a stand-in for a future stdlib type, not a language feature.
 
@@ -108,7 +108,7 @@ mod ecs {
 
         // #[must_use] is compiler-defined: forgetting to check whether an
         // entity actually has this component is an easy, silent bug, so
-        // fig warns if the returned `Option<T>` is discarded outright.
+        // roo warns if the returned `Option<T>` is discarded outright.
         #[must_use]
         pub fn get(self, id: EntityId) -> Option<T> {
             if id.0 >= self.slots.len() {
@@ -145,7 +145,7 @@ mod ecs {
     }
 }
 
-// A host (fig-engine) would provide these — no fig implementation exists
+// A host (roo-engine) would provide these — no roo implementation exists
 // for them, only the shapes of the calls a script can make.
 mod engine {
     pub fn is_key_down(key: String) -> bool;
@@ -155,7 +155,7 @@ mod engine {
 
 use ecs::{EntityId, Position, Velocity, Health, World};
 
-// #[system] is an engine-defined marker: fig-engine auto-discovers every
+// #[system] is an engine-defined marker: roo-engine auto-discovers every
 // #[system]-tagged function and calls it once per frame, passing back in
 // whatever World the previous call (or #[setup], on the first frame)
 // left it holding.
@@ -219,7 +219,7 @@ fn find_nearby(world: World, x: float, y: float, radius: float) -> Option<Entity
     found
 }
 
-// #[setup] is engine-defined too: fig-engine calls this once, before the
+// #[setup] is engine-defined too: roo-engine calls this once, before the
 // frame loop starts, to build the World it then threads into every
 // #[system]-tagged call above — there's no module-level `let` anymore
 // for a script to stash long-lived state in itself, so the engine has to

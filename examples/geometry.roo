@@ -3,10 +3,10 @@
 //! Exercises: operator overloading, enums + match, traits with default
 //! methods, generics with trait bounds, and associated types; also the
 //! simplest possible entry-point convention a host could use — a single
-//! `#[entry]`-annotated function fig-engine calls to start the script,
-//! with no per-frame state to thread through at all. Contrast ecs.fig's
-//! `#[setup]`/`#[system]` pair, player_controller.fig's `_ready`/
-//! `_update`, and dialogue.fig's marked struct — all answers to the same
+//! `#[entry]`-annotated function roo-engine calls to start the script,
+//! with no per-frame state to thread through at all. Contrast ecs.roo's
+//! `#[setup]`/`#[system]` pair, player_controller.roo's `_ready`/
+//! `_update`, and dialogue.roo's marked struct — all answers to the same
 //! question, since a module's top level holds only items now, never
 //! executable statements.
 
@@ -153,7 +153,7 @@ impl Intersect for Shape {
     }
 }
 
-// fig-engine calls this because it's #[entry] — nothing inside this
+// roo-engine calls this because it's #[entry] — nothing inside this
 // script does.
 #[entry]
 fn main() {

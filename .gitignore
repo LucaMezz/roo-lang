@@ -1,4 +1,14 @@
 /target
 /.cargo/config.toml
 /book/book
-/book/mdbook-fig-highlight/target
+/book/mdbook-roo-highlight/target
+
+# LaTeX build artifacts
+spec/*.aux
+spec/*.log
+spec/*.out
+spec/*.toc
+spec/*.fls
+spec/*.fdb_latexmk
+spec/*.synctex.gz
+spec/*.pdf

@@ -16,9 +16,9 @@ use lexer::Token;
 // the `pub` functions calling each other's opaque return types directly.
 
 fn assoc_item_constraint_with<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-    generic_arg: impl FigParser<'src, GenericArg> + 'src,
-) -> impl FigParser<'src, AssocItemConstraint> {
+    ty: impl RooParser<'src, Ty> + 'src,
+    generic_arg: impl RooParser<'src, GenericArg> + 'src,
+) -> impl RooParser<'src, AssocItemConstraint> {
     ident()
         .then(generic_args_with(generic_arg).or_not())
         .then_ignore(just(Token::Eq))
@@ -32,8 +32,8 @@ fn assoc_item_constraint_with<'src>(
 }
 
 fn generic_args_with<'src>(
-    generic_arg: impl FigParser<'src, GenericArg> + 'src,
-) -> impl FigParser<'src, GenericArgs> {
+    generic_arg: impl RooParser<'src, GenericArg> + 'src,
+) -> impl RooParser<'src, GenericArgs> {
     // grammar.md: `"<" type ("," type)* ">"` — at least one arg, and
     // actually delimited by `<`/`>` (missing entirely before this fix,
     // which meant this matched zero args and consumed nothing, silently
@@ -49,7 +49,7 @@ fn generic_args_with<'src>(
         })
 }
 
-pub fn generic_arg<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, GenericArg> {
+pub fn generic_arg<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, GenericArg> {
     recursive(move |generic_arg| {
         assoc_item_constraint_with(ty.clone(), generic_arg.clone())
             .map(GenericArg::Constraint)
@@ -58,31 +58,31 @@ pub fn generic_arg<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<
 }
 
 pub fn generic_args<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, GenericArgs> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, GenericArgs> {
     generic_args_with(generic_arg(ty))
 }
 
 pub fn turbofish_generic_args<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, GenericArgs> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, GenericArgs> {
     just(Token::PathSep).ignore_then(generic_args(ty))
 }
 
 pub fn assoc_item_constraint<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, AssocItemConstraint> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, AssocItemConstraint> {
     assoc_item_constraint_with(ty.clone(), generic_arg(ty))
 }
 
 /// A path segment's leading name — an ordinary [`ident`], or one of the
 /// three reserved words that can start/appear in a path (`self`, `Self`,
-/// `super`; fig has no `crate` root, decisions/0002). These lex as their
+/// `super`; roo has no `crate` root, decisions/0002). These lex as their
 /// own keyword tokens, not `Token::Identifier`, so `ident()` alone never
 /// matches them — this is what lets `use super::Foo;`, `self::Foo`, and
 /// `Self`/`Self::Output` resolve through the same path machinery as any
 /// other name instead of needing their own parallel one.
-fn path_segment_ident<'src>() -> impl FigParser<'src, Ident> {
+fn path_segment_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
         select! {
@@ -94,28 +94,28 @@ fn path_segment_ident<'src>() -> impl FigParser<'src, Ident> {
 }
 
 fn path_segment_with<'src>(
-    generic_args: impl FigParser<'src, GenericArgs> + 'src,
-) -> impl FigParser<'src, PathSegment> {
+    generic_args: impl RooParser<'src, GenericArgs> + 'src,
+) -> impl RooParser<'src, PathSegment> {
     path_segment_ident()
         .then(generic_args.or_not())
         .map(|(ident, args)| PathSegment { ident, args })
 }
 
 pub fn path_segment<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, PathSegment> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, PathSegment> {
     path_segment_with(generic_args(ty))
 }
 
 pub fn path_segment_turbofish<'src>(
-    ty: impl FigParser<'src, Ty> + 'src,
-) -> impl FigParser<'src, PathSegment> {
+    ty: impl RooParser<'src, Ty> + 'src,
+) -> impl RooParser<'src, PathSegment> {
     path_segment_with(turbofish_generic_args(ty))
 }
 
 fn path_with<'src>(
-    path_segment: impl FigParser<'src, PathSegment> + 'src,
-) -> impl FigParser<'src, Path> {
+    path_segment: impl RooParser<'src, PathSegment> + 'src,
+) -> impl RooParser<'src, Path> {
     path_segment
         .separated_by(just(Token::PathSep))
         .at_least(1)
@@ -126,19 +126,19 @@ fn path_with<'src>(
         })
 }
 
-pub fn path<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, Path> {
+pub fn path<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, Path> {
     path_with(path_segment(ty))
 }
 
-pub fn path_turbofish<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, Path> {
+pub fn path_turbofish<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, Path> {
     path_with(path_segment_turbofish(ty))
 }
 
-pub fn generic_bounds<'src>() -> impl FigParser<'src, GenericBounds> {
+pub fn generic_bounds<'src>() -> impl RooParser<'src, GenericBounds> {
     ty().separated_by(just(Token::Plus)).collect::<Vec<_>>()
 }
 
-pub fn generic_param<'src>() -> impl FigParser<'src, GenericParam> {
+pub fn generic_param<'src>() -> impl RooParser<'src, GenericParam> {
     annotations()
         .then(ident())
         .then(
@@ -156,14 +156,14 @@ pub fn generic_param<'src>() -> impl FigParser<'src, GenericParam> {
         })
 }
 
-pub fn where_predicate<'src>() -> impl FigParser<'src, WherePredicate> {
+pub fn where_predicate<'src>() -> impl RooParser<'src, WherePredicate> {
     ty().map(Box::new)
         .then_ignore(just(Token::Colon))
         .then(generic_bounds())
         .map(|(bounded_ty, bounds)| WherePredicate { bounded_ty, bounds })
 }
 
-pub fn where_clause<'src>() -> impl FigParser<'src, WhereClause> {
+pub fn where_clause<'src>() -> impl RooParser<'src, WhereClause> {
     where_predicate()
         .separated_by(just(Token::Comma))
         .collect::<Vec<_>>()
@@ -173,7 +173,7 @@ pub fn where_clause<'src>() -> impl FigParser<'src, WhereClause> {
         })
 }
 
-pub fn generics<'src>() -> impl FigParser<'src, Generics> {
+pub fn generics<'src>() -> impl RooParser<'src, Generics> {
     generic_param()
         .separated_by(just(Token::Comma))
         .allow_trailing()
@@ -192,7 +192,7 @@ pub fn generics<'src>() -> impl FigParser<'src, Generics> {
         })
 }
 
-pub fn q_self<'src>() -> impl FigParser<'src, QSelf> {
+pub fn q_self<'src>() -> impl RooParser<'src, QSelf> {
     ty().map(Box::new)
         .then_ignore(just(Token::As))
         .then(path(ty()).or_not())

@@ -1,13 +1,13 @@
 # Loops
 
-fig has the same three loop forms as Rust: `loop`, `while`, and `for`, plus
+roo has the same three loop forms as Rust: `loop`, `while`, and `for`, plus
 `while let`.
 
 ## `loop`
 
 An unconditional loop that runs until a `break`:
 
-```fig
+```roo
 let count = 0;
 loop {
     count += 1;
@@ -23,7 +23,7 @@ loop {
 evaluate to something other than `()` — useful for retry-until-success
 logic:
 
-```fig
+```roo
 let attempts = 0;
 let result = loop {
     attempts += 1;
@@ -41,7 +41,7 @@ let result = loop {
 Runs its body as long as a `bool` condition holds, checked before each
 iteration:
 
-```fig
+```roo
 let n = 10;
 while n > 0 {
     print(n);
@@ -53,7 +53,7 @@ while n > 0 {
 
 Like `if let`, but loops as long as the pattern keeps matching:
 
-```fig
+```roo
 while let Some(item) = queue.pop() {
     process(item);
 }
@@ -64,7 +64,7 @@ while let Some(item) = queue.pop() {
 Iterates over every element produced by an iterable expression, binding
 each in turn:
 
-```fig
+```roo
 for n in [1, 2, 3] {
     print(n);
 }
@@ -88,7 +88,7 @@ that `for pattern in expr { }` desugars to repeatedly producing a value from
 The loop variable can be any pattern, not just a single name — see
 [Pattern Matching](../data-types/pattern-matching.md):
 
-```fig
+```roo
 for (index, name) in enumerated_names {
     print(index);
     print(name);
@@ -100,7 +100,7 @@ for (index, name) in enumerated_names {
 `break` exits the innermost loop immediately; `continue` skips to the next
 iteration:
 
-```fig
+```roo
 for n in 0..100 {
     if n % 2 != 0 {
         continue;
@@ -119,7 +119,7 @@ loop instead of the innermost one. A label is a plain identifier followed
 by a colon, placed before the loop keyword, and referenced by name (not by
 prefixing it with `'`) in `break`/`continue`:
 
-```fig
+```roo
 outer: for x in 0..5 {
     for y in 0..5 {
         if x * y > 6 {
@@ -135,7 +135,7 @@ outer: for x in 0..5 {
 
 Rust spells a loop label `'outer:`, reusing the same leading-apostrophe
 syntax as a lifetime, because in Rust a label technically *is* a lifetime
-occupying the label namespace. Since fig has no lifetimes at all, its loop
+occupying the label namespace. Since roo has no lifetimes at all, its loop
 labels are spelled as plain identifiers instead, so the syntax doesn't imply
 a feature that isn't there — see
 [Differences from Rust](../design/differences-from-rust.md).

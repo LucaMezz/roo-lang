@@ -4,7 +4,7 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-fn visibility_kind<'src>() -> impl FigParser<'src, VisibilityKind> {
+fn visibility_kind<'src>() -> impl RooParser<'src, VisibilityKind> {
     choice((
         just(Token::Pub).map(|_| VisibilityKind::Public),
         just(Token::Pub)
@@ -18,7 +18,7 @@ fn visibility_kind<'src>() -> impl FigParser<'src, VisibilityKind> {
     ))
 }
 
-pub fn visibility<'src>() -> impl FigParser<'src, Visibility> {
+pub fn visibility<'src>() -> impl RooParser<'src, Visibility> {
     visibility_kind().map_with(|kind, e| Visibility {
         kind,
         span: span(e),

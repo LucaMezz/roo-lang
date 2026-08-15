@@ -7,12 +7,12 @@ fn add(a, b) -> Double<_, _> {
 
 // An identity function which has no type annotations that
 // will be inferred as generic over a type parameter T.
-fn identity(x) {
+fn identity(x) -> _ {
     x
 }
 
 #[entry]
-pub fn main() -> (any, int) {
+pub fn main() {
     let n: Number = 5;
     let sum = add(n, 10);
     let doubled = identity::<Double<any, _> >(sum);

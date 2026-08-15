@@ -91,8 +91,8 @@ mod strict_keywords {
 }
 
 // ---------------------------------------------------------------------
-// Words that are Rust keywords but ordinary identifiers in fig, per
-// lexical/identifiers-and-keywords.md's "Not keywords in fig" list.
+// Words that are Rust keywords but ordinary identifiers in roo, per
+// lexical/identifiers-and-keywords.md's "Not keywords in roo" list.
 // ---------------------------------------------------------------------
 
 #[test]
@@ -213,7 +213,7 @@ mod operators_and_punctuation {
         assert_tokens("<<=", &[ShlEq]);
         assert_tokens("<< =", &[Shl, Eq]);
         assert_tokens("<=>", &[LtEq, Gt]);
-        assert_tokens("...", &[DotDot, Dot]); // not real fig syntax, but must still lex
+        assert_tokens("...", &[DotDot, Dot]); // not real roo syntax, but must still lex
         assert_tokens("..=..", &[DotDotEq, DotDot]);
     }
 
@@ -695,10 +695,10 @@ mod composite_constructs {
 
     #[test]
     fn let_else_and_while_let() {
-        // Deliberately no loop label here — fig has no Rust-style
-        // `'outer` syntax at all (fig labels are plain identifiers, with
+        // Deliberately no loop label here — roo has no Rust-style
+        // `'outer` syntax at all (roo labels are plain identifiers, with
         // no `'` sigil), so a bare `'` outside a char literal isn't valid
-        // fig lexically either. Labels are covered separately below.
+        // roo lexically either. Labels are covered separately below.
         lex(r#"
             let Some(x) = maybe else {
                 return;
@@ -711,7 +711,7 @@ mod composite_constructs {
     }
 
     #[test]
-    fn fig_style_plain_identifier_loop_label() {
+    fn roo_style_plain_identifier_loop_label() {
         lex(r#"
             outer: for x in 0..5 {
                 for y in 0..5 {

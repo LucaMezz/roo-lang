@@ -1,19 +1,19 @@
 # Expressions and Statements
 
-Like Rust, fig is **expression-oriented**: most of the language produces a
+Like Rust, roo is **expression-oriented**: most of the language produces a
 value, including constructs that look like "statements" in C-family
 languages — `if`, `match`, and blocks are all expressions.
 
 ## Statements
 
-fig has two kinds of statements:
+roo has two kinds of statements:
 
 - **Declaration statements** — `let` and item declarations (`fn`, `struct`,
   `enum`, `trait`, `impl`, `mod`).
 - **Expression statements** — any expression followed by a `;`, evaluated
   for its side effects, with its value discarded.
 
-```fig
+```roo
 let x = 5;      // declaration statement
 x + 1;           // expression statement — computes 3, discards it
 ```
@@ -23,7 +23,7 @@ x + 1;           // expression statement — computes 3, discards it
 Everything else is an expression, including ones that read like control
 flow:
 
-```fig
+```roo
 let status = if ready { "go" } else { "wait" }; // if is an expression
 
 let described = match code {
@@ -48,7 +48,7 @@ Inside a block `{ ... }`, if the final line has **no** trailing `;`, it is
 the block's value; if it does (or the block is empty), the block's value is
 `()`:
 
-```fig
+```roo
 fn square(n: int) -> int {
     n * n       // no semicolon — this is the returned value
 }
@@ -63,7 +63,7 @@ closing `}` *normally*. It doesn't apply to a statement that unconditionally
 diverges — most commonly `return expr;` — even though that statement also
 ends in a `;`:
 
-```fig
+```roo
 fn foo() -> int {
     return 5; // ends in `;`, but that's irrelevant here
 }
@@ -87,7 +87,7 @@ a value because control flow doesn't continue past them. This lets them
 appear in any expression position, most commonly as one arm of an `if` or
 `match` whose other arms produce a real value:
 
-```fig
+```roo
 let value = if let Some(v) = maybe_value {
     v
 } else {

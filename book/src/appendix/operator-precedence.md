@@ -35,7 +35,7 @@ same row group left-to-right unless noted otherwise.
 - Parentheses always override precedence, exactly as expected: `(a + b) *
   c`.
 - This table omits `&`/`&mut`/`*` as **prefix** (address-of/dereference)
-  operators, since fig has no references — see
+  operators, since roo has no references — see
   [Operators](../expressions/operators.md#whats-not-here). `&`, `|`, and
   `*` above refer only to their binary (bitwise-and, bitwise-or,
   multiplication) forms.

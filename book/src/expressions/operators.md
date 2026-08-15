@@ -34,7 +34,7 @@ Both operands of `&&`/`||` must be `bool` — there's no truthy/falsy
 coercion of other types. Short-circuiting means the right operand isn't
 evaluated if the left already determines the result:
 
-```fig
+```roo
 fn expensive() -> bool { print("called"); true }
 
 false && expensive(); // "called" is never printed
@@ -64,7 +64,7 @@ bitwise NOT on `int`. There is no separate `~` operator.
 | `&=` <code>&#124;=</code> `^=` `<<=` `>>=` | Compound bitwise assignment |
 
 Assignment is a statement-position construct, not an expression that
-produces a chainable value — `a = b = c` is not valid fig, matching Rust.
+produces a chainable value — `a = b = c` is not valid roo, matching Rust.
 
 ## Range
 
@@ -99,10 +99,10 @@ Ranges are mainly used in `for` loops and `match` patterns — see
 ## What's *not* here
 
 `&` and `&mut` as **unary, prefix** operators (address-of/borrow) don't
-exist in fig — `&` only ever appears as the binary bitwise-AND operator.
+exist in roo — `&` only ever appears as the binary bitwise-AND operator.
 `*` as a **unary, prefix** operator (dereference) doesn't exist either —
 `*` only ever appears as binary multiplication. Both are consequences of
-fig having no references; see
+roo having no references; see
 [Differences from Rust](../design/differences-from-rust.md).
 
 See [Operator Precedence](../appendix/operator-precedence.md) for the full

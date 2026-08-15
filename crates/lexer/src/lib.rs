@@ -1,4 +1,4 @@
-//! `lexer` turns fig-lang source text into a stream of tokens, using
+//! `lexer` turns roo-lang source text into a stream of tokens, using
 //! [`logos`] to generate the actual scanning code from the [`Token`]
 //! definition.
 //!

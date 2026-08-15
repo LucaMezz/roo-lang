@@ -1,4 +1,4 @@
-//! Generates one `#[test]` per fig code block in the book, plus one per
+//! Generates one `#[test]` per roo code block in the book, plus one per
 //! file in `examples/`, asserting each lexes with no error. Regenerated
 //! from whatever the book/examples currently say, so the test suite can
 //! never silently drift out of sync with the docs it's checking.
@@ -32,7 +32,7 @@ fn main() {
         .expect("failed to write generated tests");
 }
 
-/// Walks every `.md` file under `book_src`, pulls out every ```` ```fig ````
+/// Walks every `.md` file under `book_src`, pulls out every ```` ```roo ````
 /// fenced block, and emits one test per block.
 fn generate_book_snippet_tests(book_src: &Path, out: &mut String) {
     let mut md_files = Vec::new();
@@ -44,7 +44,7 @@ fn generate_book_snippet_tests(book_src: &Path, out: &mut String) {
         let relative = path.strip_prefix(book_src).unwrap_or(&path);
         let test_stem = sanitize_ident(&relative.with_extension("").to_string_lossy());
 
-        for (i, block) in extract_fig_blocks(&content).into_iter().enumerate() {
+        for (i, block) in extract_roo_blocks(&content).into_iter().enumerate() {
             let test_name = format!("book_{test_stem}_block_{i}");
             let display_path = relative.display().to_string();
             write_lex_ok_test(out, &test_name, &display_path, i, &block);
@@ -52,14 +52,14 @@ fn generate_book_snippet_tests(book_src: &Path, out: &mut String) {
     }
 }
 
-/// Emits one test per `.fig` file directly under `examples_dir`.
+/// Emits one test per `.roo` file directly under `examples_dir`.
 fn generate_example_file_tests(examples_dir: &Path, out: &mut String) {
-    let mut fig_files = Vec::new();
-    collect_files_with_extension(examples_dir, "fig", &mut fig_files);
-    fig_files.sort();
+    let mut roo_files = Vec::new();
+    collect_files_with_extension(examples_dir, "roo", &mut roo_files);
+    roo_files.sort();
 
-    for path in fig_files {
-        let content = fs::read_to_string(&path).expect("failed to read example .fig file");
+    for path in roo_files {
+        let content = fs::read_to_string(&path).expect("failed to read example .roo file");
         let stem = path
             .file_stem()
             .expect("example file should have a name")
@@ -95,18 +95,18 @@ fn write_lex_ok_test(
     out.push('\n');
 }
 
-/// Extracts the contents of every ```` ```fig ````-fenced block in a
+/// Extracts the contents of every ```` ```roo ````-fenced block in a
 /// markdown file. Deliberately simple line-based scanning rather than a
 /// full markdown parser — the book only ever uses plain triple-backtick
 /// fences, though some are indented (nested inside a list item), so
 /// fence lines are matched trimmed on both ends, not just anchored at
 /// column 0.
-fn extract_fig_blocks(markdown: &str) -> Vec<String> {
+fn extract_roo_blocks(markdown: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut lines = markdown.lines();
 
     while let Some(line) = lines.by_ref().next() {
-        if line.trim() != "```fig" {
+        if line.trim() != "```roo" {
             continue;
         }
         let mut block = String::new();

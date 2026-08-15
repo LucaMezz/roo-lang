@@ -5,7 +5,7 @@
 `if` takes a `bool` condition — no parentheses required around it, and no
 implicit truthiness for other types — followed by a block:
 
-```fig
+```roo
 if temperature > 30 {
     print("hot");
 } else if temperature > 15 {
@@ -22,7 +22,7 @@ is present (an `if` with no `else` always has type `()`, since the "missing"
 branch implicitly evaluates to `()`) and every branch's trailing expression
 has the same type:
 
-```fig
+```roo
 let description = if temperature > 30 {
     "hot"
 } else if temperature > 15 {
@@ -32,7 +32,7 @@ let description = if temperature > 30 {
 }; // note the semicolon — this whole if/else is one expression
 ```
 
-This is fig's (and Rust's) replacement for a ternary operator — there is no
+This is roo's (and Rust's) replacement for a ternary operator — there is no
 separate `cond ? a : b` syntax.
 
 ## `if let`
@@ -43,7 +43,7 @@ concise form of a `match` with one meaningful arm and a wildcard fallback.
 See [Pattern Matching](../data-types/pattern-matching.md) for the full
 pattern grammar.
 
-```fig
+```roo
 if let Some(value) = maybe_value {
     print(value);
 } else {
@@ -53,7 +53,7 @@ if let Some(value) = maybe_value {
 
 `if let` can be chained with `else if let`, and mixed with a plain `else`:
 
-```fig
+```roo
 if let Circle(radius) = shape {
     print(radius);
 } else if let Rectangle { width, height } = shape {
@@ -70,7 +70,7 @@ if let Circle(radius) = shape {
 diverge (`return`, `break`, `continue`, or `panic`) on a non-match, so
 the bound variables are guaranteed to exist afterward:
 
-```fig
+```roo
 fn first_word(text: String) -> String {
     let Some(word) = text.split_first() else {
         return "";

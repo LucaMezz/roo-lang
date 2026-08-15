@@ -1,13 +1,13 @@
 # Traits
 
-A `trait` defines a set of methods a type can implement, giving fig a way
+A `trait` defines a set of methods a type can implement, giving roo a way
 to write code against "any type that can do X" rather than one concrete
-type. Traits are how fig expresses interfaces/protocols, exactly as in
+type. Traits are how roo expresses interfaces/protocols, exactly as in
 Rust.
 
 ## Defining a trait
 
-```fig
+```roo
 trait Shape {
     fn area(self) -> float;
     fn perimeter(self) -> float;
@@ -16,7 +16,7 @@ trait Shape {
 
 ## Implementing a trait
 
-```fig
+```roo
 struct Circle { radius: float }
 
 impl Shape for Circle {
@@ -38,7 +38,7 @@ blocks.
 A trait method can provide a default body, which implementers can use as-is
 or override:
 
-```fig
+```roo
 trait Shape {
     fn area(self) -> float;
 
@@ -54,7 +54,7 @@ A trait name can be used directly wherever a type is expected, meaning "any
 value that implements this trait" — as a function parameter type, a return
 type, or a variable's type annotation:
 
-```fig
+```roo
 fn print_area(shape: Shape) {
     print(shape.area());
 }
@@ -65,7 +65,7 @@ print_area(Circle { radius: 2.0 }); // any Shape-implementing value works
 Rust requires writing `&dyn Shape` or `Box<dyn Shape>` for this, because a
 trait-typed value in Rust needs an explicit pointer indirection (the type
 itself is unsized) and an explicit opt-in to dynamic dispatch via `dyn`.
-Since every non-primitive value in fig is already a runtime-managed
+Since every non-primitive value in roo is already a runtime-managed
 reference (see [The Value Model](../design/values-and-mutation.md)), a
 trait-typed value works exactly the same way any other reference-typed
 value does — no `dyn`, no `Box`, no separate sized/unsized distinction. See
@@ -76,7 +76,7 @@ yet have a settled answer for a bare trait-typed position holding a
 *primitive* directly (`let x: Add = 5;`, or a heterogeneous `[Add]`
 containing an `int`) — unlike the [generic, statically-resolved case](operator-overloading.md#primitive-types-implement-these-traits-intrinsically),
 which sidesteps this entirely since it never needs a runtime representation
-for `T`. Not a case fig has a story for yet; flagged here rather than
+for `T`. Not a case roo has a story for yet; flagged here rather than
 papered over.
 
 ## Trait bounds on generics
@@ -84,7 +84,7 @@ papered over.
 The more common use of a trait is constraining a generic type parameter —
 see [Generics](generics.md) for the full syntax:
 
-```fig
+```roo
 fn largest<T: PartialOrd>(items: [T]) -> T {
     // ...
 }
@@ -95,7 +95,7 @@ fn largest<T: PartialOrd>(items: [T]) -> T {
 A trait can declare a type that each implementation fills in, useful when a
 trait's methods need to refer to a type that varies by implementer:
 
-```fig
+```roo
 trait Container {
     type Item;
 
@@ -116,7 +116,7 @@ impl Container for IntList {
 A trait can require that implementers also implement another trait, using
 the same `:` syntax as a generic bound:
 
-```fig
+```roo
 trait Drawable {
     fn draw(self);
 }
@@ -138,7 +138,7 @@ traits — see [Operator Overloading](operator-overloading.md).
 
 ## What's *not* here
 
-fig has no equivalent of Rust's `unsafe trait`, no `?Sized`/`Sized` bounds,
+roo has no equivalent of Rust's `unsafe trait`, no `?Sized`/`Sized` bounds,
 and no `dyn`-related object-safety rules — all consequences of removing the
 ownership/sizedness machinery those exist to support. See
 [Differences from Rust](../design/differences-from-rust.md).

@@ -11,7 +11,7 @@ use lexer::Token;
 /// accidentally fall through to treating `_` as an ordinary binding just
 /// by forgetting to special-case it — the `_` case has to be handled
 /// deliberately, since this parser will never produce it.
-pub fn ident<'src>() -> impl FigParser<'src, Ident> {
+pub fn ident<'src>() -> impl RooParser<'src, Ident> {
     select! {
         Token::Identifier(name) = e if name != "_" => Ident { name: name.to_owned(), span: span(e) },
     }
@@ -21,7 +21,7 @@ pub fn ident<'src>() -> impl FigParser<'src, Ident> {
 /// lifetime-sigil form (decisions/0002) — so this is just `ident()`
 /// followed by the `:` the concrete syntax requires, with the colon
 /// itself discarded (`Label` has nothing to store it in).
-pub fn label<'src>() -> impl FigParser<'src, Label> {
+pub fn label<'src>() -> impl RooParser<'src, Label> {
     ident()
         .then_ignore(just(Token::Colon))
         .map(|ident| Label { ident })

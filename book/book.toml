@@ -1,22 +1,22 @@
 [book]
-title = "The fig Programming Language"
-authors = ["The fig-lang project"]
-description = "The language specification and guide for fig, an embeddable, gradually-typed scripting language."
+title = "The roo Programming Language"
+authors = ["The roo-lang project"]
+description = "The language specification and guide for roo, an embeddable, gradually-typed scripting language."
 language = "en"
 src = "src"
 
 [build]
 create-missing = false
 
-[preprocessor.fig-highlight]
-command = "./mdbook-fig-highlight/target/release/mdbook-fig-highlight"
+[preprocessor.roo-highlight]
+command = "./mdbook-roo-highlight/target/release/mdbook-roo-highlight"
 
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "navy"
 git-repository-icon = "fa-github"
 no-section-label = false
-additional-css = ["theme/fig-highlight.css"]
+additional-css = ["theme/roo-highlight.css"]
 
 [output.html.search]
 enable = true

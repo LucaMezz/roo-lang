@@ -2,7 +2,7 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-pub fn use_tree<'src>() -> impl FigParser<'src, UseTree> {
+pub fn use_tree<'src>() -> impl RooParser<'src, UseTree> {
     recursive(|use_tree| {
         path(ty())
             .then(choice((

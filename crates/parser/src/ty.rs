@@ -4,7 +4,7 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-fn fn_ty<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FnTy> {
+fn fn_ty<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, FnTy> {
     just(Token::Identifier("Fn"))
         .ignore_then(
             ty.clone()
@@ -17,7 +17,7 @@ fn fn_ty<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FnTy
         .map(|(inputs, output)| FnTy { inputs, output })
 }
 
-fn ty_kind<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, TyKind> {
+fn ty_kind<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, TyKind> {
     just(Token::Bang)
         .map(|_| TyKind::Never)
         .or(just(Token::Identifier("_")).map(|_| TyKind::Infer))
@@ -47,7 +47,7 @@ fn ty_kind<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, Ty
             }))
 }
 
-pub fn ty<'src>() -> impl FigParser<'src, Ty> {
+pub fn ty<'src>() -> impl RooParser<'src, Ty> {
     recursive(|ty| {
         ty_kind(ty).map_with(|kind, e| Ty {
             kind,
@@ -56,7 +56,7 @@ pub fn ty<'src>() -> impl FigParser<'src, Ty> {
     })
 }
 
-pub fn fn_ret_ty<'src>(ty: impl FigParser<'src, Ty> + 'src) -> impl FigParser<'src, FnRetTy> {
+pub fn fn_ret_ty<'src>(ty: impl RooParser<'src, Ty> + 'src) -> impl RooParser<'src, FnRetTy> {
     choice((
         just(Token::Arrow)
             .ignore_then(ty)

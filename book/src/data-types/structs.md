@@ -1,11 +1,11 @@
 # Structs
 
 A `struct` bundles named values together into a single, nominal type.
-fig supports the same three struct forms Rust does.
+roo supports the same three struct forms Rust does.
 
 ## Named-field structs
 
-```fig
+```roo
 struct Point {
     x: float,
     y: float,
@@ -17,7 +17,7 @@ print(origin.x);
 
 Field-init shorthand works when a variable's name matches the field name:
 
-```fig
+```roo
 fn make_point(x: float, y: float) -> Point {
     Point { x, y } // shorthand for `Point { x: x, y: y }`
 }
@@ -26,7 +26,7 @@ fn make_point(x: float, y: float) -> Point {
 Struct update syntax builds a new value from an existing one, overriding
 specific fields:
 
-```fig
+```roo
 let moved = Point { x: 5.0, ..origin }; // y comes from origin
 ```
 
@@ -39,7 +39,7 @@ typed instead — see [Gradual Typing](../types/gradual-typing.md) and
 `payload: any` would mean the same thing as leaving the annotation off,
 just spelled out:
 
-```fig
+```roo
 struct Event {
     name: String,
     payload, // dynamically typed
@@ -51,7 +51,7 @@ struct Event {
 A struct whose fields are positional rather than named, useful for giving a
 distinct type to what's conceptually a tuple:
 
-```fig
+```roo
 struct Pair(int, int);
 
 let p = Pair(3, 4);
@@ -60,7 +60,7 @@ print(p.1);
 ```
 
 `Pair(3, 4)` and a plain tuple `(3, 4)` are different, incompatible types
-even though they hold the same shape of data — struct types in fig are
+even though they hold the same shape of data — struct types in roo are
 always **nominal**, never structural (see
 [Gradual Typing: What gradual typing is not](../types/gradual-typing.md#what-gradual-typing-is-not)).
 
@@ -68,7 +68,7 @@ Each positional field has its own `pub`, the same as a named field does —
 useful for a newtype-style wrapper that wants to expose some parts of
 itself and keep others opaque:
 
-```fig
+```roo
 struct EntityId(pub int);         // .0 is visible outside the module
 struct Meters(float);              // the field is private — a pure opaque handle
 ```
@@ -77,7 +77,7 @@ struct Meters(float);              // the field is private — a pure opaque han
 
 A struct with no fields at all, useful as a marker type:
 
-```fig
+```roo
 struct Marker;
 
 let m = Marker;
@@ -98,7 +98,7 @@ An `impl` block attaches functions to a struct type. A function inside an
 called with `.` syntax; one that doesn't is an **associated function**,
 called with `::` syntax (commonly used for constructors):
 
-```fig
+```roo
 struct Point { x: float, y: float }
 
 impl Point {
@@ -123,7 +123,7 @@ p.translate(1.0, 1.0); // mutates p directly, no `&mut self` needed
 
 Rust requires a method to declare whether its receiver is `self`, `&self`,
 or `&mut self`, because that's where the borrow checker's rules attach.
-fig only ever has `self` as the receiver's name — since a struct value is
+roo only ever has `self` as the receiver's name — since a struct value is
 already a reference type, `self` inside a method refers to the same value
 the caller called the method on, with no separate borrowed-receiver type to
 opt into, and no `mut` to write either: every method body may write to
@@ -139,7 +139,7 @@ implemented for a struct the same way — see [Traits](../abstraction/traits.md)
 A struct can be parameterized over one or more types — see
 [Generics](../abstraction/generics.md):
 
-```fig
+```roo
 struct Wrapper<T> {
     value: T,
 }

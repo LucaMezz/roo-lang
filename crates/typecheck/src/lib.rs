@@ -1,13 +1,13 @@
-//! `typecheck` is fig-lang's type checker.
+//! `typecheck` is roo-lang's type checker.
 //!
 //! Combines two things: the concrete type representation (`TyCon`, the
 //! `C` that plugs into [`unify::Term`]) and the actual checking logic
 //! that uses it -- lowering `ast::Ty`/`ast::ExprKind` into terms,
 //! generating `t1 ≟ t2` constraints, and driving `unify::unify` to solve
 //! them. Deliberately one crate, not split into a separate "just the
-//! enum" crate and a logic crate -- `unify` is the reusable, fig-agnostic
-//! piece; `TyCon` is fig-specific by definition, so it lives with the
-//! rest of fig's type checking rather than off on its own. (rustc did
+//! enum" crate and a logic crate -- `unify` is the reusable, roo-agnostic
+//! piece; `TyCon` is roo-specific by definition, so it lives with the
+//! rest of roo's type checking rather than off on its own. (rustc did
 //! the same thing for most of its history: `rustc_typeck` held both,
 //! only splitting into `rustc_hir_analysis`/`rustc_hir_typeck` once it
 //! grew large enough for that to be worth it.)
@@ -703,7 +703,7 @@ impl TypeCheckContext {
         }
     }
 
-    /// Renders a term as fig source-like text, for use in diagnostic
+    /// Renders a term as roo source-like text, for use in diagnostic
     /// messages. Resolves through any bound inference variables first --
     /// an unresolved variable renders as `_`, since it doesn't have a
     /// concrete type to show yet.

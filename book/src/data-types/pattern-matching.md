@@ -17,7 +17,7 @@ and [Loops](../control-flow/loops.md) for how each construct uses patterns.
 
 Match an exact value:
 
-```fig
+```roo
 match n {
     0 => "zero",
     1 => "one",
@@ -33,7 +33,7 @@ reference type) writable-through — the same
 [mutability every other binding has](../design/values-and-mutation.md#every-binding-is-mutable),
 with no `mut` keyword needed to opt in:
 
-```fig
+```roo
 match shape {
     Shape::Circle(radius) => print(radius), // `radius` bound here
     _ => {}
@@ -50,13 +50,13 @@ let (count, total) = (0, 100); // both reassignable
 
 `_` matches anything and binds nothing — used to ignore a value entirely:
 
-```fig
+```roo
 let (_, y) = point; // ignore the first element, bind the second
 ```
 
 ## Range patterns
 
-```fig
+```roo
 match grade {
     90..=100 => "A",
     80..=89 => "B",
@@ -66,7 +66,7 @@ match grade {
 
 ## Tuple and array patterns
 
-```fig
+```roo
 let (x, y) = (1, 2);
 
 match pair {
@@ -87,7 +87,7 @@ match numbers {
 
 Destructure by field name; `..` ignores any remaining fields:
 
-```fig
+```roo
 struct Point { x: int, y: int }
 
 let Point { x, y } = point;
@@ -101,7 +101,7 @@ match point {
 
 ## Enum variant patterns
 
-```fig
+```roo
 match shape {
     Shape::Circle(radius) => ...,
     Shape::Rectangle { width, height } => ...,
@@ -113,7 +113,7 @@ match shape {
 
 `|` matches if any of several patterns match:
 
-```fig
+```roo
 match c {
     'a' | 'e' | 'i' | 'o' | 'u' => "vowel",
     _ => "consonant",
@@ -125,7 +125,7 @@ match c {
 Binds the matched value to a name *while also* checking it against a
 sub-pattern:
 
-```fig
+```roo
 match age {
     n @ 0..=12 => print(n), // binds n, and requires 0..=12
     n @ 13..=19 => "teenager",
@@ -140,7 +140,7 @@ binding, `_`, or a tuple/struct pattern of bindings — is **irrefutable**,
 and is the only kind allowed in a `let`, function parameter, or `for` loop
 variable, all of which require the match to always succeed:
 
-```fig
+```roo
 let (x, y) = point; // ok — always matches a (T, T) tuple
 ```
 
@@ -149,7 +149,7 @@ range — is **refutable**, and is only allowed where "doesn't match" has
 somewhere to go: `match` (another arm), `if let`/`while let` (the `else`
 branch or loop exit), or `let else` (the required `else` block):
 
-```fig
+```roo
 let Shape::Circle(radius) = shape; // error: refutable pattern in `let` —
                                      // `shape` might not be a Circle
 

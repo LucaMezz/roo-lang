@@ -1,6 +1,6 @@
 # Type System Overview
 
-fig's type system has three ingredients: a small set of built-in types, the
+roo's type system has three ingredients: a small set of built-in types, the
 custom types you define (`struct`, `enum`), and gradual typing, which
 determines when any of it is actually enforced.
 
@@ -24,7 +24,7 @@ determines when any of it is actually enforced.
   [Type Inference](inference.md) and
   [Functions: Return type](../functions/functions.md#return-type).
 - **The `any` type**: written explicitly, it means "dynamically typed
-  here," overriding whatever fig would otherwise have inferred — see
+  here," overriding whatever roo would otherwise have inferred — see
   [Gradual Typing: The explicit `any` type](gradual-typing.md#the-explicit-any-type).
   Not a keyword, just a builtin type name like `int` or `String`.
 - **Trait types**: a trait name used where a type is expected means "any
@@ -37,7 +37,7 @@ determines when any of it is actually enforced.
 The grammar for a type annotation is the same in every position: a colon
 followed by a type.
 
-```fig
+```roo
 let x: int = 5;                          // variable binding
 fn add(a: int, b: int) -> int { a + b }  // parameters and return type
 struct Point { x: float, y: float }      // struct fields
@@ -56,13 +56,13 @@ next two chapters, [Type Inference](inference.md) and
 
 ## No `null`, no implicit conversions
 
-Like Rust, fig has no `null`/`nil` value that inhabits every type. Absence
+Like Rust, roo has no `null`/`nil` value that inhabits every type. Absence
 of a value is represented with an explicit type (an `Option`-shaped enum, in
 the standard library sense — see [Error Handling](../errors/error-handling.md)),
 so "forgetting" to handle the absent case is a type error, not a runtime
 crash waiting to happen.
 
-Also like Rust, fig performs no implicit numeric or boolean coercions: an
+Also like Rust, roo performs no implicit numeric or boolean coercions: an
 `int` is never silently used where a `float` is expected, and non-boolean
 values are never silently treated as truthy/falsy in an `if` condition.
 Conversions are always explicit, via [`as`](casting.md).

@@ -1,5 +1,5 @@
 //! `unify` is a general-purpose, reusable unification engine for solving
-//! systems of type equations — not tied to fig-lang's own type system, so
+//! systems of type equations — not tied to roo-lang's own type system, so
 //! it can be pulled in by any crate that needs to solve a set of
 //! constraints of the form `t1 ≟ t2` ("does term `t1` unify with term
 //! `t2`?") down to a set of variable bindings, or an occurs-check/mismatch

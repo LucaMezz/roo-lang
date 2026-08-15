@@ -1,6 +1,6 @@
 # Result, Option, and the ? Operator
 
-fig follows Rust's model for recoverable errors and absent values: they are
+roo follows Rust's model for recoverable errors and absent values: they are
 ordinary enum values you're required to handle, not exceptions and not a
 `null` that silently inhabits every type. This chapter describes the
 language-level contract; the concrete types are a standard-library concern
@@ -13,7 +13,7 @@ standard library will provide.
 A value that might not be present is represented by a two-variant generic
 enum, conventionally shaped like:
 
-```fig
+```roo
 enum Option<T> {
     Some(T),
     None,
@@ -25,7 +25,7 @@ rather than by a `null`/`nil` that silently inhabits every type. Because
 case is a compile-time type error, not a runtime crash — you must pattern
 match (or otherwise unwrap) an `Option<T>` to get at the `T` inside.
 
-```fig
+```roo
 fn find(items: [int], target: int) -> Option<int> {
     for (index, item) in items {
         if item == target {
@@ -46,14 +46,14 @@ match find(numbers, 5) {
 A fallible operation returns a two-variant generic enum carrying either a
 success value or an error value, conventionally shaped like:
 
-```fig
+```roo
 enum Result<T, E> {
     Ok(T),
     Err(E),
 }
 ```
 
-```fig
+```roo
 fn parse(text: String) -> Result<int, String> {
     // ...
     Result::Err("invalid number")
@@ -65,7 +65,7 @@ match parse(input) {
 }
 ```
 
-fig has no exceptions and no `try`/`catch` — every function that can fail
+roo has no exceptions and no `try`/`catch` — every function that can fail
 says so in its return type, and the compiler's exhaustiveness checking on
 `match` (see [match](../control-flow/match.md)) ensures the failure case
 can't be silently ignored the way an uncaught exception or an unchecked
@@ -79,7 +79,7 @@ placed after an expression of `Result`/`Option` type, does exactly that: on
 success it evaluates to the inner value; on failure it immediately returns
 the failure out of the *current* function.
 
-```fig
+```roo
 fn read_config(path: String) -> Result<Config, String> {
     let text = read_file(path)?;   // returns early with the Err if this fails
     let parsed = parse(text)?;      // same for this
@@ -89,7 +89,7 @@ fn read_config(path: String) -> Result<Config, String> {
 
 This is exactly equivalent to:
 
-```fig
+```roo
 fn read_config(path: String) -> Result<Config, String> {
     let text = match read_file(path) {
         Result::Ok(value) => value,

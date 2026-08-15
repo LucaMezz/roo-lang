@@ -111,7 +111,7 @@ fn process_number<'src>(lit: NumberKind<'src>) -> LitKind {
     }
 }
 
-pub fn literal<'src>() -> impl FigParser<'src, Lit> {
+pub fn literal<'src>() -> impl RooParser<'src, Lit> {
     select! {
         Token::CharLiteral(lit) = e => Lit { kind: LitKind::Char(process_char(lit)), span: span(e) },
         Token::StringLiteral(lit) = e => Lit { kind: LitKind::Str(process_string(lit)), span: span(e) },

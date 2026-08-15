@@ -5,7 +5,7 @@ implementing a specific, operator-associated trait for your type. Writing
 `a + b` is sugar for calling that trait's method — for `+`, conceptually an
 `Add` trait shaped like:
 
-```fig
+```roo
 trait Add<Rhs = Self> {
     type Output;
 
@@ -18,7 +18,7 @@ common case — right-hand side and result both the same type as the left —
 uses the [default type parameter](generics.md#default-type-parameters) and
 reads exactly as tersely as a fixed-shape trait would:
 
-```fig
+```roo
 struct Point { x: float, y: float }
 
 impl Add for Point {         // Rhs defaults to Self (Point), here
@@ -41,7 +41,7 @@ Point + Point is the easy case. A lot of real operator overloading needs a
 right-hand side that *isn't* the same type as the left — scaling a vector
 by a plain number is the standard example:
 
-```fig
+```roo
 struct Vector2 { x: float, y: float }
 
 impl Add<float> for Vector2 {    // Rhs given explicitly: float, not Self
@@ -94,7 +94,7 @@ still need to *nominally* implement these traits, not just have their
 operators special-cased in the grammar, so that generic, trait-bounded code
 treats primitives and custom types uniformly:
 
-```fig
+```roo
 fn sum<T: Add>(a: T, b: T) -> T::Output { a + b }
 
 sum(1, 2);           // needs `int` to satisfy `T: Add`
@@ -107,11 +107,11 @@ by itself guarantee the result is the same type as the operands, only that
 the same way `Point`'s does, but a generic function can't assume that
 without also constraining `Output`.)
 
-There's no fig source behind `int`'s `Add` implementation, and there never
+There's no roo source behind `int`'s `Add` implementation, and there never
 can be: the body would have to say `fn add(self, rhs: int) -> int { self +
 rhs }`, which defines `+` in terms of itself. So unlike a custom type's
 `impl`, and unlike an [ambient module](../modules/ambient-modules.md)'s
-bodyless signatures, there is no declaration anywhere in fig-visible syntax
+bodyless signatures, there is no declaration anywhere in roo-visible syntax
 for this — no `impl` block, bodyless or otherwise, and no module path
 pointing at one. The type checker simply treats "`int` and `float` satisfy
 `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`," "`int` also satisfies the bitwise
@@ -119,12 +119,12 @@ traits," and similar facts about `bool`/`char` as built-in axioms, the same
 way it looks up a real `impl` block for a user-defined type — a script
 never needs to know or care which case it's hitting.
 
-This is a different, narrower kind of "no fig source" than an ambient
+This is a different, narrower kind of "no roo source" than an ambient
 module: an ambient module's implementation lives in the *host* embedding
-fig and can vary by embedder; a primitive type's operator traits are
-guaranteed by the fig language itself, identically everywhere fig runs,
+roo and can vary by embedder; a primitive type's operator traits are
+guaranteed by the roo language itself, identically everywhere roo runs,
 regardless of what's hosting the script. Nothing about them belongs to, or
-can be overridden by, fig-engine or any other host.
+can be overridden by, roo-engine or any other host.
 
 Because there's no browsable `impl` to point at, the guarantee has to be
 documented directly instead. The exact trait names are still standard-
@@ -147,9 +147,9 @@ intrinsic/unoverridable one, and it applies to aggregate types you define,
 not to `int`/`float`/etc.
 
 Unlike Rust — where deriving `PartialEq` normally requires
-`#[derive(PartialEq)]`, and fig has no derive macros (see
+`#[derive(PartialEq)]`, and roo has no derive macros (see
 [Differences from Rust](../design/differences-from-rust.md)) — every
-`struct` and `enum` in fig is structurally comparable with `==`/`!=` out of
+`struct` and `enum` in roo is structurally comparable with `==`/`!=` out of
 the box, comparing field-by-field, with no `impl` needed. See
 [Equality compares values, not identity](../design/values-and-mutation.md#equality-compares-values-not-identity).
 Implementing the equality trait explicitly is only necessary to *customize*

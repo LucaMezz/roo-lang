@@ -8,7 +8,7 @@ use lexer::Token;
 /// Doesn't include `=`/compound-assign operators; those are
 /// [`assign_op`]'s job, since `ExprKind::Assign`/`AssignOp` are separate
 /// from `ExprKind::Binary`/`BinOp` in the AST.
-pub fn bin_op<'src>() -> impl FigParser<'src, BinOp> {
+pub fn bin_op<'src>() -> impl RooParser<'src, BinOp> {
     select! {
         Token::Plus = e => BinOpKind::Add,
         Token::Minus = e => BinOpKind::Sub,
@@ -38,7 +38,7 @@ pub fn bin_op<'src>() -> impl FigParser<'src, BinOp> {
 /// A compound-assignment operator — `+= -= *= /= %= &= |= ^= <<= >>=`.
 /// Plain `=` isn't here — that's `ExprKind::Assign`, not `AssignOp`; there
 /// is no `AssignOpKind::Assign` variant to produce.
-pub fn assign_op<'src>() -> impl FigParser<'src, AssignOp> {
+pub fn assign_op<'src>() -> impl RooParser<'src, AssignOp> {
     select! {
         Token::PlusEq = e => AssignOpKind::AddAssign,
         Token::MinusEq = e => AssignOpKind::SubAssign,
@@ -58,7 +58,7 @@ pub fn assign_op<'src>() -> impl FigParser<'src, AssignOp> {
 }
 
 /// Parses a unary operator
-pub fn un_op<'src>() -> impl FigParser<'src, UnOp> {
+pub fn un_op<'src>() -> impl RooParser<'src, UnOp> {
     select! {
         Token::Bang => UnOp::Not,
         Token::Minus => UnOp::Neg,

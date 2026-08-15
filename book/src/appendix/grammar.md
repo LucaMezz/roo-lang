@@ -1,6 +1,6 @@
 # Grammar Summary
 
-An informal EBNF-style summary of fig's syntax, for quick reference. This
+An informal EBNF-style summary of roo's syntax, for quick reference. This
 is a summary of the constructs documented in the rest of the book, not a
 formal, implementation-grade grammar — precedence, whitespace, and comment
 handling are omitted; see the linked chapters for full semantics.
@@ -9,8 +9,10 @@ handling are omitted; see the linked chapters for full semantics.
 (* -------------------------------------------------------------- *)
 (* A file *)
 
-program     ::= statement*  (* a fig file runs top to bottom, like a script —
-                                no entry-point function required *)
+program     ::= item*  (* a roo file is a module: only items are allowed at
+                           the top level — no `let`, no bare statements, and
+                           no implicit entry point. See Variables: No
+                           module-level bindings *)
 
 (* -------------------------------------------------------------- *)
 (* Annotations — see Annotations. Precede the item/field/variant/param
@@ -56,9 +58,11 @@ trait_item  ::= "fn" ident generics? "(" params? ")" ("->" type)? (block | ";")
 impl_block  ::= "impl" generics? type ("for" type)? "{" (function | assoc_type)* "}"
 assoc_type  ::= "type" ident "=" type ";"
 
-module      ::= "pub"? "mod" ident (";" | "{" statement* "}")
-              (* a module body holds the same statement* as a whole
-                 program — it's a nested scope, not a restricted one *)
+module      ::= "pub"? "mod" ident (";" | "{" item* "}")
+              (* a module body holds the same item* as a whole program —
+                 no `let`, no bare statements. `block` (a function/closure
+                 body) is the only place the full statement* grammar
+                 below applies *)
 use_decl    ::= "pub"? "use" path ("as" ident)? ";"
               | "pub"? "use" path "::" "{" use_list "}" ";"
               | "pub"? "use" path "::" "*" ";"
@@ -78,12 +82,13 @@ statement   ::= let_stmt | item | expr ";" | block_expr
               (* block_expr needs no trailing ";" in statement position —
                  if/match/loop/while/for are "expression-with-block" forms,
                  the same exception Rust's grammar makes *)
-let_stmt    ::= "pub"? "let" pattern (":" type)? ("=" expr)? ";"
+let_stmt    ::= "let" pattern (":" type)? ("=" expr)? ";"
               | "let" pattern (":" type)? "=" expr "else" block ";"  (* let-else *)
-              (* "pub" is only meaningful at module scope — see
-                 Modules and Visibility. Every binding a pattern produces
-                 is reassignable/mutate-through-able by default; there is
-                 no "mut" keyword and no way to opt out. *)
+              (* no "pub" — `let` never appears at module scope, only
+                 inside a block, so there's nothing for "pub" to mean.
+                 Every binding a pattern produces is reassignable/
+                 mutate-through-able by default; there is no "mut"
+                 keyword and no way to opt out. *)
 block_expr  ::= block | if_expr | match_expr | loop_expr | while_expr | for_expr
 
 block       ::= "{" statement* expr? "}"

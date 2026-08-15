@@ -1,6 +1,6 @@
-//! An mdBook preprocessor that highlights ` ```fig ` code fences using the
-//! project's own tree-sitter-fig grammar and `highlights.scm` query,
-//! instead of mdBook's default highlight.js (which has no notion of fig
+//! An mdBook preprocessor that highlights ` ```roo ` code fences using the
+//! project's own tree-sitter-roo grammar and `highlights.scm` query,
+//! instead of mdBook's default highlight.js (which has no notion of roo
 //! at all).
 
 use anyhow::{Context, Result};
@@ -10,8 +10,8 @@ use mdbook_preprocessor::{parse_input, Preprocessor, PreprocessorContext};
 use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter, HtmlRenderer};
 
 /// The capture names this binary recognizes from `highlights.scm`. Each
-/// becomes a `fig-<name-with-dots-as-dashes>` CSS class on the rendered
-/// `<span>`. Keep in sync with `tree-sitter-fig/queries/highlights.scm`.
+/// becomes a `roo-<name-with-dots-as-dashes>` CSS class on the rendered
+/// `<span>`. Keep in sync with `tree-sitter-roo/queries/highlights.scm`.
 const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
     "boolean",
@@ -37,29 +37,29 @@ const HIGHLIGHT_NAMES: &[&str] = &[
     "variable.parameter",
 ];
 
-struct FigHighlight;
+struct RooHighlight;
 
-impl Preprocessor for FigHighlight {
+impl Preprocessor for RooHighlight {
     fn name(&self) -> &str {
-        "fig-highlight"
+        "roo-highlight"
     }
 
     fn run(&self, _ctx: &PreprocessorContext, mut book: Book) -> Result<Book, MdbookError> {
         let mut config = HighlightConfiguration::new(
-            tree_sitter_fig::LANGUAGE.into(),
-            "fig",
-            tree_sitter_fig::HIGHLIGHTS_QUERY,
-            tree_sitter_fig::INJECTIONS_QUERY,
-            tree_sitter_fig::LOCALS_QUERY,
+            tree_sitter_roo::LANGUAGE.into(),
+            "roo",
+            tree_sitter_roo::HIGHLIGHTS_QUERY,
+            tree_sitter_roo::INJECTIONS_QUERY,
+            tree_sitter_roo::LOCALS_QUERY,
         )
-        .map_err(|e| MdbookError::msg(format!("failed to build fig highlight query: {e}")))?;
+        .map_err(|e| MdbookError::msg(format!("failed to build roo highlight query: {e}")))?;
         config.configure(HIGHLIGHT_NAMES);
 
         let mut highlighter = Highlighter::new();
 
         book.for_each_mut(|item| {
             if let BookItem::Chapter(chapter) = item {
-                chapter.content = highlight_fig_fences(&chapter.content, &mut highlighter, &config);
+                chapter.content = highlight_roo_fences(&chapter.content, &mut highlighter, &config);
             }
         });
 
@@ -71,15 +71,15 @@ impl Preprocessor for FigHighlight {
     }
 }
 
-/// Walks `content` line by line, replacing every ` ```fig ` ... ` ``` `
+/// Walks `content` line by line, replacing every ` ```roo ` ... ` ``` `
 /// fence with a pre-rendered, syntax-highlighted `<pre>` block. Everything
 /// else passes through untouched.
-fn highlight_fig_fences(content: &str, highlighter: &mut Highlighter, config: &HighlightConfiguration) -> String {
+fn highlight_roo_fences(content: &str, highlighter: &mut Highlighter, config: &HighlightConfiguration) -> String {
     let mut output = String::with_capacity(content.len());
     let mut lines = content.lines().peekable();
 
     while let Some(line) = lines.next() {
-        if line.trim_start() == "```fig" {
+        if line.trim_start() == "```roo" {
             let mut code = String::new();
             for inner in lines.by_ref() {
                 if inner.trim_start() == "```" {
@@ -114,7 +114,7 @@ fn render_html(code: &str, highlighter: &mut Highlighter, config: &HighlightConf
 
     let mut renderer = HtmlRenderer::new();
     let render_result = renderer.render(events.into_iter(), code.as_bytes(), &|highlight: Highlight, output: &mut Vec<u8>| {
-        output.extend_from_slice(b"class=\"fig-");
+        output.extend_from_slice(b"class=\"roo-");
         output.extend_from_slice(HIGHLIGHT_NAMES[highlight.0].replace('.', "-").as_bytes());
         output.extend_from_slice(b"\"");
     });
@@ -123,7 +123,7 @@ fn render_html(code: &str, highlighter: &mut Highlighter, config: &HighlightConf
         return escape_as_plain(code);
     }
 
-    let mut html = String::from("<pre class=\"fig-highlight\"><code>");
+    let mut html = String::from("<pre class=\"roo-highlight\"><code>");
     for line in renderer.lines() {
         html.push_str(line);
     }
@@ -136,7 +136,7 @@ fn escape_as_plain(code: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
-    format!("<pre class=\"fig-highlight\"><code>{escaped}</code></pre>")
+    format!("<pre class=\"roo-highlight\"><code>{escaped}</code></pre>")
 }
 
 fn main() -> Result<()> {
@@ -145,13 +145,13 @@ fn main() -> Result<()> {
     if let Some(sub) = args.next() {
         if sub == "supports" {
             let renderer = args.next().unwrap_or_default();
-            let supported = FigHighlight.supports_renderer(&renderer).unwrap_or(false);
+            let supported = RooHighlight.supports_renderer(&renderer).unwrap_or(false);
             std::process::exit(if supported { 0 } else { 1 });
         }
     }
 
     let (ctx, book) = parse_input(std::io::stdin()).context("failed to parse mdBook preprocessor input")?;
-    let processed_book = FigHighlight.run(&ctx, book).map_err(|e| anyhow::anyhow!(e))?;
+    let processed_book = RooHighlight.run(&ctx, book).map_err(|e| anyhow::anyhow!(e))?;
     serde_json::to_writer(std::io::stdout(), &processed_book).context("failed to write processed book")?;
 
     Ok(())

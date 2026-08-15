@@ -1,7 +1,7 @@
 # Notes from writing worked examples
 
-Four larger, involved programs (`ecs.fig`, `geometry.fig`, `save_game.fig`,
-`dialogue.fig`) were written by hand against the book — no parser exists
+Four larger, involved programs (`ecs.roo`, `geometry.roo`, `save_game.roo`,
+`dialogue.roo`) were written by hand against the book — no parser exists
 yet, so "valid" here means "checked by hand against the grammar summary
 and prose, sentence by sentence."
 
@@ -17,7 +17,7 @@ this can tell you.
 
 - **`mut` on primitive-typed parameters** behaves exactly like `mut` on
   reference-typed ones (`fn use_item(mut health: int, ...)` in
-  `save_game.fig`/`dialogue.fig`'s `heal`) — the rule turned out to be
+  `save_game.roo`/`dialogue.roo`'s `heal`) — the rule turned out to be
   genuinely uniform, not just uniform-in-theory.
 - **Fetching a component and mutating it** (get a reference-typed value
   out of storage via pattern match, then write through it) composes
@@ -32,7 +32,7 @@ this can tell you.
   returning `Result` both composed with the rest of the language with no
   special-casing needed.
 - **`any` and the typed/untyped boundary** worked exactly as documented in
-  both directions (`dialogue.fig`), with no surprises in either the
+  both directions (`dialogue.roo`), with no surprises in either the
   "dynamic value into a typed function" or "typed value into a dynamic
   parameter" case.
 - **Struct update syntax with a fully-qualified path**

@@ -6,7 +6,7 @@ A variable is introduced with `let`, optionally with a type annotation, and
 is **mutable by default** — unlike Rust, and like most scripting languages.
 There is no `mut` keyword and no way to declare a binding immutable:
 
-```fig
+```roo
 let x = 5;
 x = 6; // ok
 ```
@@ -15,7 +15,7 @@ As covered in [The Value Model](../design/values-and-mutation.md), a
 binding can always be reassigned, and — for reference types — mutated
 through (assign to a field, index, etc.):
 
-```fig
+```roo
 let point = Point { x: 0, y: 0 };
 point.x = 5;                       // ok
 point = Point { x: 1, y: 1 };      // ok
@@ -27,14 +27,14 @@ A new `let` with the same name **shadows** the previous binding rather than
 reassigning it — a different mechanism from plain assignment, and, as in
 Rust, legal even if the new binding has a different type:
 
-```fig
+```roo
 let spaces = "   ";
 let spaces = spaces.len(); // shadows the String with an int
 ```
 
 Shadowing inside a nested block only lasts for that block:
 
-```fig
+```roo
 let x = 5;
 {
     let x = x * 2;
@@ -51,7 +51,7 @@ annotation if you want the binding statically typed (see
 [Type Inference](../types/inference.md), since there's no initializer to
 infer from):
 
-```fig
+```roo
 let x: int;
 if condition {
     x = 1;
@@ -67,64 +67,85 @@ A variable is in scope from its `let` statement to the end of the
 innermost enclosing block (see [Blocks and Scope](../expressions/blocks.md)),
 exactly as in Rust.
 
-## Module-level bindings
+## No module-level bindings
 
-Unlike Rust, `let` isn't restricted to function bodies — a fig file runs
-as a script, executing its statements top to bottom the way a Lua/Luau
-chunk does, rather than requiring an explicit entry point function. `let`
-works identically at the top level of a file as it does anywhere else,
-including plain, unannotated, and shadowed bindings:
+`let` only works inside a function or closure body — the same restriction
+Rust has, not a looser one. Each roo file is itself a module (see
+[Modules and Visibility](../modules/modules.md)), and a module's top level
+— along with the body of an inline `mod { ... }` block — only accepts
+**items**: `fn`, `struct`, `enum`, `trait`, `impl`, `mod`, and `use`. `let`
+is not an item, so it can't be written directly inside one:
 
-```fig
-let max_retries: int = 5;
-let greeting = "hello";
+```roo
+mod shapes {
+    let PI: float = 3.14159265; // error: `let` isn't allowed here —
+                                  // only items are
+}
 ```
 
-fig has no separate `const` keyword. Rust's `const` earns its keep by
-guaranteeing an initializer is evaluable *before the program runs at all*
-— a guarantee Rust needs for things like fixed-size array lengths and
-`static` initialization order, none of which fig has (see
-[Differences from Rust](../design/differences-from-rust.md)). Without a
-use for that guarantee, an ordinary module-level `let` covers the same
-need — nothing stops it from being reassigned later, the same as any other
-binding. By convention (not enforced by the compiler), a top-level binding
-meant to be read as a fixed, tunable value is named in
-`SCREAMING_SNAKE_CASE`, the same convention Rust uses for `const`:
+A direct consequence: a roo file has no implicit top-to-bottom execution
+either. A module made of nothing but items doesn't *do* anything by
+itself — there's no script-style "run every statement in order" the way a
+Lua/Luau chunk works. roo has no `fn main` and no other reserved
+entry-point name. Running a program means something *outside* the module
+calls into one of its functions: the host embedding roo (see
+[Ambient Modules](../modules/ambient-modules.md)), or another roo module
+that `use`s it and calls a function explicitly. Which function that is,
+and when it's called, is entirely up to whatever's driving the program —
+the language doesn't pick one for you.
 
-```fig
-let MAX_RETRIES: int = 5;
-let PI: float = 3.14159265;
+### No module-level constants, for now
+
+The sharpest edge of this: without a module-level `let`, there's currently
+no way to write a single named, fixed value at module scope and read it
+back as `shapes::PI`, the way Rust's `pub const PI: f64 = 3.14159265;`
+works. A zero-argument function is the closest thing roo has today:
+
+```roo
+mod shapes {
+    pub fn pi() -> float {
+        3.14159265
+    }
+}
+
+let area = shapes::pi() * radius * radius;
 ```
 
-A module-level `let` is an ordinary binding like any other — it follows
-the same [value model](../design/values-and-mutation.md) as a `let` inside
-a function, with no special aliasing or re-evaluation rules attached to it.
+This was a deliberate simplification, weighed and accepted, not an
+oversight. roo's `const` keyword was already unnecessary as *Rust's*
+`const` — the guarantee it protects, an initializer evaluable *before the
+program runs at all* (backing fixed-size array lengths, `static`
+initialization order, and the like), has no use in roo, since roo has no
+compile-time evaluation at all (see
+[Differences from Rust](../design/differences-from-rust.md)). Once a
+module only holds items — a simpler, more uniform rule than "items, plus
+`let`, but only at this one scope" — reintroducing a separate binding form
+just to name a fixed module-scoped value didn't earn its keep either: the
+scenarios that actually need a bare constant over a one-line accessor
+function are rare enough in a scripting language that the simplicity won.
+`const` stays reserved (see [Keywords](../appendix/keywords.md)) in case
+that judgment changes later.
 
-### Structuring anything larger than a few lines
+## Structuring anything larger than a few lines
 
-Because top-level code isn't inside a function, `return` and `?` don't
-mean anything there — both are defined in terms of "the current function"
-(see [Expressions and Statements](../expressions/expressions-and-statements.md#return-break-and-continue-are-expressions-too)
-and [Error Handling](../errors/error-handling.md#the--operator)), and the
-top level has none. This is a direct, unsurprising consequence of fig
-having no `fn main` to begin with — not a separate restriction — but it
-does mean a script that wants either has to put its logic inside a real
-function and call that function explicitly:
+Because every function is a real function — never top-level script code —
+`return` and `?` always mean something, and always refer to the function
+they're written in (see
+[Expressions and Statements](../expressions/expressions-and-statements.md#return-break-and-continue-are-expressions-too)
+and [Error Handling](../errors/error-handling.md#the--operator)). There's
+no separate "top-level code" case to worry about falling outside that rule,
+the way there would be in a language that lets you write bare statements
+at module scope:
 
-```fig
-fn run() {
-    let data = load_config("settings.fig")?; // `?` needs a real function
+```roo
+pub fn run() {
+    let data = load_config("settings.roo")?; // `?` needs a real function
     if data.invalid {
         return; // same for `return`
     }
     apply(data);
 }
-
-run(); // nothing invokes `run` automatically — this call is what runs it
 ```
 
-For a short script, plain top-level statements are simplest and don't need
-this at all. Once a script grows past that — enough to want early returns,
-or fallible steps chained with `?` — wrapping its body in a function like
-`run` above and calling it as the last line is the idiomatic way to get
-there, not a workaround.
+Something else — the host embedding roo, or another module that `use`s
+this one — calls `run()`; nothing in this file does.

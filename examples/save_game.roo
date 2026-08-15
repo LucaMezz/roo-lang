@@ -3,10 +3,10 @@
 //! Exercises: modules and visibility (including root-relative path
 //! resolution between sibling modules), an ambient module for file I/O,
 //! `Result`/`Option`/`?`/`let else`, struct update syntax, and casting;
-//! also `#[entry]` — the function fig-engine calls to actually run this
+//! also `#[entry]` — the function roo-engine calls to actually run this
 //! script, since a module's top level holds only items and nothing runs
-//! automatically. See geometry.fig for the same convention, and
-//! ecs.fig/player_controller.fig/dialogue.fig for three others.
+//! automatically. See geometry.roo for the same convention, and
+//! ecs.roo/player_controller.roo/dialogue.roo for three others.
 
 enum Option<T> {
     Some(T),
@@ -18,8 +18,8 @@ enum Result<T, E> {
     Err(E),
 }
 
-// Host-provided (fig-engine would supply this, or a filesystem sandboxed
-// however the embedder chooses) — no fig implementation, just shapes.
+// Host-provided (roo-engine would supply this, or a filesystem sandboxed
+// however the embedder chooses) — no roo implementation, just shapes.
 mod fs {
     pub fn read_to_string(path: String) -> Result<String, String>;
     pub fn write_string(path: String, contents: String) -> Result<(), String>;
@@ -79,7 +79,7 @@ fn progress_message(data: save::SaveData) -> String {
     "Level " + data.level.to_string() + " — " + progress_percent(data).to_string() + "% complete"
 }
 
-// fig-engine calls this because it's #[entry] — nothing inside this
+// roo-engine calls this because it's #[entry] — nothing inside this
 // script does.
 #[entry]
 fn run() -> () {

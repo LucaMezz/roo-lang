@@ -12,7 +12,7 @@ identifier ::= (letter | "_") (letter | digit | "_")*
 `_` alone is a special identifier — the **wildcard pattern** — used to
 deliberately ignore a value:
 
-```fig
+```roo
 let _ = compute_and_discard();
 
 fn ignore_second(_: int, y: int) -> int {
@@ -26,9 +26,9 @@ diagnostics.
 
 ### Naming conventions
 
-fig follows Rust's naming conventions. They are conventions, not
+roo follows Rust's naming conventions. They are conventions, not
 grammar rules — the language doesn't reject code that violates them — but
-idiomatic fig code follows them the way idiomatic Rust does:
+idiomatic roo code follows them the way idiomatic Rust does:
 
 | Item | Convention | Example |
 |---|---|---|
@@ -56,27 +56,27 @@ use       where     while
 
 ### Reserved, currently unused
 
-Reserved so they stay available if fig needs them later, but no current
-fig syntax gives them meaning:
+Reserved so they stay available if roo needs them later, but no current
+roo syntax gives them meaning:
 
 - `dyn` — see [Differences from Rust](../design/differences-from-rust.md).
-- `const` — fig has no separate constant-binding form; an ordinary
-  module-level `let` covers the need (see
-  [Variables: Module-level bindings](../bindings/variables.md#module-level-bindings)).
-  Reserved rather than freed up, in case fig later wants a binding form
+- `const` — roo currently has no constant-binding form at all, module-scoped
+  or otherwise (see
+  [Variables: No module-level constants, for now](../bindings/variables.md#no-module-level-constants-for-now)).
+  Reserved rather than freed up, in case roo later wants a binding form
   with a genuine compile-time-only-evaluation guarantee (for example, if
   const generics are ever added).
 
-### Not keywords in fig
+### Not keywords in roo
 
-Words that are reserved keywords in Rust but have no meaning in fig, because
+Words that are reserved keywords in Rust but have no meaning in roo, because
 the feature they belong to doesn't exist, are **not** reserved and may be
 used freely as identifiers: `unsafe`, `move`, `static`, `extern`, `ref`,
 `box`, `async`, `await`, `yield`, `abstract`, `final`, `override`, `priv`,
 `typeof`, `unsized`, `virtual`, `crate`, and `mut`. This is a deliberate
 consequence of removing the features that needed them — see
 [Differences from Rust](../design/differences-from-rust.md) for the full
-list of removed concepts. `crate` specifically is freed up because fig has
+list of removed concepts. `crate` specifically is freed up because roo has
 modules but no crate-level compilation unit above them — see
 [Modules and Visibility](../modules/modules.md). `mut` is freed up because
 every binding is mutable by default and there's no immutable binding form

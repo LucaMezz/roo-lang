@@ -12,9 +12,9 @@ use lexer::Token;
 /// AST/grammar mismatch, same shape as the `GenericParam`/`PatField`
 /// audit gaps earlier, out of scope for "finish `ExprKind`".
 fn local<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Local> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Local> {
     annotations()
         .then_ignore(just(Token::Let))
         .then(pat(expr.clone()).map(Box::new))
@@ -55,9 +55,9 @@ fn local<'src>(
 /// `expr()`/`block()`'s own recursion, same reason `block` itself takes
 /// `expr` as a parameter instead of calling `expr()` directly.
 fn stmt<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, Stmt> {
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, Stmt> {
     let item_stmt = item_with(expr.clone(), block.clone())
         .map(Box::new)
         .map(StmtKind::Item);
@@ -93,7 +93,7 @@ fn stmt<'src>(
 /// recursive tie (`ExprKind::Block`/`If`/`While`/`ForLoop`/`Loop` all
 /// need a `Block`), so it can't call `expr()` directly without
 /// recreating the exact E0720 cycle `fn_ret_ty` hit earlier.
-pub fn block<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Block> {
+pub fn block<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Block> {
     recursive(|block| {
         stmt(expr.clone(), block)
             .repeated()
@@ -106,14 +106,14 @@ pub fn block<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'s
     })
 }
 
-pub fn guard<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Guard> {
+pub fn guard<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Guard> {
     just(Token::If).ignore_then(expr).map(|cond| Guard { cond })
 }
 
 pub fn arm<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, Arm> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, Arm> {
     annotations()
         .then(pat.map(Box::new))
         .then(guard(expr.clone()).map(Box::new).or_not())

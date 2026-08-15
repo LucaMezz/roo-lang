@@ -1,12 +1,12 @@
 # Comments
 
-fig has the same four comment forms Rust does.
+roo has the same four comment forms Rust does.
 
 ## Line comments
 
 `//` starts a comment that runs to the end of the line.
 
-```fig
+```roo
 // This is a line comment.
 let x = 1; // comments can trail code too
 ```
@@ -16,7 +16,7 @@ let x = 1; // comments can trail code too
 `/* ... */` comments out a span of text, and block comments **nest**, unlike
 in C:
 
-```fig
+```roo
 /* This is a block comment. */
 
 /*
@@ -32,7 +32,7 @@ in C:
 Doc comments attach documentation to the item that follows them, and are
 written with three slashes instead of two:
 
-```fig
+```roo
 /// Computes the Euclidean distance between two points.
 fn distance(a: Point, b: Point) -> float {
     // ...
@@ -43,7 +43,7 @@ An inner doc comment, `//!`, documents the *enclosing* item (typically a
 module or the whole file) rather than the item that follows it, and is
 usually placed at the top of a file:
 
-```fig
+```roo
 //! Geometry primitives used throughout the renderer.
 
 struct Point { x: float, y: float }
@@ -57,6 +57,6 @@ relationship `///` has to `rustdoc` in Rust.
 ## What's *not* here
 
 Rust attributes like `#[doc = "..."]` (the desugared form of a doc comment)
-are part of Rust's attribute/macro system, which fig doesn't have — see
+are part of Rust's attribute/macro system, which roo doesn't have — see
 [Differences from Rust](../design/differences-from-rust.md). `///` and `//!`
-are ordinary lexical syntax in fig, not sugar for an attribute.
+are ordinary lexical syntax in roo, not sugar for an attribute.

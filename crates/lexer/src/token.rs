@@ -22,7 +22,7 @@ pub enum NumberKind<'src> {
     Float(&'src str),
 }
 
-/// A single fig token, borrowing its text directly from the source it was
+/// A single roo token, borrowing its text directly from the source it was
 /// lexed from.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
 #[logos(error = LexError)]

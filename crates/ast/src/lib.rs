@@ -1,4 +1,4 @@
-//! `ast` is the abstract syntax tree fig-lang source parses into.
+//! `ast` is the abstract syntax tree roo-lang source parses into.
 //!
 //! Owns its own strings (`String`/`Box<str>`) rather than borrowing from
 //! the original source text — unlike `lexer`'s `Token<'src>`, nothing here

@@ -1,10 +1,10 @@
 # Casting and Conversion
 
-fig performs no implicit type conversions. Every conversion between
+roo performs no implicit type conversions. Every conversion between
 distinct types is written explicitly with the `as` operator, exactly as in
 Rust.
 
-```fig
+```roo
 let count: int = 5;
 let ratio: float = count as float; // 5.0
 
@@ -29,13 +29,13 @@ There is no direct `int as bool` or numeric-to-`String` cast via `as`.
 Turning a value into text isn't a cast — it goes through a trait instead,
 conceptually shaped like:
 
-```fig
+```roo
 trait ToString {
     fn to_string(self) -> String;
 }
 ```
 
-```fig
+```roo
 let level: int = 5;
 let message = "Level " + level.to_string();
 ```
@@ -43,13 +43,13 @@ let message = "Level " + level.to_string();
 Exactly like the arithmetic and comparison traits (see
 [Primitive types implement these traits intrinsically](../abstraction/operator-overloading.md#primitive-types-implement-these-traits-intrinsically)),
 `int`, `float`, `bool`, and `char` implement `ToString` intrinsically —
-guaranteed by the fig language itself, with no fig source behind it, since
+guaranteed by the roo language itself, with no roo source behind it, since
 it's provided by whatever's running the script rather than written out
 as a real `impl` block anywhere. Unlike the arithmetic traits, this one
 isn't a hard bootstrapping problem the way `int`'s own `Add` impl is (you
 could, in principle, write an int-to-string conversion in terms of `%`,
 `/`, and `char`s) — it's treated the same way mainly for consistency, not
-because fig source is fundamentally incapable of it.
+because roo source is fundamentally incapable of it.
 
 The exact trait name and method are standard-library TBD, same as the
 operator traits — this section describes the guarantee (every primitive
@@ -59,11 +59,11 @@ can produce a `String`), not the final name.
 
 Implicit numeric coercion (silently treating an `int` as a `float` in
 arithmetic, or a non-`bool` as truthy in a condition) is a common source of
-subtle bugs in dynamically-typed scripting languages. fig follows Rust here
+subtle bugs in dynamically-typed scripting languages. roo follows Rust here
 even though it's a scripting language: mixing `int` and `float` in an
 expression without an explicit `as` is a type error, not a silent widening.
 
-```fig
+```roo
 let n: int = 5;
 let f: float = 1.5;
 let total = n + f; // type error: `int` + `float`

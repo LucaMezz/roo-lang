@@ -36,24 +36,24 @@ Always reserved; can't be used as an identifier.
 
 ## Reserved, currently unused
 
-Reserved so they stay available if fig needs them later, but no current
-fig syntax gives them meaning.
+Reserved so they stay available if roo needs them later, but no current
+roo syntax gives them meaning.
 
 | Keyword | Purpose |
 |---|---|
 | `dyn` | See [Differences from Rust](../design/differences-from-rust.md). |
-| `const` | fig has no separate constant-binding form — see [Variables: Module-level bindings](../bindings/variables.md#module-level-bindings) — but the keyword stays reserved in case a form with a genuine compile-time-only-evaluation guarantee is added later. |
+| `const` | roo has no constant-binding form at all currently, module-scoped or otherwise — see [Variables: No module-level constants, for now](../bindings/variables.md#no-module-level-constants-for-now) — but the keyword stays reserved in case one is added later. |
 
 ## The wildcard identifier
 
 `_` is a special identifier (the wildcard pattern), not a keyword — see
 [Identifiers and Keywords](../lexical/identifiers-and-keywords.md).
 
-## Rust keywords that are *not* reserved in fig
+## Rust keywords that are *not* reserved in roo
 
-Because the corresponding features don't exist in fig, these Rust keywords
-are ordinary, usable identifiers in fig — see
-[Identifiers and Keywords: Not keywords in fig](../lexical/identifiers-and-keywords.md#not-keywords-in-fig):
+Because the corresponding features don't exist in roo, these Rust keywords
+are ordinary, usable identifiers in roo — see
+[Identifiers and Keywords: Not keywords in roo](../lexical/identifiers-and-keywords.md#not-keywords-in-roo):
 
 ```text
 unsafe   move    static   extern   ref     box
@@ -61,7 +61,7 @@ async    await   yield    abstract final   override
 priv     typeof  unsized  virtual  crate   mut
 ```
 
-`mut` in particular isn't just unreserved — it never had meaning in fig to
+`mut` in particular isn't just unreserved — it never had meaning in roo to
 begin with. Every binding is mutable by default and there's no way to
 declare one immutable, so there's nothing left for a `mut` keyword to mark.
 See [Variables](../bindings/variables.md).

@@ -1,12 +1,12 @@
 # match
 
 `match` compares a value against a series of patterns and runs the block
-for the first one that matches. It is fig's (and Rust's) primary control
+for the first one that matches. It is roo's (and Rust's) primary control
 flow tool for working with `enum`s, and is exhaustive: every possible value
 of the matched expression's type must be covered by some arm, or the
 compiler rejects the `match`.
 
-```fig
+```roo
 enum Direction { North, South, East, West }
 
 fn describe(d: Direction) -> String {
@@ -24,7 +24,7 @@ fn describe(d: Direction) -> String {
 Like `if`, `match` is an expression: every arm's block is evaluated as an
 expression, and every arm must produce the same type.
 
-```fig
+```roo
 let size = match count {
     0 => "empty",
     1 => "one item",
@@ -34,10 +34,10 @@ let size = match count {
 
 ## The wildcard arm
 
-`_` matches anything not covered by the preceding arms, and is fig's usual
+`_` matches anything not covered by the preceding arms, and is roo's usual
 way to satisfy exhaustiveness without listing every case:
 
-```fig
+```roo
 match status_code {
     200 => "ok",
     404 => "not found",
@@ -73,7 +73,7 @@ grammar and destructuring rules shared by `match`, `if let`, `while let`,
 An arm can carry an additional `if` condition, checked only if the pattern
 itself matches — if the guard fails, matching continues to the next arm:
 
-```fig
+```roo
 match point {
     Point { x, y } if x == y => print("on the diagonal"),
     Point { x, .. } if x == 0 => print("on the y-axis"),

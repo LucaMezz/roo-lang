@@ -1,0 +1,75 @@
+//! Demonstrates roo's strong type inference: a function left completely
+//! unannotated is not dynamically typed -- it's inferred and generalized
+//! into a real, checked generic function, the exact same type as if
+//! you'd written the `<T>` yourself. See types/inference.md for the full
+//! rules; this file is the worked-example version of that chapter.
+//!
+//! Exercises: a fully untyped function generalizing into a real generic
+//! one; a partially-annotated function generalizing just the untyped
+//! parameter; the same inferred function reused at unrelated types in
+//! one program, each call instantiating independently; an explicit `<T>`
+//! function shown alongside to confirm it's the identical shape; and a
+//! generic `type` alias, used bare (inferred from context) and
+//! explicitly. This is a genuinely different story from dialogue.roo's
+//! untyped struct fields and closures, which stay dynamically typed --
+//! see that file, and types/inference.md's "Where inference does not
+//! apply yet", for where the line actually falls now. Single `#[entry]`
+//! function, like geometry.roo -- no per-frame state needed here either.
+
+// No type annotations at all. roo infers this to exactly
+// `fn first<T>(items: [T]) -> T` -- not a dynamically-typed function,
+// a real generic one, checked the same way a hand-written `<T>` would be.
+fn first(items) {
+    items[0]
+}
+
+// Written out explicitly, `nth` ends up exactly the shape `first` above
+// arrived at on its own. The checker can't tell an inferred `<T>` apart
+// from a hand-written one once both exist -- this is the same relationship
+// `identity`/`generic_identity` have in types/inference.md.
+fn nth<T>(items: [T], index: int) -> T {
+    items[index]
+}
+
+// A generic type alias -- generalizes and instantiates exactly like a
+// function does.
+type Tagged<T> = (String, T);
+
+// `label` is checked exactly as written; `value` has nothing pinning it
+// down, so it infers its own type parameter. This generalizes to
+// `fn tag<T>(label: String, value: T) -> Tagged<T>`. `Tagged<_>` here
+// lets roo infer the payload type from `value` instead of spelling it
+// out a second time.
+fn tag(label: String, value) -> Tagged<_> {
+    (label, value)
+}
+
+struct Player {
+    name: String,
+    level: int,
+}
+
+#[entry]
+fn main() {
+    // `first` used at two unrelated types in the same program. Each call
+    // instantiates its own fresh type parameter, independently of the
+    // others -- exactly like calling an explicitly generic function
+    // twice would, because that's what this already is.
+    let quick_options = ["Attack", "Defend", "Flee"];
+    let default_option = first(quick_options); // T = String here
+
+    let players = [
+        Player { name: "Ada", level: 3 },
+        Player { name: "Grace", level: 5 },
+    ];
+    let leader = first(players);   // T = Player here, unrelated to the call above
+    let runner_up = nth(players, 1);
+
+    let selected = tag("selected", default_option); // Tagged<String>
+    let target = tag("target", leader);              // Tagged<Player>, independently
+
+    print(leader.name);
+    print(runner_up.name);
+    print(selected.1);
+    print(target.1.name);
+}

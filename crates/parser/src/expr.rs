@@ -11,7 +11,7 @@ use lexer::{NumberKind, Token};
 /// the same name as the field, so it desugars to a single-segment
 /// `ExprKind::Path` here rather than needing its own `ExprField`
 /// representation.
-fn expr_field<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, ExprField> {
+fn expr_field<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, ExprField> {
     annotations()
         .then(ident())
         .then(just(Token::Colon).ignore_then(expr).map(Box::new).or_not())
@@ -41,7 +41,7 @@ fn expr_field<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'
         })
 }
 
-fn struct_expr<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, StructExpr> {
+fn struct_expr<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, StructExpr> {
     q_self()
         .map(Box::new)
         .or_not()
@@ -63,8 +63,8 @@ fn struct_expr<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<
 }
 
 pub fn method_call<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, MethodCall> {
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, MethodCall> {
     expr.clone()
         .map(Box::new)
         .then_ignore(just(Token::Dot))
@@ -83,7 +83,7 @@ pub fn method_call<'src>(
         })
 }
 
-pub fn param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Param> {
+pub fn param<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Param> {
     annotations()
         .then(pat_no_top_alt(expr).map(Box::new))
         .then(just(Token::Colon).ignore_then(ty()).map(Box::new).or_not())
@@ -95,7 +95,7 @@ pub fn param<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'s
         })
 }
 
-fn closure<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Closure> {
+fn closure<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Closure> {
     param(expr.clone())
         .separated_by(just(Token::Comma))
         .allow_trailing()
@@ -109,7 +109,7 @@ fn closure<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src
         })
 }
 
-pub fn expr_array<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, ExprKind> {
+pub fn expr_array<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, ExprKind> {
     expr.map(Box::new)
         .separated_by(just(Token::Comma))
         .allow_trailing()
@@ -119,8 +119,8 @@ pub fn expr_array<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigPars
 }
 
 fn expr_tuple_or_paren<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     expr.clone()
         .map(Box::new)
         .then_ignore(just(Token::Comma))
@@ -137,7 +137,7 @@ fn expr_tuple_or_paren<'src>(
         })
 }
 
-fn expr_path<'src>() -> impl FigParser<'src, ExprKind> {
+fn expr_path<'src>() -> impl RooParser<'src, ExprKind> {
     q_self()
         .map(Box::new)
         .or_not()
@@ -151,7 +151,7 @@ fn expr_path<'src>() -> impl FigParser<'src, ExprKind> {
 /// `FieldDef.ident: None` for tuple fields), so this just stores the
 /// digits as `Ident`'s text, the same way rustc's own AST represents a
 /// tuple index as an `Ident` rather than a separate node.
-fn field_ident<'src>() -> impl FigParser<'src, Ident> {
+fn field_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
         select! {
@@ -160,11 +160,11 @@ fn field_ident<'src>() -> impl FigParser<'src, Ident> {
     ))
 }
 
-fn expr_underscore<'src>() -> impl FigParser<'src, ExprKind> {
+fn expr_underscore<'src>() -> impl RooParser<'src, ExprKind> {
     just(Token::Identifier("_")).map(|_| ExprKind::Underscore)
 }
 
-fn range_limits<'src>() -> impl FigParser<'src, RangeLimits> {
+fn range_limits<'src>() -> impl RooParser<'src, RangeLimits> {
     choice((
         just(Token::DotDotEq).map(|_| RangeLimits::Closed),
         just(Token::DotDot).map(|_| RangeLimits::HalfOpen),
@@ -172,36 +172,36 @@ fn range_limits<'src>() -> impl FigParser<'src, RangeLimits> {
 }
 
 fn expr_range_no_start<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     range_limits()
         .then(expr.or_not())
         .map(|(limits, end)| ExprKind::Range(None, end.map(Box::new), limits))
 }
 
-fn expr_break<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, ExprKind> {
+fn expr_break<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, ExprKind> {
     just(Token::Break)
         .ignore_then(ident().map(|ident| Label { ident }).or_not())
         .then(expr.map(Box::new).or_not())
         .map(|(label, value)| ExprKind::Break(label, value))
 }
 
-fn expr_continue<'src>() -> impl FigParser<'src, ExprKind> {
+fn expr_continue<'src>() -> impl RooParser<'src, ExprKind> {
     just(Token::Continue)
         .ignore_then(ident().map(|ident| Label { ident }).or_not())
         .map(ExprKind::Continue)
 }
 
-fn expr_ret<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, ExprKind> {
+fn expr_ret<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, ExprKind> {
     just(Token::Return)
         .ignore_then(expr.map(Box::new).or_not())
         .map(ExprKind::Ret)
 }
 
 fn condition<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    cond_expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, Expr> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    cond_expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, Expr> {
     let let_condition = just(Token::Let)
         .ignore_then(pat)
         .then_ignore(just(Token::Eq))
@@ -216,10 +216,10 @@ fn condition<'src>(
 }
 
 fn expr_if<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    cond_expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    cond_expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     recursive(move |if_expr| {
         just(Token::If)
             .ignore_then(condition(pat.clone(), cond_expr.clone()))
@@ -248,10 +248,10 @@ fn expr_if<'src>(
 }
 
 fn expr_while<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    cond_expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    cond_expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     label()
         .or_not()
         .then_ignore(just(Token::While))
@@ -261,10 +261,10 @@ fn expr_while<'src>(
 }
 
 fn expr_for<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    cond_expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    cond_expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     label()
         .or_not()
         .then_ignore(just(Token::For))
@@ -280,7 +280,7 @@ fn expr_for<'src>(
         })
 }
 
-fn expr_loop<'src>(block: impl FigParser<'src, Block> + 'src) -> impl FigParser<'src, ExprKind> {
+fn expr_loop<'src>(block: impl RooParser<'src, Block> + 'src) -> impl RooParser<'src, ExprKind> {
     label()
         .or_not()
         .then_ignore(just(Token::Loop))
@@ -288,7 +288,7 @@ fn expr_loop<'src>(block: impl FigParser<'src, Block> + 'src) -> impl FigParser<
         .map_with(|(label, body), e| ExprKind::Loop(body, label, span(e)))
 }
 
-fn expr_block<'src>(block: impl FigParser<'src, Block> + 'src) -> impl FigParser<'src, ExprKind> {
+fn expr_block<'src>(block: impl RooParser<'src, Block> + 'src) -> impl RooParser<'src, ExprKind> {
     label()
         .or_not()
         .then(block.map(Box::new))
@@ -296,10 +296,10 @@ fn expr_block<'src>(block: impl FigParser<'src, Block> + 'src) -> impl FigParser
 }
 
 fn expr_match<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    cond_expr: impl FigParser<'src, Expr> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    cond_expr: impl RooParser<'src, Expr> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     just(Token::Match)
         .ignore_then(cond_expr.map(Box::new))
         .then(
@@ -313,10 +313,10 @@ fn expr_match<'src>(
 
 fn primary_expr<'src>(
     allow_struct_lit: bool,
-    pat: impl FigParser<'src, Pat> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-    block: impl FigParser<'src, Block> + 'src,
-) -> impl FigParser<'src, ExprKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+    block: impl RooParser<'src, Block> + 'src,
+) -> impl RooParser<'src, ExprKind> {
     let cond_expr = if allow_struct_lit {
         expr_no_struct_lit().boxed()
     } else {
@@ -347,7 +347,7 @@ fn primary_expr<'src>(
     ))
 }
 
-fn bin_op_at<'src>(prec: ExprPrecedence) -> impl FigParser<'src, BinOp> {
+fn bin_op_at<'src>(prec: ExprPrecedence) -> impl RooParser<'src, BinOp> {
     bin_op().filter(move |op| op.kind.precedence() == prec)
 }
 
@@ -368,9 +368,9 @@ fn bin_op_fold<'src>(lhs: Expr, op: BinOp, rhs: Expr, e: &mut Extra<'src, '_>) -
 }
 
 fn expr_pratt<'src>(
-    atom: impl FigParser<'src, Expr> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, Expr> {
+    atom: impl RooParser<'src, Expr> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, Expr> {
     atom.pratt((
         prefix(
             ExprPrecedence::Prefix as u16,
@@ -531,7 +531,7 @@ fn expr_pratt<'src>(
     ))
 }
 
-fn expr_no_struct_lit<'src>() -> impl FigParser<'src, Expr> {
+fn expr_no_struct_lit<'src>() -> impl RooParser<'src, Expr> {
     recursive(|expr| {
         let block = block(expr.clone());
         let pat = pat(expr.clone());
@@ -548,7 +548,7 @@ fn expr_no_struct_lit<'src>() -> impl FigParser<'src, Expr> {
     })
 }
 
-pub fn expr<'src>() -> impl FigParser<'src, Expr> {
+pub fn expr<'src>() -> impl RooParser<'src, Expr> {
     recursive(|expr| {
         let block = block(expr.clone());
         let pat = pat(expr.clone());
@@ -1122,7 +1122,7 @@ mod tests {
 
     #[test]
     fn a_call_immediately_after_a_field_access_is_still_field_then_call() {
-        // `(x.foo)(a)` isn't valid fig syntax for calling a field's value
+        // `(x.foo)(a)` isn't valid roo syntax for calling a field's value
         // directly (no parens around `x.foo` here) — but a field access
         // NOT immediately followed by an ident-then-paren pair (i.e. the
         // callee itself, not a further `.method()`) should still compose

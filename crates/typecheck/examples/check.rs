@@ -1,17 +1,17 @@
-//! Runs fig-lang's type checker (resolve -> lower_signatures -> check)
-//! over `example.fig` and reports the result.
+//! Runs roo-lang's type checker (resolve -> lower_signatures -> check)
+//! over `example.roo` and reports the result.
 
 use chumsky::Parser;
 use typecheck::TypeCheckContext;
 
 fn main() {
-    let source = include_str!("example.fig");
+    let source = include_str!("example.roo");
 
-    let tokens = lexer::tokenize_all(source).expect("failed to lex example.fig");
+    let tokens = lexer::tokenize_all(source).expect("failed to lex example.roo");
     let items = parser::module()
         .parse(parser::input(tokens))
         .into_result()
-        .expect("failed to parse example.fig");
+        .expect("failed to parse example.roo");
 
     let mut cx = TypeCheckContext::new();
     cx.resolve(&items);
@@ -19,7 +19,7 @@ fn main() {
     cx.check(&items);
 
     println!(
-        "type checked {} top-level item(s) from example.fig",
+        "type checked {} top-level item(s) from example.roo",
         items.len()
     );
 

@@ -6,7 +6,7 @@ members = ["crates/*"]
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-# repository = "https://github.com/LucaMezz/fig-lang"
+# repository = "https://github.com/LucaMezz/roo-lang"
 
 [workspace.lints.rust]
 missing_docs = "warn"

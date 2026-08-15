@@ -29,14 +29,14 @@ fn main() {
     fs::write(out_dir.join("example_tests.rs"), out).expect("failed to write generated tests");
 }
 
-/// Emits one test per `.fig` file directly under `examples_dir`.
+/// Emits one test per `.roo` file directly under `examples_dir`.
 fn generate_example_file_tests(examples_dir: &Path, out: &mut String) {
-    let mut fig_files = Vec::new();
-    collect_files_with_extension(examples_dir, "fig", &mut fig_files);
-    fig_files.sort();
+    let mut roo_files = Vec::new();
+    collect_files_with_extension(examples_dir, "roo", &mut roo_files);
+    roo_files.sort();
 
-    for path in fig_files {
-        let content = fs::read_to_string(&path).expect("failed to read example .fig file");
+    for path in roo_files {
+        let content = fs::read_to_string(&path).expect("failed to read example .roo file");
         let stem = path
             .file_stem()
             .expect("example file should have a name")

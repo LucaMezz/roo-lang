@@ -6,7 +6,7 @@ expression, surrounded by `{ }`. As covered in
 itself an expression: it evaluates to its trailing expression's value, or
 `()` if there isn't one.
 
-```fig
+```roo
 let result = {
     let a = 1;
     let b = 2;
@@ -20,7 +20,7 @@ print(result); // 3
 Every block introduces a new scope. A `let` inside a block is only visible
 from that point until the end of the block:
 
-```fig
+```roo
 let x = 1;
 {
     let y = 2;
@@ -44,7 +44,7 @@ resolved up front, as if the whole block "knew about" every item in it
 before running any of the block's statements, regardless of the order they
 appear in:
 
-```fig
+```roo
 fn outer() -> int {
     let result = helper(21); // calling `helper` before its own
                                // declaration below — fine, it's hoisted

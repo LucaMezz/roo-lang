@@ -4,7 +4,7 @@ use crate::*;
 use ast::*;
 use lexer::Token;
 
-pub fn pat_field<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatField> {
+pub fn pat_field<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<'src, PatField> {
     let full = ident()
         .then_ignore(just(Token::Colon))
         .then(pat)
@@ -28,21 +28,21 @@ pub fn pat_field<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<
         })
 }
 
-fn pat_wild<'src>() -> impl FigParser<'src, PatKind> {
+fn pat_wild<'src>() -> impl RooParser<'src, PatKind> {
     just(Token::Identifier("_")).map(|_| PatKind::Wild)
 }
 
-fn pat_rest<'src>() -> impl FigParser<'src, PatKind> {
+fn pat_rest<'src>() -> impl RooParser<'src, PatKind> {
     just(Token::DotDot).map(|_| PatKind::Rest)
 }
 
-fn pat_never<'src>() -> impl FigParser<'src, PatKind> {
+fn pat_never<'src>() -> impl RooParser<'src, PatKind> {
     just(Token::Bang).map(|_| PatKind::Never)
 }
 
 fn pat_tuple_or_paren<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-) -> impl FigParser<'src, PatKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+) -> impl RooParser<'src, PatKind> {
     pat.clone()
         .then_ignore(just(Token::Comma))
         .repeated()
@@ -58,7 +58,7 @@ fn pat_tuple_or_paren<'src>(
         })
 }
 
-fn pat_array<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatKind> {
+fn pat_array<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<'src, PatKind> {
     pat.separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
@@ -66,7 +66,7 @@ fn pat_array<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src
         .map(PatKind::Array)
 }
 
-fn pat_tuple_struct<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatKind> {
+fn pat_tuple_struct<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<'src, PatKind> {
     q_self()
         .map(Box::new)
         .or_not()
@@ -80,7 +80,7 @@ fn pat_tuple_struct<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigPars
         .map(|((qself, path), elems)| PatKind::TupleStruct(qself, path, elems))
 }
 
-fn pat_struct<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatKind> {
+fn pat_struct<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<'src, PatKind> {
     q_self()
         .map(Box::new)
         .or_not()
@@ -96,7 +96,7 @@ fn pat_struct<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'sr
         .map(|((qself, path), (fields, rest))| PatKind::Struct(qself, path, fields, rest))
 }
 
-fn pat_path<'src>() -> impl FigParser<'src, PatKind> {
+fn pat_path<'src>() -> impl RooParser<'src, PatKind> {
     q_self()
         .map(Box::new)
         .or_not()
@@ -105,15 +105,15 @@ fn pat_path<'src>() -> impl FigParser<'src, PatKind> {
         .map(|(qself, path)| PatKind::Path(qself, path))
 }
 
-fn pat_ident<'src>(pat: impl FigParser<'src, Pat> + 'src) -> impl FigParser<'src, PatKind> {
+fn pat_ident<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<'src, PatKind> {
     ident()
         .then(just(Token::At).ignore_then(pat).map(Box::new).or_not())
         .map(|(ident, sub)| PatKind::Ident(ident, sub))
 }
 
 fn pat_expr_or_range<'src>(
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, PatKind> {
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, PatKind> {
     let range_end = choice((
         just(Token::DotDotEq).map(|_| RangeEnd::Included),
         just(Token::DotDot).map(|_| RangeEnd::Excluded),
@@ -140,9 +140,9 @@ fn pat_expr_or_range<'src>(
 }
 
 fn pat_kind<'src>(
-    pat: impl FigParser<'src, Pat> + 'src,
-    expr: impl FigParser<'src, Expr> + 'src,
-) -> impl FigParser<'src, PatKind> {
+    pat: impl RooParser<'src, Pat> + 'src,
+    expr: impl RooParser<'src, Expr> + 'src,
+) -> impl RooParser<'src, PatKind> {
     choice((
         pat_wild(),
         pat_never(),
@@ -166,14 +166,14 @@ fn pat_kind<'src>(
 /// sub-patterns, ...) still go through the ordinary or-accepting
 /// `pat()`, since only the outermost level next to the closing `|` is
 /// actually ambiguous.
-pub fn pat_no_top_alt<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Pat> {
+pub fn pat_no_top_alt<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Pat> {
     pat_kind(pat(expr.clone()), expr).map_with(|kind, e| Pat {
         kind,
         span: span(e),
     })
 }
 
-pub fn pat<'src>(expr: impl FigParser<'src, Expr> + 'src) -> impl FigParser<'src, Pat> {
+pub fn pat<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Pat> {
     recursive(|pat| {
         pat_kind(pat, expr)
             .map_with(|kind, e| Pat {
@@ -205,7 +205,7 @@ mod tests {
     // minimal placeholder pattern parser just to exercise pat_field's
     // own logic (annotations, shorthand vs `name: pattern`) in
     // isolation.
-    fn dummy_pat<'src>() -> impl FigParser<'src, Pat> {
+    fn dummy_pat<'src>() -> impl RooParser<'src, Pat> {
         ident().map_with(|ident, e| Pat {
             kind: PatKind::Ident(ident, None),
             span: span(e),
@@ -215,7 +215,7 @@ mod tests {
     // `expr()` doesn't exist yet either — `pat_expr_or_range`'s tests
     // stand in a minimal literal-only placeholder, since real pattern
     // range/expr positions are almost always literals anyway.
-    fn dummy_expr<'src>() -> impl FigParser<'src, Expr> {
+    fn dummy_expr<'src>() -> impl RooParser<'src, Expr> {
         literal().map_with(|lit, e| Expr {
             kind: ExprKind::Lit(lit),
             span: span(e),

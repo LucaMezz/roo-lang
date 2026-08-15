@@ -80,19 +80,19 @@ pub fn input(tokens: Vec<(Token<'_>, Range<usize>)>) -> ParserInput<'_> {
 pub(crate) type Extra<'src, 'b> =
     MapExtra<'src, 'b, ParserInput<'src>, extra::Err<Simple<'src, Token<'src>>>>;
 
-/// Stands in for a parser function's return type — every fig parser shares
+/// Stands in for a parser function's return type — every roo parser shares
 /// the same input ([`ParserInput`]) and error type, and only the AST node
-/// it produces (`O`) actually varies. `type FigParser<'src, O> = impl
+/// it produces (`O`) actually varies. `type RooParser<'src, O> = impl
 /// Parser<...>;` would say this more directly, but `impl Trait` in type
 /// aliases is unstable (`type_alias_impl_trait`) — this blanket-impl'd
 /// marker trait is the standard stable-Rust substitute, the same way a
 /// marker trait stands in for the also-unstable `trait_alias` feature.
-pub trait FigParser<'src, O>:
+pub trait RooParser<'src, O>:
     Parser<'src, ParserInput<'src>, O, extra::Err<Simple<'src, Token<'src>>>> + Clone
 {
 }
 
-impl<'src, O, T> FigParser<'src, O> for T where
+impl<'src, O, T> RooParser<'src, O> for T where
     T: Parser<'src, ParserInput<'src>, O, extra::Err<Simple<'src, Token<'src>>>> + Clone
 {
 }

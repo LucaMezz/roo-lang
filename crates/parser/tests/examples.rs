@@ -1,4 +1,4 @@
-//! One generated test per `examples/*.fig` file, each asserting it
+//! One generated test per `examples/*.roo` file, each asserting it
 //! parses with no error. See `build.rs` for how these are generated —
 //! this file just pulls the generated source in.
 
