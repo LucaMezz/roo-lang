@@ -8,6 +8,9 @@
 
 use std::fmt;
 
+pub mod visit;
+use crate::visit::Walkable;
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Span {
     pub start: usize,
@@ -20,7 +23,7 @@ pub struct Ident {
     pub span: Span,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Walkable)]
 pub struct Label {
     pub ident: Ident,
 }
@@ -31,31 +34,31 @@ impl fmt::Debug for Label {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Path {
     pub segments: Vec<PathSegment>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct PathSegment {
     pub ident: Ident,
     pub args: Option<GenericArgs>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct GenericArgs {
     pub args: Vec<GenericArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum GenericArg {
     Arg(Ty),
     Constraint(AssocItemConstraint),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct AssocItemConstraint {
     pub ident: Ident,
     pub gen_args: Option<GenericArgs>,
@@ -63,13 +66,14 @@ pub struct AssocItemConstraint {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
+#[walkable(hookable)]
 pub struct Ty {
     pub kind: TyKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum TyKind {
     Array(Box<Ty>),
     Never,
@@ -82,24 +86,23 @@ pub enum TyKind {
     Fn(Box<FnTy>),
     Infer,
     ImplicitSelf,
-    Dummy,
     Err,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Generics {
     pub params: Vec<GenericParam>,
     pub where_clause: WhereClause,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct WhereClause {
     pub predicates: Vec<WherePredicate>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct GenericParam {
     pub ident: Ident,
     pub bounds: GenericBounds,
@@ -109,19 +112,19 @@ pub struct GenericParam {
 
 pub type GenericBounds = Vec<Ty>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct WherePredicate {
     pub bounded_ty: Box<Ty>,
     pub bounds: GenericBounds,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Lit {
     pub kind: LitKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Walkable)]
 pub enum LitKind {
     Str(String),
     Char(char),
@@ -130,21 +133,21 @@ pub enum LitKind {
     Bool(bool),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct MetaItem {
     pub path: Path,
     pub kind: MetaItemKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum MetaItemKind {
     Word,
     List(Vec<MetaItemInner>),
     NameValue(MetaItemLit),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum MetaItemInner {
     MetaItem(MetaItem),
     Lit(MetaItemLit),
@@ -152,13 +155,13 @@ pub enum MetaItemInner {
 
 pub type MetaItemLit = Lit;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Annotation {
     pub item: MetaItem,
     pub style: AnnotationStyle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Walkable)]
 pub enum AnnotationStyle {
     Outer,
     Inner,
@@ -166,19 +169,21 @@ pub enum AnnotationStyle {
 
 pub type AnnotationVec = Vec<Annotation>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
+#[walkable(hookable)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
+#[walkable(hookable)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum StmtKind {
     Let(Box<Local>),
     Item(Box<Item>),
@@ -187,7 +192,7 @@ pub enum StmtKind {
     Empty,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Local {
     pub pat: Box<Pat>,
     pub ty: Option<Box<Ty>>,
@@ -196,21 +201,22 @@ pub struct Local {
     pub annotations: AnnotationVec,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum LocalKind {
     Decl,
     Init(Box<Expr>),
     InitElse(Box<Expr>, Box<Block>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
+#[walkable(hookable)]
 pub struct Expr {
     pub annotations: AnnotationVec,
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum ExprKind {
     Array(Vec<Box<Expr>>),
     Call(Box<Expr>, Vec<Box<Expr>>),
@@ -247,10 +253,9 @@ pub enum ExprKind {
     Try(Box<Expr>),
     Cast(Box<Expr>, Box<Ty>),
     Err,
-    Dummy,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct StructExpr {
     pub qself: Option<Box<QSelf>>,
     pub path: Path,
@@ -258,7 +263,7 @@ pub struct StructExpr {
     pub rest: Option<Box<Expr>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct ExprField {
     pub annotations: AnnotationVec,
     pub span: Span,
@@ -266,13 +271,13 @@ pub struct ExprField {
     pub expr: Box<Expr>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct QSelf {
     pub ty: Box<Ty>,
     pub trait_path: Option<Path>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum RangeLimits {
     /// a..b
     HalfOpen,
@@ -280,7 +285,7 @@ pub enum RangeLimits {
     Closed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Arm {
     pub annotations: AnnotationVec,
     pub pat: Box<Pat>,
@@ -289,24 +294,24 @@ pub struct Arm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Guard {
     pub cond: Expr,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Closure {
     pub fn_decl: Box<FnDecl>,
     pub body: Box<Expr>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct FnDecl {
     pub inputs: Vec<Param>,
     pub output: FnRetTy,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum FnRetTy {
     /// No return type specified. Defaults to dynamic typing.
     Default(Span),
@@ -315,13 +320,13 @@ pub enum FnRetTy {
 
 /// The `Fn(int, int) -> int` function *type* — see [`TyKind::Fn`]. Bare
 /// types only, unlike [`FnDecl`]'s named/patterned parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct FnTy {
     pub inputs: Vec<Box<Ty>>,
     pub output: FnRetTy,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Param {
     pub annotations: AnnotationVec,
     pub ty: Option<Box<Ty>>,
@@ -329,7 +334,7 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct MethodCall {
     pub seg: PathSegment,
     pub receiver: Box<Expr>,
@@ -345,20 +350,20 @@ pub struct Item<K = ItemKind> {
     pub kind: K,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Visibility {
     pub kind: VisibilityKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum VisibilityKind {
     Public,
     Restricted { path: Box<Path> },
     Inherited,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum ItemKind {
     Use(UseTree),
     Fn(Box<Fn>),
@@ -370,7 +375,7 @@ pub enum ItemKind {
     Impl(Impl),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Trait {
     pub ident: Ident,
     pub generics: Generics,
@@ -378,12 +383,12 @@ pub struct Trait {
     pub items: Vec<Box<AssocItem>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct EnumDef {
     pub variants: Vec<Variant>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Variant {
     pub annotations: AnnotationVec,
     pub span: Span,
@@ -392,14 +397,14 @@ pub struct Variant {
     pub data: VariantData,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum VariantData {
     Struct(Vec<FieldDef>),
     Tuple(Vec<FieldDef>),
     Unit,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct FieldDef {
     pub annotations: AnnotationVec,
     pub span: Span,
@@ -408,7 +413,7 @@ pub struct FieldDef {
     pub ty: Option<Box<Ty>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Impl {
     pub generics: Generics,
     pub of_trait: Option<Box<Path>>,
@@ -418,13 +423,13 @@ pub struct Impl {
 
 pub type AssocItem = Item<AssocItemKind>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum AssocItemKind {
     Fn(Box<Fn>),
     Type(Box<TyAlias>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct TyAlias {
     pub ident: Ident,
     pub generics: Generics,
@@ -433,13 +438,13 @@ pub struct TyAlias {
     pub ty: Option<Box<Ty>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum ModKind {
     Loaded(Vec<Box<Item>>),
     Unloaded,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct Fn {
     pub ident: Ident,
     pub generics: Generics,
@@ -447,26 +452,27 @@ pub struct Fn {
     pub body: Option<Box<Block>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct UseTree {
     pub prefix: Path,
     pub kind: UseTreeKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum UseTreeKind {
     Simple(Option<Ident>),
     Nested { items: Vec<UseTree>, span: Span },
     Glob(Span),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
+#[walkable(hookable)]
 pub struct Pat {
     pub kind: PatKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub enum PatKind {
     Missing,
     Wild,
@@ -487,7 +493,7 @@ pub enum PatKind {
 
 type PatFieldsRest = Option<Span>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct PatField {
     pub ident: Ident,
     pub pat: Box<Pat>,
@@ -495,7 +501,7 @@ pub struct PatField {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Walkable)]
 pub enum RangeEnd {
     Included,
     Excluded,
@@ -545,7 +551,7 @@ pub enum ExprPrecedence {
     Unambiguous,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Walkable)]
 pub enum AssignOpKind {
     /// The `+=` operator (addition)
     AddAssign,
@@ -592,13 +598,13 @@ impl AssignOpKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct AssignOp {
     pub kind: AssignOpKind,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Walkable)]
 pub enum UnOp {
     Not,
     Neg,
@@ -613,7 +619,7 @@ impl UnOp {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Walkable)]
 pub enum BinOpKind {
     /// The `+` operator (addition)
     Add,
@@ -721,7 +727,7 @@ impl BinOpKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Walkable)]
 pub struct BinOp {
     pub kind: BinOpKind,
     pub span: Span,

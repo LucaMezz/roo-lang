@@ -1,0 +1,24 @@
+[package]
+name = "typecheck"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "fig-lang's type checker -- lowers ast::Ty into unify::Term<TyCon> and solves the resulting constraints"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["typecheck", "types", "inference"]
+categories = ["compilers"]
+# repository.workspace = true
+
+[dependencies]
+ast = { version = "0.1.0", path = "../ast" }
+unify = { version = "0.1.0", path = "../unify" }
+slotmap = "1.1.1"
+
+[dev-dependencies]
+lexer = { version = "0.1.0", path = "../lexer" }
+parser = { version = "0.1.0", path = "../parser" }
+chumsky = { version = "0.13.0", features = ["pratt"] }
+
+[lints]
+workspace = true

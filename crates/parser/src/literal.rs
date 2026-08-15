@@ -117,6 +117,8 @@ pub fn literal<'src>() -> impl FigParser<'src, Lit> {
         Token::StringLiteral(lit) = e => Lit { kind: LitKind::Str(process_string(lit)), span: span(e) },
         Token::RawStringLiteral(lit) = e => Lit { kind: LitKind::Str(process_raw_string(lit)), span: span(e) },
         Token::Number(lit) = e => Lit { kind: process_number(lit), span: span(e) },
+        Token::True = e => Lit { kind: LitKind::Bool(true), span: span(e) },
+        Token::False = e => Lit { kind: LitKind::Bool(false), span: span(e) },
     }
 }
 
@@ -225,5 +227,25 @@ mod tests {
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.kind, LitKind::Float("3.14".to_owned()));
+    }
+
+    #[test]
+    fn parses_the_true_literal() {
+        let tokens = tokens("true");
+        let parsed = literal()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.kind, LitKind::Bool(true));
+    }
+
+    #[test]
+    fn parses_the_false_literal() {
+        let tokens = tokens("false");
+        let parsed = literal()
+            .parse(&tokens)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(parsed.kind, LitKind::Bool(false));
     }
 }

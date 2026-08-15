@@ -1,0 +1,22 @@
+[package]
+name = "unify"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "A general-purpose, reusable unification engine for solving systems of type equations"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["unification", "types", "inference", "constraints"]
+categories = ["algorithms"]
+# repository.workspace = true
+
+[dependencies]
+slotmap = "1.1.1"
+thiserror = "2.0.20"
+union-find = "0.4.3"
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true

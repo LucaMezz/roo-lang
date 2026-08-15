@@ -286,10 +286,11 @@ fn impl_def<'src>(
         })
 }
 
-fn item_kind<'src>(item: impl FigParser<'src, Item> + 'src) -> impl FigParser<'src, ItemKind> {
-    let expr = expr();
-    let block = block(expr.clone());
-
+fn item_kind<'src>(
+    item: impl FigParser<'src, Item> + 'src,
+    expr: impl FigParser<'src, Expr> + 'src,
+    block: impl FigParser<'src, Block> + 'src,
+) -> impl FigParser<'src, ItemKind> {
     choice((
         just(Token::Use)
             .ignore_then(use_tree())
@@ -320,11 +321,19 @@ fn item_kind<'src>(item: impl FigParser<'src, Item> + 'src) -> impl FigParser<'s
     ))
 }
 
-pub fn item<'src>() -> impl FigParser<'src, Item> {
+/// Takes `expr`/`block` as parameters rather than building fresh ones —
+/// so that `stmt()` (which already has an already-tied `expr`/`block` of
+/// its own, from `expr()`'s/`block()`'s own recursive ties) can call
+/// this for item-statements without recreating them, which would
+/// recurse forever: `expr -> block -> stmt -> item -> expr -> ...`.
+pub(crate) fn item_with<'src>(
+    expr: impl FigParser<'src, Expr> + 'src,
+    block: impl FigParser<'src, Block> + 'src,
+) -> impl FigParser<'src, Item> {
     recursive(|item| {
         annotations()
             .then(visibility())
-            .then(item_kind(item))
+            .then(item_kind(item, expr.clone(), block.clone()))
             .map_with(|((annotations, vis), kind), e| Item {
                 span: span(e),
                 vis,
@@ -332,6 +341,12 @@ pub fn item<'src>() -> impl FigParser<'src, Item> {
                 kind,
             })
     })
+}
+
+pub fn item<'src>() -> impl FigParser<'src, Item> {
+    let expr = expr();
+    let block = block(expr.clone());
+    item_with(expr, block)
 }
 
 #[cfg(test)]

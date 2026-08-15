@@ -42,15 +42,26 @@ fn local<'src>(
         })
 }
 
-/// `local | expr ";"? ` — parses `expr` once regardless of whether a
-/// trailing `;` follows, rather than trying `expr ";"` and `expr` alone
-/// as two separate `choice` branches (which would re-parse the same
-/// expression twice on every semicolon-less statement) — same
+/// `item | local | expr ";"? ` — parses `expr` once regardless of
+/// whether a trailing `;` follows, rather than trying `expr ";"` and
+/// `expr` alone as two separate `choice` branches (which would re-parse
+/// the same expression twice on every semicolon-less statement) — same
 /// shared-prefix shape as `meta_item`/`generic_param`.
+///
+/// Uses `item_with(expr, block)`, not the top-level `item()` — `item()`
+/// builds its own fresh `expr`/`block` internally, which here would
+/// recurse forever (`expr -> block -> stmt -> item -> expr -> ...`).
+/// `item_with` instead reuses the `expr`/`block` already being tied by
+/// `expr()`/`block()`'s own recursion, same reason `block` itself takes
+/// `expr` as a parameter instead of calling `expr()` directly.
 fn stmt<'src>(
     expr: impl FigParser<'src, Expr> + 'src,
     block: impl FigParser<'src, Block> + 'src,
 ) -> impl FigParser<'src, Stmt> {
+    let item_stmt = item_with(expr.clone(), block.clone())
+        .map(Box::new)
+        .map(StmtKind::Item);
+
     let local_stmt = local(expr.clone(), block).map(Box::new).map(StmtKind::Let);
 
     let expr_stmt = expr
@@ -64,7 +75,7 @@ fn stmt<'src>(
             }
         });
 
-    choice((local_stmt, expr_stmt)).map_with(|kind, e| Stmt {
+    choice((item_stmt, local_stmt, expr_stmt)).map_with(|kind, e| Stmt {
         kind,
         span: span(e),
     })

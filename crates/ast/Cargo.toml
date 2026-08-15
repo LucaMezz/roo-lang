@@ -11,6 +11,7 @@ categories = ["compilers", "parser-implementations"]
 # repository.workspace = true
 
 [dependencies]
+walkable-derive = { path = "../walkable-derive" }
 
 [lints]
 workspace = true
