@@ -368,6 +368,15 @@ pub struct TypeCheckContext {
     /// here rather than aborting, so checking always runs to completion
     /// over the whole file.
     diagnostics: Vec<Diagnostic>,
+
+    /// Every point in the source where an identifier names a symbol --
+    /// a declaration (a `fn`'s own name, a parameter, a `let` binding,
+    /// a generic parameter, ...) or a later reference to one. Recorded
+    /// as a side effect of the exact same resolution `resolve`/`check`
+    /// already do, not a separate re-derivation of it, so this can
+    /// never disagree with what actually got resolved. Powers
+    /// [`Self::symbol_at`] -- e.g. a language server's hover.
+    symbol_spans: Vec<(Span, SymbolId)>,
 }
 
 impl Default for TypeCheckContext {
@@ -398,6 +407,7 @@ impl TypeCheckContext {
             current_scope: root,
             checking_stack: Vec::new(),
             diagnostics: Vec::new(),
+            symbol_spans: Vec::new(),
         }
     }
 
@@ -409,6 +419,37 @@ impl TypeCheckContext {
     /// The diagnostics collected so far
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Records that the identifier at `span` names `symbol`, whether
+    /// that's `symbol` being declared right there or an already-
+    /// declared `symbol` being referenced. See [`Self::symbol_spans`].
+    fn record_symbol_span(&mut self, span: Span, symbol: SymbolId) {
+        self.symbol_spans.push((span, symbol));
+    }
+
+    /// Convenience for the common case of a reference through a
+    /// [`Path`]: records its *last* segment's own span against
+    /// `symbol` -- e.g. for `mod::item`, only `item` is recorded,
+    /// since that's the segment `symbol` actually corresponds to.
+    fn record_path_reference(&mut self, path: &Path, symbol: SymbolId) {
+        if let Some(segment) = path.segments.last() {
+            self.record_symbol_span(segment.ident.span, symbol);
+        }
+    }
+
+    /// The symbol whose name is written at `offset` (a byte offset
+    /// into the source this context checked), if any -- e.g. for a
+    /// language server's hover. When spans overlap (there's no
+    /// well-formed roo program where two *identifier* spans nest, but
+    /// this keeps the query well-defined regardless), the narrowest
+    /// one wins.
+    pub fn symbol_at(&self, offset: usize) -> Option<SymbolId> {
+        self.symbol_spans
+            .iter()
+            .filter(|(span, _)| span.start <= offset && offset < span.end)
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map(|(_, symbol)| *symbol)
     }
 
     /// Does the first pass of the AST which creates all scopes
@@ -870,11 +911,14 @@ impl TypeCheckContext {
                 [segment] if segment.ident.name == "String" => term!(self.uni_cx, TyCon::Str),
                 [segment] if segment.ident.name == "any" => term!(self.uni_cx, TyCon::Any),
                 _ => match self.resolve_path(path, Namespace::Type) {
-                    Some(symbol) => match &self.symbols[symbol].kind {
-                        SymbolKind::Struct => term!(self.uni_cx, TyCon::Struct(symbol)),
-                        SymbolKind::Enum => term!(self.uni_cx, TyCon::Enum(symbol)),
-                        _ => self.instantiate_path(symbol, path),
-                    },
+                    Some(symbol) => {
+                        self.record_path_reference(path, symbol);
+                        match &self.symbols[symbol].kind {
+                            SymbolKind::Struct => term!(self.uni_cx, TyCon::Struct(symbol)),
+                            SymbolKind::Enum => term!(self.uni_cx, TyCon::Enum(symbol)),
+                            _ => self.instantiate_path(symbol, path),
+                        }
+                    }
                     None => term!(self.uni_cx, TyCon::Err),
                 },
             },
@@ -1426,7 +1470,10 @@ impl TypeCheckContext {
                     // that shares the raw, still-unified type directly,
                     // exactly the sharing plain self-recursion always
                     // relied on, just scoped to the whole component.
-                    Some(symbol) => self.instantiate_path(symbol, path),
+                    Some(symbol) => {
+                        self.record_path_reference(path, symbol);
+                        self.instantiate_path(symbol, path)
+                    }
                     None => term!(self.uni_cx, TyCon::Err),
                 }
             }
@@ -1766,6 +1813,7 @@ impl TypeCheckContext {
             PatKind::Wild => expected,
             PatKind::Ident(ident, sub) => {
                 let symbol = self.declare(&ident.name, SymbolKind::Local);
+                self.record_symbol_span(ident.span, symbol);
                 let _ = self
                     .uni_cx
                     .unify_because(self.symbols[symbol].ty, expected, ident.span);
@@ -1860,11 +1908,13 @@ impl Visitor for Resolver<'_> {
             ItemKind::Fn(f) => {
                 let scope = self.new_scope();
                 let fn_symbol = self.cx.declare(&f.ident.name, SymbolKind::Fn(scope));
+                self.cx.record_symbol_span(f.ident.span, fn_symbol);
 
                 let mut generics = Vec::new();
                 self.with_scope(scope, |this| {
                     for param in &f.generics.params {
-                        let (_, id) = this.cx.declare_generic_param(&param.ident.name);
+                        let (symbol, id) = this.cx.declare_generic_param(&param.ident.name);
+                        this.cx.record_symbol_span(param.ident.span, symbol);
                         generics.push(id);
                     }
                     item.walk(this);
@@ -1877,38 +1927,45 @@ impl Visitor for Resolver<'_> {
                 let alias_symbol = self
                     .cx
                     .declare(&alias.ident.name, SymbolKind::TyAlias(scope));
+                self.cx.record_symbol_span(alias.ident.span, alias_symbol);
 
                 let mut generics = Vec::new();
                 self.with_scope(scope, |this| {
                     for param in &alias.generics.params {
-                        let (_, id) = this.cx.declare_generic_param(&param.ident.name);
+                        let (symbol, id) = this.cx.declare_generic_param(&param.ident.name);
+                        this.cx.record_symbol_span(param.ident.span, symbol);
                         generics.push(id);
                     }
                 });
                 self.cx.symbols[alias_symbol].generics = generics;
             }
             ItemKind::Enum(ident, _generics, _def) => {
-                self.cx.declare(&ident.name, SymbolKind::Enum);
+                let symbol = self.cx.declare(&ident.name, SymbolKind::Enum);
+                self.cx.record_symbol_span(ident.span, symbol);
             }
             ItemKind::Struct(ident, _generics, data) => {
                 let symbol = self.cx.declare(&ident.name, SymbolKind::Struct);
+                self.cx.record_symbol_span(ident.span, symbol);
                 if !matches!(data, VariantData::Struct(_)) {
                     let name = self.cx.names.id(&ident.name);
                     self.cx.insert_in_scope(name, symbol, Namespace::Value);
                 }
             }
             ItemKind::Trait(t) => {
-                self.cx.declare(&t.ident.name, SymbolKind::Trait);
+                let symbol = self.cx.declare(&t.ident.name, SymbolKind::Trait);
+                self.cx.record_symbol_span(t.ident.span, symbol);
             }
             ItemKind::Mod(ident, ModKind::Unloaded) => {
                 // Empty for now. A future `ModuleLoader` fetches this
                 // mod's contents and resolves them into this same scope.
                 let scope = self.new_scope();
-                self.cx.declare(&ident.name, SymbolKind::Mod(scope));
+                let symbol = self.cx.declare(&ident.name, SymbolKind::Mod(scope));
+                self.cx.record_symbol_span(ident.span, symbol);
             }
             ItemKind::Mod(ident, ModKind::Loaded(_)) => {
                 let scope = self.new_scope();
-                self.cx.declare(&ident.name, SymbolKind::Mod(scope));
+                let symbol = self.cx.declare(&ident.name, SymbolKind::Mod(scope));
+                self.cx.record_symbol_span(ident.span, symbol);
                 self.with_scope(scope, |this| item.walk(this));
                 return;
             }
@@ -3527,6 +3584,99 @@ fn use_it() {
         // be indistinguishable by message text alone.
         let turbofish_int = source.find("::<int>").unwrap() + "::<".len();
         assert_eq!(provenance_note.0.start, turbofish_int);
+    }
+
+    #[test]
+    fn symbol_at_finds_a_fns_own_declaration_and_every_later_reference_to_it() {
+        let source = r#"
+fn add_one(x: int) -> int {
+    x
+}
+fn use_it() {
+    add_one(1);
+}
+"#;
+        let mut cx = check_all(source);
+
+        let decl_offset = source.find("add_one").unwrap() + 2;
+        let use_offset = source.rfind("add_one").unwrap() + 2;
+        assert_ne!(decl_offset, use_offset, "test source should have two distinct occurrences");
+
+        let decl_symbol = cx.symbol_at(decl_offset).expect("should resolve at the declaration");
+        let use_symbol = cx.symbol_at(use_offset).expect("should resolve at the call site");
+        assert_eq!(decl_symbol, use_symbol);
+        assert_eq!(cx.render_symbol_type(decl_symbol), "Fn(int) -> int");
+    }
+
+    #[test]
+    fn symbol_at_finds_a_parameter_at_both_its_declaration_and_its_use_in_the_body() {
+        let source = "fn add_one(x: int) -> int { x }";
+        let mut cx = check_all(source);
+
+        let param_decl = source.find("x:").unwrap();
+        let param_use = source.rfind('x').unwrap();
+        assert_ne!(param_decl, param_use);
+
+        let decl_symbol = cx.symbol_at(param_decl).expect("should resolve at the parameter");
+        let use_symbol = cx.symbol_at(param_use).expect("should resolve at the body reference");
+        assert_eq!(decl_symbol, use_symbol);
+        assert_eq!(cx.render_symbol_type(decl_symbol), "int");
+    }
+
+    #[test]
+    fn symbol_at_finds_a_let_bindings_inferred_type() {
+        let source = r#"
+fn use_it() {
+    let n = 1;
+}
+"#;
+        let mut cx = check_all(source);
+        let offset = source.find("let n").unwrap() + "let ".len();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the let binding");
+        assert_eq!(cx.render_symbol_type(symbol), "int");
+    }
+
+    #[test]
+    fn symbol_at_finds_a_struct_name_at_its_declaration_and_in_a_type_annotation() {
+        let source = r#"
+struct Point {
+    x: int,
+}
+fn use_it(p: Point) {}
+"#;
+        let cx = check_all(source);
+
+        let decl_offset = source.find("Point").unwrap();
+        let use_offset = source.rfind("Point").unwrap();
+        assert_ne!(decl_offset, use_offset);
+
+        let decl_symbol = cx.symbol_at(decl_offset).expect("should resolve at the struct decl");
+        let use_symbol = cx.symbol_at(use_offset).expect("should resolve at the annotation");
+        assert_eq!(decl_symbol, use_symbol);
+    }
+
+    #[test]
+    fn symbol_at_finds_a_generic_param_at_its_declaration_and_in_the_signature() {
+        let source = "fn identity<T>(x: T) -> T { x }";
+        let cx = check_all(source);
+
+        let decl_offset = source.find('T').unwrap();
+        let param_ty_offset = source.find("x: T").unwrap() + 3;
+        let ret_ty_offset = source.rfind('T').unwrap();
+
+        let decl_symbol = cx.symbol_at(decl_offset).expect("should resolve at <T>");
+        let param_symbol = cx.symbol_at(param_ty_offset).expect("should resolve at x: T");
+        let ret_symbol = cx.symbol_at(ret_ty_offset).expect("should resolve at -> T");
+        assert_eq!(decl_symbol, param_symbol);
+        assert_eq!(decl_symbol, ret_symbol);
+    }
+
+    #[test]
+    fn symbol_at_is_none_between_identifiers() {
+        let source = "fn add_one(x: int) -> int { x }";
+        let cx = check_all(source);
+        let space_offset = source.find(") ->").unwrap();
+        assert_eq!(cx.symbol_at(space_offset), None);
     }
 
     #[test]
