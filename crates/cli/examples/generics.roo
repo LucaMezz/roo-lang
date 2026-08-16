@@ -1,0 +1,70 @@
+// Generic type aliases and explicit generic-argument syntax --
+// "turbofish" on functions (`identity::<int>(...)`), explicit type
+// arguments on a generic type alias, and `_` placeholders that leave
+// one specific position to ordinary inference while pinning the
+// rest. See book/src/types/inference.md and
+// book/src/abstraction/generics.md for the full rules this exercises.
+//
+// Not meant to be *run* -- see recursion.roo's header for why. Check
+// it and read the inferred types with:
+//
+//     cargo run -p cli -- crates/cli/examples/generics.roo
+//
+// Only features the checker currently implements are used here --
+// unlike the root `examples/`, which sketch the whole language as
+// designed, including parts not built yet.
+
+// A generic type alias. `Pair<T, U>` is a template, generalized once
+// (as `Pair`) and instantiated fresh at each use -- the exact same
+// generalize/instantiate machinery a generic function goes through.
+// Note that the checker will print a use of it as its underlying
+// tuple type, not as `Pair<...>`: unlike `struct`/`enum`, a type
+// alias isn't a nominal type of its own, just a name for another
+// type, so nothing about "this came from `Pair`" survives checking.
+type Pair<T, U> = (T, U);
+
+// Written with no annotations at all, so it's inferred and
+// generalized to `<T>(x: T) -> T` -- indistinguishable, once checked,
+// from writing the `<T>` by hand.
+fn identity(x) {
+    x
+}
+
+// Declares the exact same signature explicitly. Both functions behave
+// identically at every call site below.
+fn explicit_identity<T>(x: T) -> T {
+    x
+}
+
+// A two-parameter generic function returning a generic type alias,
+// for exercising turbofish with more than one type argument at once.
+fn pair_up<A, B>(a: A, b: B) -> Pair<A, B> {
+    (a, b)
+}
+
+fn use_generics() {
+    // Ordinary inference: no annotation needed anywhere.
+    let a = identity(5);
+
+    // Fully explicit turbofish -- pins T before the argument is even
+    // checked against it.
+    let b = identity::<String>("hi");
+
+    // The hand-written and inferred forms of `identity` take
+    // turbofish the same way, since they're the same kind of thing
+    // once checked.
+    let c = explicit_identity::<int>(5);
+
+    // Turbofish is all-or-nothing once you use it at all: every
+    // generic parameter needs an argument, `_` included, to leave a
+    // specific one to ordinary inference.
+    let d = pair_up::<int, _>(1, "hi");
+    let e = pair_up::<_, bool>(1, true);
+
+    // A bare `Pair` (no explicit type arguments at all) infers them
+    // from context, the same way a bare generic function call does.
+    let f: Pair<int, int> = (1, 2);
+    let g: Pair = (1, "two");
+
+    (a, b, c, d, e, f, g)
+}

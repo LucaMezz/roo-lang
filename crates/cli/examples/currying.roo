@@ -1,0 +1,116 @@
+// Currying via nested named functions -- since closure literals
+// aren't implemented in the checker yet (only plain `fn` items, top-
+// level or nested, are), a curried function today is a chain of
+// nested `fn`s, each returning the next by name. This file shows that
+// pattern applied to function composition and to a couple of small,
+// reusable `curryN` helpers, and demonstrates that the results are
+// genuinely polymorphic -- reusable at more than one concrete type in
+// the same program, and composable with each other -- not just
+// "happens to check once."
+//
+// Not meant to be *run* -- see recursion.roo's header for why. Check
+// it and read the inferred types with:
+//
+//     cargo run -p cli -- crates/cli/examples/currying.roo
+//
+// Only features the checker currently implements are used here --
+// unlike the root `examples/`, which sketch the whole language as
+// designed, including parts not built yet.
+
+// Curried function composition. `inner`/`value` are nested purely to
+// stage the arguments one at a time; they don't need (and don't get)
+// any generic parameters of their own -- every free type variable
+// anywhere in this whole nest is deferred all the way up to
+// `compose`, the only one of the three that's ever independently
+// reachable from outside it. That deferral is the classic Hindley-
+// Milner rule "never generalize a variable that's still free in an
+// enclosing signature": without it, `inner`/`value` would each try to
+// claim a share of `compose`'s own type variables for themselves,
+// leaving `compose` permanently pinned to whatever concrete types
+// happened to flow through it the first time it was called, instead
+// of reusable at any types at all.
+fn compose(f) {
+    fn inner(g) {
+        fn value(x) {
+            f(g(x))
+        }
+        value
+    }
+    inner
+}
+
+// A reusable helper: turns any two-argument function into a chain of
+// two one-argument functions. `T`, `U`, `V` are ordinary type
+// parameters -- nothing about `curry2` abstracts over *how many*
+// arguments `f` takes, only over what types they are. This is exactly
+// Haskell's Prelude `curry :: ((a, b) -> c) -> a -> b -> c`, an
+// ordinary Hindley-Milner-typed higher-order function, not a
+// metaprogramming trick the way a dynamically-typed language's
+// runtime-arity-inspecting `curry` would be.
+fn curry2(f) {
+    fn stage1(a) {
+        fn stage2(b) {
+            f(a, b)
+        }
+        stage2
+    }
+    stage1
+}
+
+// Same idea, one argument further. There's no way to write a single
+// `curry` that works for every arity at once -- arity isn't something
+// a Hindley-Milner type system can abstract over the way a type can
+// -- so a reusable curry helper needs one of these per arity actually
+// used, the same way `Fn(...)`'s parameter list has to be written out
+// concretely everywhere else in the language too.
+fn curry3(f) {
+    fn stage1(a) {
+        fn stage2(b) {
+            fn stage3(c) {
+                f(a, b, c)
+            }
+            stage3
+        }
+        stage2
+    }
+    stage1
+}
+
+fn add(a: int, b: int) -> int {
+    a
+}
+
+fn concat(a: String, b: String) -> String {
+    a
+}
+
+fn between(lo: int, x: int, hi: int) -> bool {
+    true
+}
+
+fn use_currying() {
+    // `curry2` is genuinely polymorphic, not pinned to whichever
+    // types it happened to see first -- both of these type check in
+    // the same program, at completely unrelated types.
+    let add_curried = curry2(add);
+    add_curried(1)(2);
+
+    let concat_curried = curry2(concat);
+    concat_curried("a")("b");
+
+    // `curry3` the same way, at yet another, unrelated set of types.
+    curry3(between)(0)(5)(10);
+
+    // A curried call can be partially applied and the result kept
+    // around as an ordinary value -- `add_one` is just an ordinary
+    // `Fn(int) -> int`, indistinguishable from a plain top-level `fn`
+    // once checked.
+    let add_one = curry2(add)(1);
+
+    // `compose` composes ordinary functions and partially-applied
+    // curried ones interchangeably -- both are just `Fn(A) -> B`
+    // values by the time the checker sees them, with no distinction
+    // between "a real top-level fn," "a nested fn returned by
+    // value," and "a curry stage waiting for its next argument."
+    compose::<int, String, int>(add_one)(add_one)(1);
+}

@@ -14,7 +14,7 @@
 //!
 //! Not yet implemented -- nothing here yet.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
@@ -24,11 +24,16 @@ use ast::{
 use slotmap::SlotMap;
 use unify::{Term, TermId, UnificationContext, UnifyError, VarId, term};
 
+/// The severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Level {
+pub enum Level {
+    /// Checking failed outright at this point.
     Error,
+    /// Checking succeeded, but something is likely a mistake.
     Warning,
+    /// Additional context attached to another diagnostic.
     Note,
+    /// A suggestion for how to fix another diagnostic.
     Help,
 }
 
@@ -87,6 +92,32 @@ impl Diagnostic {
         Self::error(span, "cyclic type of infinite size")
             .with_note(format!("expected type `{expected}`"))
             .with_note(format!("found type `{actual}`"))
+    }
+
+    /// This diagnostic's severity.
+    pub fn level(&self) -> Level {
+        self.level
+    }
+
+    /// The primary message describing this diagnostic.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The primary span this diagnostic applies to.
+    pub fn span(&self) -> Span {
+        self.primary_span
+    }
+
+    /// Secondary spans related to this diagnostic, each with a message
+    /// explaining its relevance.
+    pub fn related(&self) -> &[(Span, String)] {
+        &self.related
+    }
+
+    /// Additional notes attached to this diagnostic.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 }
 
@@ -198,7 +229,15 @@ struct Symbol {
     /// (instantiation) rather than read off directly.
     generics: Vec<GenericId>,
 
-    param_spans: Vec<Span>,
+    /// The span of each parameter's own type annotation, in
+    /// declaration order -- `None` for a parameter left unannotated.
+    /// Used to point a mismatched-argument diagnostic's "expected due
+    /// to this" note at the actual text that pinned the expected type
+    /// down. Deliberately `None`, not a fallback span (e.g. the
+    /// parameter's own pattern), when there's no annotation: pointing
+    /// at *something* that doesn't actually explain the expected type
+    /// is worse than not pointing at anything.
+    param_spans: Vec<Option<Span>>,
 }
 
 /// The different kinds of symbols.
@@ -293,8 +332,12 @@ pub struct TypeCheckContext {
     /// The current scope being checked.
     current_scope: ScopeId,
 
-    checking: Option<(SymbolId, ScopeId)>,
-    self_or_sibling_referenced: bool,
+    /// Symbols whose bodies are currently being checked, outermost
+    /// first -- one entry per still-open [`Checker::check_fn_body`]
+    /// call, so a nested function's own generalization can tell which
+    /// enclosing, not-yet-finalized signatures it must not steal a
+    /// free variable from. See [`Self::enclosing_free_vars`].
+    checking_stack: Vec<SymbolId>,
 
     /// Diagnostics collected while type checking. Errors are pushed
     /// here rather than aborting, so checking always runs to completion
@@ -328,19 +371,17 @@ impl TypeCheckContext {
             synthetic_generic_names: 0,
             symbols: SlotMap::with_key(),
             current_scope: root,
-            checking: None,
-            self_or_sibling_referenced: false,
+            checking_stack: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
 
+    /// Records a new diagnostic
     fn diagnostic(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
 
-    /// The diagnostics collected so far -- checking never aborts early,
-    /// so this accumulates across the whole file rather than stopping
-    /// at the first problem.
+    /// The diagnostics collected so far
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
@@ -355,15 +396,9 @@ impl TypeCheckContext {
         }
     }
 
-    /// Second pass, run after `resolve`: lowers every `Fn`/`TyAlias`
-    /// item's *declared* signature and unifies it into the symbol
-    /// `resolve` already created a placeholder for -- without this, a
-    /// symbol's type only ever gets pinned down reactively, by
-    /// whichever caller happens to check first, which is wrong (the
-    /// declaration should be authoritative, not a guess from usage).
-    /// Struct/enum fields and trait associated items aren't handled
-    /// here -- they need their own per-symbol storage this doesn't
-    /// have yet, not just one term to unify in.
+    /// Second pass, run after `resolve`. Lowers every `Fn`/`TyAlias`
+    /// item's declared signature and unifies it into the symbol
+    /// `resolve` already created a placeholder for.
     pub fn lower_signatures(&mut self, items: &[Box<Item>]) {
         let mut lowerer = SignatureLowerer { cx: self };
         for item in items {
@@ -373,11 +408,12 @@ impl TypeCheckContext {
 
     /// Third pass, run after `lower_signatures`: checks every item's body
     /// (currently just `Fn` bodies) against its already-lowered signature.
+    /// Sibling `Fn`s are generalized together by strongly-connected
+    /// call-graph component -- see [`Checker::check_items`].
     pub fn check(&mut self, items: &[Box<Item>]) {
         let mut checker = Checker { cx: self };
-        for item in items {
-            checker.visit_item(item);
-        }
+        let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
+        checker.check_items(&items);
     }
 
     /// Resolves a path relative to the current scope, for a given
@@ -482,6 +518,10 @@ impl TypeCheckContext {
         symbol
     }
 
+    /// Declares a new generic parameter within the current scope.
+    /// Used to make generic type parameters available within the
+    /// scope of a function, or within the expression of a type
+    /// alias.
     fn declare_generic_param(&mut self, param_name: &str) -> (SymbolId, GenericId) {
         let name = self.names.id(param_name);
         let id = self.generic_ids.insert(());
@@ -498,6 +538,9 @@ impl TypeCheckContext {
         (symbol, id)
     }
 
+    /// Collects all the free inference variables within a type.
+    /// Used to generalise functions which still have free type
+    /// inference variables after being type-checked.
     fn free_vars(&mut self, term: TermId, out: &mut Vec<VarId>) {
         let resolved = self.uni_cx.resolve(term);
         match self.uni_cx.term(resolved).cloned() {
@@ -516,6 +559,35 @@ impl TypeCheckContext {
         }
     }
 
+    /// The free type variables reachable from any symbol currently
+    /// being checked -- every entry on [`Self::checking_stack`], i.e.
+    /// every ancestor `fn` whose own body is still mid-check because
+    /// checking *this* symbol is nested inside checking theirs.
+    ///
+    /// [`Self::generalize_group`] must never generalize one of these:
+    /// doing so would quantify a variable that's also still free in
+    /// an enclosing, not-yet-finalized signature -- exactly the
+    /// classic Hindley-Milner "never generalize what's free in the
+    /// environment" rule. Left untouched (still an ordinary
+    /// `Term::Var`, not bound to a fresh `TyCon::Generic`), such a
+    /// variable is correctly picked up later by whichever enclosing
+    /// scope's own `generalize_group` call actually owns it -- the
+    /// same sharing `generalize_group`'s own doc comment already
+    /// describes for siblings within one call, just spanning nesting
+    /// levels instead of one flat group.
+    fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
+        let mut out = Vec::new();
+        for i in 0..self.checking_stack.len() {
+            let ty = self.symbols[self.checking_stack[i]].ty;
+            self.free_vars(ty, &mut out);
+        }
+        out.into_iter().collect()
+    }
+
+    /// Creates a new synthetic name for a generic type parameter
+    /// which has been inferred / introduced by generalisation of
+    /// a function containing free inference variables after being
+    /// typechecked.
     fn synthetic_generic_name(&mut self) -> String {
         const LETTERS: [char; 7] = ['T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
         let n = self.synthetic_generic_names;
@@ -529,25 +601,126 @@ impl TypeCheckContext {
         }
     }
 
-    fn generalize(&mut self, symbol: SymbolId) {
-        self.synthetic_generic_names = 0;
-        let ty = self.symbols[symbol].ty;
-        let mut vars = Vec::new();
-        self.free_vars(ty, &mut vars);
-        for var in vars {
-            let id = self.generic_ids.insert(());
+    /// Like [`Self::synthetic_generic_name`], but keeps drawing names
+    /// until it finds one not already in `taken`, adding it to `taken`
+    /// before returning it. Without this, a symbol that already has
+    /// explicitly-written generic parameters (e.g. `fn f<T>(...)`)
+    /// could have a *newly* generalized free variable assigned that
+    /// same name `T` again -- the counter `synthetic_generic_name`
+    /// draws from has no idea `T` is already spoken for, since it only
+    /// tracks synthetic names it has handed out itself. The two `T`s
+    /// would still be perfectly sound (distinct `GenericId`s under the
+    /// hood, instantiated independently), but the rendered signature
+    /// would show two different parameters under one indistinguishable
+    /// name, which is exactly the confusing-not-unsound failure mode
+    /// this exists to rule out.
+    fn fresh_synthetic_generic_name(&mut self, taken: &mut HashSet<String>) -> String {
+        loop {
             let name = self.synthetic_generic_name();
-            self.generic_names.insert(id, name);
-            let generic_term = term!(self.uni_cx, TyCon::Generic(id));
-            self.uni_cx.bind(var, generic_term);
-            self.symbols[symbol].generics.push(id);
+            if taken.insert(name.clone()) {
+                return name;
+            }
         }
     }
 
+    /// Generalizes every member of one strongly-connected call-graph
+    /// component together, over the free type variables reachable
+    /// from *any* member's type -- not each member's type in
+    /// isolation. A non-recursive, non-mutually-recursive function is
+    /// just the singleton-component case of the same operation.
+    ///
+    /// This has to be one combined pass rather than one call per
+    /// member: if two members share an underlying unification
+    /// variable (because, say, one's body used the other's result),
+    /// generalizing the first member alone would bind that shared
+    /// variable to a fresh `TyCon::Generic`, and the second member's
+    /// own free-variable walk would then see an already-resolved
+    /// `TyCon::Generic` there instead of a `Term::Var` -- silently
+    /// leaving that generic parameter out of the second member's own
+    /// `generics` list even though its type still structurally
+    /// mentions it. Computing every member's free variables up front,
+    /// before any of them are bound, avoids that.
+    ///
+    /// Two members ending up with the same [`GenericId`] in their
+    /// respective `generics` lists (because they share a variable) is
+    /// expected, not a bug: [`Self::instantiate_with`] always builds
+    /// a fresh substitution per call, so separate call sites for each
+    /// member still instantiate completely independently regardless
+    /// of which ids their stored types happen to share.
+    fn generalize_group(&mut self, members: &[SymbolId]) {
+        self.synthetic_generic_names = 0;
+
+        // Variables that are still free in an enclosing, not-yet-
+        // finalized signature -- see `enclosing_free_vars`'s own doc
+        // comment for why these can never be generalized here, only
+        // deferred to whichever ancestor actually owns them.
+        let enclosing = self.enclosing_free_vars();
+
+        // Names already claimed by this component's own explicitly-
+        // written generic parameters (already present in each member's
+        // `generics` before this call runs, from `declare_generic_param`
+        // during resolution) -- synthetic names handed out below must
+        // avoid these too, not just each other, or the rendered
+        // signature could show an explicit `<T>` and a newly-
+        // generalized parameter under the same name.
+        let mut taken: HashSet<String> = HashSet::new();
+        for &symbol in members {
+            for &id in &self.symbols[symbol].generics {
+                if let Some(name) = self.generic_names.get(&id) {
+                    taken.insert(name.clone());
+                }
+            }
+        }
+
+        // Every member's free variables, computed against the
+        // original, still-unbound state -- must happen before any
+        // binding below, since binding one member's variable would
+        // hide it from a later member's own free_vars walk.
+        let mut per_member_vars: Vec<(SymbolId, Vec<VarId>)> = Vec::with_capacity(members.len());
+        for &symbol in members {
+            let ty = self.symbols[symbol].ty;
+            let mut vars = Vec::new();
+            self.free_vars(ty, &mut vars);
+            vars.retain(|v| !enclosing.contains(v));
+            per_member_vars.push((symbol, vars));
+        }
+
+        // Assign exactly one fresh generic id per distinct free
+        // variable across the whole group, in first-seen order, and
+        // bind it once.
+        let mut assigned: HashMap<VarId, GenericId> = HashMap::new();
+        for (_, vars) in &per_member_vars {
+            for &var in vars {
+                if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
+                    let id = self.generic_ids.insert(());
+                    let name = self.fresh_synthetic_generic_name(&mut taken);
+                    self.generic_names.insert(id, name);
+                    let generic_term = term!(self.uni_cx, TyCon::Generic(id));
+                    self.uni_cx.bind(var, generic_term);
+                    entry.insert(id);
+                }
+            }
+        }
+
+        // Each member only lists the generic ids that actually appear
+        // in its own type, in the order it first encountered them --
+        // exactly what `instantiate_with`'s positional zip needs.
+        for (symbol, vars) in per_member_vars {
+            for var in vars {
+                let id = assigned[&var];
+                self.symbols[symbol].generics.push(id);
+            }
+        }
+    }
+
+    /// Creates a new type with all generic type parameters in
+    /// the symbol replaced with new inference variables.
     fn instantiate(&mut self, symbol: SymbolId) -> TermId {
         self.instantiate_with(symbol, &[])
     }
 
+    /// Creates a new type with all generic type parameters in
+    /// the symbol substituted with the given explicit types.
     fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[TermId]) -> TermId {
         let ty = self.symbols[symbol].ty;
         if self.symbols[symbol].generics.is_empty() {
@@ -586,6 +759,9 @@ impl TypeCheckContext {
     fn instantiate_path(&mut self, symbol: SymbolId, path: &Path) -> TermId {
         match path.segments.last().and_then(|seg| seg.args.as_ref()) {
             Some(generic_args) => {
+                // Retireve and lower all generic type arguments in the last
+                // segment of the path, which should be used to instantiate
+                // the symbol.
                 let arg_tys: Vec<TermId> = generic_args
                     .args
                     .iter()
@@ -605,26 +781,12 @@ impl TypeCheckContext {
                     self.diagnostic(Diagnostic::error(generic_args.span, message));
                 }
 
+                // Substitute the generic type parameters in the symbol's type
+                // with the type arguments specified.
                 self.instantiate_with(symbol, &arg_tys[..actual.min(max)])
             }
             None => self.instantiate(symbol),
         }
-    }
-
-    fn is_self_or_sibling_fn(
-        &self,
-        parent_scope: ScopeId,
-        checking_fn: SymbolId,
-        symbol: SymbolId,
-    ) -> bool {
-        if symbol == checking_fn {
-            return true;
-        }
-        if !matches!(self.symbols[symbol].kind, SymbolKind::Fn(_)) {
-            return false;
-        }
-        let name = self.symbols[symbol].name;
-        self.scopes[parent_scope].values.get(&name) == Some(&symbol)
     }
 
     /// Inserts an existing symbol into the current scope.
@@ -693,6 +855,10 @@ impl TypeCheckContext {
         }
     }
 
+    /// Gets the span for the return value of a block. If the block has at
+    /// least one statement, then we take the span to be the last statement,
+    /// since that will produce the return value of the block. Otherwise, just
+    /// use the span of the entire block if it is empty.
     fn block_value_span(block: &Block) -> Span {
         match block.stmts.last() {
             Some(Stmt {
@@ -752,12 +918,38 @@ impl TypeCheckContext {
         }
     }
 
+    /// Renders a symbol's type as roo source-like text, the same way
+    /// [`Self::render_term`] does, but prefixed with the symbol's own
+    /// generic parameters (if any) the way a `fn`'s `<T, U>` list would
+    /// read. Meant for tooling (a CLI, an editor integration, ...) that
+    /// wants to display "what did the checker figure out for this item"
+    /// without reaching into `TermId`/`Term` internals directly.
+    pub fn render_symbol_type(&mut self, symbol: SymbolId) -> String {
+        let ty = self.symbols[symbol].ty;
+        let rendered = self.render_term(ty);
+        let generics = self.symbols[symbol].generics.clone();
+        if generics.is_empty() {
+            return rendered;
+        }
+        let names: Vec<String> = generics
+            .iter()
+            .map(|id| {
+                self.generic_names
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "<generic>".to_owned())
+            })
+            .collect();
+        format!("<{}> {rendered}", names.join(", "))
+    }
+
     /// Determines the type of an Expression node from the AST, possibly given
     /// additional information about what the type is expected to be.
     fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
         self.check_expr_expecting(expr, expected, None)
     }
 
+    /// Gets the name of a generic parameter.
     fn generic_name_of(&mut self, term: TermId) -> Option<String> {
         let resolved = self.uni_cx.resolve(term);
         match self.uni_cx.term(resolved)? {
@@ -925,15 +1117,18 @@ impl TypeCheckContext {
                 }
 
                 match self.resolve_path(path, Namespace::Value) {
-                    Some(symbol) => {
-                        if let Some((checking_fn, parent_scope)) = self.checking {
-                            if self.is_self_or_sibling_fn(parent_scope, checking_fn, symbol) {
-                                self.self_or_sibling_referenced = true;
-                            }
-                        }
-
-                        self.instantiate_path(symbol, path)
-                    }
+                    // `instantiate_path` already does the right thing for a
+                    // symbol that's mid-check as part of the strongly-
+                    // connected component currently being checked together
+                    // (see `Checker::check_items`): such a symbol's
+                    // `generics` is still empty at this point --
+                    // `generalize_group` only runs after every member of
+                    // the component has been checked -- so this call is a
+                    // no-op passthrough
+                    // that shares the raw, still-unified type directly,
+                    // exactly the sharing plain self-recursion always
+                    // relied on, just scoped to the whole component.
+                    Some(symbol) => self.instantiate_path(symbol, path),
                     None => term!(self.uni_cx, TyCon::Err),
                 }
             }
@@ -941,7 +1136,7 @@ impl TypeCheckContext {
                 // Check the type of the expression which is being called
                 let callee_ty = self.check_expr(callee, None);
 
-                let callee_param_spans: Vec<Span> = match &callee.kind {
+                let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
                     ExprKind::Path(None, path) => self
                         .resolve_path(path, Namespace::Value)
                         .map(|symbol| self.symbols[symbol].param_spans.clone())
@@ -1012,15 +1207,23 @@ impl TypeCheckContext {
                     // on an arity mismatch.
                     for (i, arg) in args.iter().enumerate() {
                         let expected_ty = input_tys.get(i).copied();
-                        let expected_span = callee_param_spans.get(i).copied();
+                        let expected_span = callee_param_spans.get(i).copied().flatten();
                         self.check_expr_expecting(arg, expected_ty, expected_span);
                     }
 
                     output_term
-                } else {
-                    // Callee's shape isnt known yet. Not enough information
-                    // to individually check types of arguments to expected
-                    // types of parameters.
+                } else if matches!(
+                    self.uni_cx.term(resolved_callee),
+                    None | Some(Term::Var(_))
+                ) {
+                    // Callee's shape isnt known yet -- still an unbound
+                    // inference variable, not yet pinned to anything.
+                    // Not enough information to individually check types
+                    // of arguments to expected types of parameters, so
+                    // infer a Fn shape for the callee from how it's
+                    // actually called here instead. Binding a fresh
+                    // variable can never fail, so this unification is
+                    // infallible.
                     let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
                     let inputs_term = term!(self.uni_cx, TyCon::Tuple => arg_tys);
                     let ret_var = self.uni_cx.fresh_var();
@@ -1028,6 +1231,31 @@ impl TypeCheckContext {
                     let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
                     let _ = self.uni_cx.unify(callee_ty, fn_term);
                     ret_term
+                } else {
+                    // Callee's type is already known -- and it's
+                    // concretely something other than Fn. Unlike the
+                    // branch above, this can't be resolved by unifying
+                    // against a synthesized Fn shape (that would just
+                    // fail), so it's a real error: this value isn't
+                    // callable at all.
+                    let found = self.render_term(callee_ty);
+                    self.diagnostic(Diagnostic::error(
+                        callee.span,
+                        format!("expected a function, found `{found}`"),
+                    ));
+
+                    // Still check the arguments, best-effort, so
+                    // checking continues past this error instead of
+                    // skipping them entirely -- there's just no
+                    // parameter type to check them against.
+                    for arg in args {
+                        self.check_expr(arg, None);
+                    }
+
+                    // `Err` is a wildcard that unifies with anything, so
+                    // this call's bogus result type doesn't cascade into
+                    // a second, misleading diagnostic wherever it's used.
+                    term!(self.uni_cx, TyCon::Err)
                 }
             }
             ExprKind::Cast(_expr, ty) => {
@@ -1454,7 +1682,7 @@ impl Visitor for SignatureLowerer<'_> {
                                 .sig
                                 .inputs
                                 .iter()
-                                .map(|p| p.ty.as_ref().map_or(p.span, |ty| ty.span))
+                                .map(|p| p.ty.as_ref().map(|ty| ty.span))
                                 .collect();
                         }
                         item.walk(this);
@@ -1471,8 +1699,7 @@ impl Visitor for SignatureLowerer<'_> {
                     SymbolKind::TyAlias(scope) => Some(*scope),
                     _ => None,
                 });
-                if let (Some(symbol), Some(scope), Some(ty)) = (symbol, scope, alias.ty.as_ref())
-                {
+                if let (Some(symbol), Some(scope), Some(ty)) = (symbol, scope, alias.ty.as_ref()) {
                     self.with_scope(scope, |this| {
                         let aliased = this.cx.lower_ty(ty);
                         let symbol_ty = this.cx.symbols[symbol].ty;
@@ -1498,6 +1725,124 @@ impl Visitor for SignatureLowerer<'_> {
     }
 }
 
+/// Computes the strongly-connected components of a directed graph
+/// given as `nodes` (every node, in a fixed, deterministic order) and
+/// `edges` (each node's outgoing edges, also in a fixed order),
+/// returning them in dependency order: a component only ever depends
+/// on components that appear *before* it in the result, never one
+/// that appears after. Processing the returned list in order
+/// therefore guarantees every dependency of a component has already
+/// been processed by the time that component is reached.
+///
+/// Implemented as Tarjan's algorithm, which produces exactly that
+/// order as a side effect of a single depth-first traversal: a
+/// component is only popped once every node reachable from it has
+/// been fully explored, so a callee's component always pops before
+/// its caller's. Recursive, so a pathologically deep call graph could
+/// overflow the stack -- not a real concern at the scale of a single
+/// module's sibling functions.
+fn strongly_connected_components(
+    nodes: &[SymbolId],
+    edges: &HashMap<SymbolId, Vec<SymbolId>>,
+) -> Vec<Vec<SymbolId>> {
+    struct State {
+        index: HashMap<SymbolId, u32>,
+        lowlink: HashMap<SymbolId, u32>,
+        on_stack: HashSet<SymbolId>,
+        stack: Vec<SymbolId>,
+        next_index: u32,
+        sccs: Vec<Vec<SymbolId>>,
+    }
+
+    fn visit(node: SymbolId, edges: &HashMap<SymbolId, Vec<SymbolId>>, state: &mut State) {
+        state.index.insert(node, state.next_index);
+        state.lowlink.insert(node, state.next_index);
+        state.next_index += 1;
+        state.stack.push(node);
+        state.on_stack.insert(node);
+
+        for &successor in edges.get(&node).map(Vec::as_slice).unwrap_or_default() {
+            if !state.index.contains_key(&successor) {
+                // Tree edge: recurse, then pull up whatever the
+                // successor can reach.
+                visit(successor, edges, state);
+                let pulled = state.lowlink[&successor];
+                let current = state.lowlink[&node];
+                state.lowlink.insert(node, current.min(pulled));
+            } else if state.on_stack.contains(&successor) {
+                // Back/cross edge into a node still on the stack --
+                // part of the same not-yet-closed component.
+                let successor_index = state.index[&successor];
+                let current = state.lowlink[&node];
+                state.lowlink.insert(node, current.min(successor_index));
+            }
+            // An edge into a node that's visited but no longer on the
+            // stack points at an already-finished, unrelated
+            // component -- nothing to do.
+        }
+
+        if state.lowlink[&node] == state.index[&node] {
+            let mut component = Vec::new();
+            loop {
+                let member = state
+                    .stack
+                    .pop()
+                    .expect("node's own frame is still on the stack until its root pops it");
+                state.on_stack.remove(&member);
+                component.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            state.sccs.push(component);
+        }
+    }
+
+    let mut state = State {
+        index: HashMap::new(),
+        lowlink: HashMap::new(),
+        on_stack: HashSet::new(),
+        stack: Vec::new(),
+        next_index: 0,
+        sccs: Vec::new(),
+    };
+    for &node in nodes {
+        if !state.index.contains_key(&node) {
+            visit(node, edges, &mut state);
+        }
+    }
+    state.sccs
+}
+
+/// Walks one `fn`'s body collecting every other member of its sibling
+/// group (including itself) that it references by bare name, for
+/// [`Checker::check_items`] to build a call graph from. Deliberately
+/// coarse: it matches on the referenced *name* alone, not on real
+/// scope-resolved identity, so a local binding that happens to shadow
+/// a sibling's name is (harmlessly) still counted as a reference to
+/// that sibling. This can only ever over-approximate the real call
+/// graph, never under-approximate it -- at worst grouping two
+/// functions into one strongly-connected component that didn't
+/// strictly need to be grouped, which is exactly the same shape of
+/// (safe, sound) conservatism the previous whole-flag approach had
+/// everywhere, not a new source of unsoundness.
+struct CallGraphCollector<'a> {
+    sibling_names: &'a HashMap<&'a str, SymbolId>,
+    edges: Vec<SymbolId>,
+}
+
+impl Visitor for CallGraphCollector<'_> {
+    fn visit_expr(&mut self, expr: &Expr) {
+        if let ExprKind::Path(None, path) = &expr.kind
+            && let [segment] = path.segments.as_slice()
+            && let Some(&symbol) = self.sibling_names.get(segment.ident.name.as_str())
+        {
+            self.edges.push(symbol);
+        }
+        expr.walk(self);
+    }
+}
+
 /// The second pass of the AST. Walks the AST and, for relevant nodes,
 /// it generates constraints between types and unifies them to
 /// determine types.
@@ -1512,28 +1857,85 @@ impl Checker<'_> {
         f(self);
         self.cx.current_scope = parent;
     }
-}
 
-impl Visitor for Checker<'_> {
-    fn visit_item(&mut self, item: &Item) {
-        // In the checking phase, we are only concerned about visiting
-        // functions. If its not a function, skip the node and any
-        // child nodes.
+    /// Checks every item in one sibling group -- either the items at
+    /// the top level of a module, or the items hoisted into one `fn`
+    /// body -- generalizing its `Fn` items together by
+    /// strongly-connected call-graph component rather than one
+    /// function at a time in declaration order. This is the entry
+    /// point both [`TypeCheckContext::check`] and the recursive
+    /// hoisted-item case (in [`Self::check_fn_body`]) use.
+    fn check_items(&mut self, items: &[&Item]) {
+        // Resolve every sibling `Fn` item to its symbol up front, in
+        // declaration order -- the order `strongly_connected_components`
+        // uses for determinism. Non-`Fn` items don't need any of the
+        // grouping/generalization machinery below (the checker has
+        // nothing to do for them today), so they're skipped entirely,
+        // exactly as they were before.
+        let mut fns: Vec<(SymbolId, &Item)> = Vec::new();
+        for &item in items {
+            if let ItemKind::Fn(f) = &item.kind {
+                let name = self.cx.names.id(&f.ident.name);
+                if let Some(symbol) =
+                    self.cx
+                        .lookup_in_scope(self.cx.current_scope, name, Namespace::Value)
+                {
+                    fns.push((symbol, item));
+                }
+            }
+        }
+        if fns.is_empty() {
+            return;
+        }
+
+        let sibling_names: HashMap<&str, SymbolId> = fns
+            .iter()
+            .map(|&(symbol, item)| {
+                let ItemKind::Fn(f) = &item.kind else {
+                    unreachable!("fns only ever holds ItemKind::Fn items")
+                };
+                (f.ident.name.as_str(), symbol)
+            })
+            .collect();
+
+        let nodes: Vec<SymbolId> = fns.iter().map(|&(symbol, _)| symbol).collect();
+        let mut edges: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+        for &(symbol, item) in &fns {
+            let ItemKind::Fn(f) = &item.kind else {
+                unreachable!("fns only ever holds ItemKind::Fn items")
+            };
+            if let Some(body) = f.body.as_ref() {
+                let mut collector = CallGraphCollector {
+                    sibling_names: &sibling_names,
+                    edges: Vec::new(),
+                };
+                collector.visit_block(body);
+                edges.insert(symbol, collector.edges);
+            }
+        }
+
+        let items_by_symbol: HashMap<SymbolId, &Item> = fns.into_iter().collect();
+
+        for component in strongly_connected_components(&nodes, &edges) {
+            for &symbol in &component {
+                if let Some(&item) = items_by_symbol.get(&symbol) {
+                    self.check_fn_body(symbol, item);
+                }
+            }
+            self.cx.generalize_group(&component);
+        }
+    }
+
+    /// Checks one `fn` item's body against its already-lowered
+    /// signature. Deliberately does *not* generalize `symbol` itself
+    /// -- that happens once for the whole strongly-connected
+    /// component `symbol` belongs to, back in [`Self::check_items`],
+    /// only after every member of that component (this one included)
+    /// has had its body checked.
+    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item) {
         let ItemKind::Fn(f) = &item.kind else {
             return;
         };
-
-        // Get the symbol associated with the function being visited.
-        let name = self.cx.names.id(&f.ident.name);
-        let Some(symbol) = self
-            .cx
-            .lookup_in_scope(self.cx.current_scope, name, Namespace::Value)
-        else {
-            return;
-        };
-
-        // We expect that the symbol kind is `Fn`, and we get the scope
-        // of the function body.
         let scope = match &self.cx.symbols[symbol].kind {
             SymbolKind::Fn(scope) => *scope,
             _ => return,
@@ -1569,8 +1971,11 @@ impl Visitor for Checker<'_> {
             _ => return,
         };
 
-        let previous_checking = self.cx.checking.replace((symbol, self.cx.current_scope));
-        let previous_flag = std::mem::replace(&mut self.cx.self_or_sibling_referenced, false);
+        // Marks `symbol` as an open ancestor for as long as its body
+        // (and anything nested inside it) is being checked, so nested
+        // generalization knows not to steal a variable that's still
+        // free in this signature -- see `enclosing_free_vars`.
+        self.cx.checking_stack.push(symbol);
 
         // Enter the scope of the function body.
         self.with_scope(scope, |this| {
@@ -1592,32 +1997,23 @@ impl Visitor for Checker<'_> {
             this.cx
                 .check_block_expecting(body, Some(output_term), Some(output_span));
 
-            // Recurse into any items hoisted into this fn's own body, so
-            // nested fns get their bodies checked too.
-            for stmt in &body.stmts {
-                if let StmtKind::Item(nested) = &stmt.kind {
-                    this.visit_item(nested);
-                }
-            }
+            // Recurse into any items hoisted into this fn's own body, as
+            // their own sibling group, so nested fns get their bodies
+            // checked (and, where they're mutually recursive with each
+            // other, generalized together) too.
+            let nested: Vec<&Item> = body
+                .stmts
+                .iter()
+                .filter_map(|stmt| match &stmt.kind {
+                    StmtKind::Item(nested) => Some(nested.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            this.check_items(&nested);
         });
 
-        let referenced_self_or_sibling = self.cx.self_or_sibling_referenced;
-        self.cx.checking = previous_checking;
-        self.cx.self_or_sibling_referenced = previous_flag;
-
-        if !referenced_self_or_sibling {
-            self.cx.generalize(symbol);
-        }
+        self.cx.checking_stack.pop();
     }
-
-    fn visit_stmt(&mut self, stmt: &Stmt) {
-        match &stmt.kind {
-            StmtKind::Let(local) => self.cx.check_local(local),
-            _ => stmt.walk(self),
-        }
-    }
-
-    fn visit_expr(&mut self, _expr: &Expr) {}
 }
 
 #[cfg(test)]
@@ -2160,6 +2556,62 @@ mod tests {
     }
 
     #[test]
+    fn check_all_calling_an_annotated_non_fn_parameter_is_an_error() {
+        let source = r#"
+fn use_it(g: int) {
+    g(1);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(d.message, "expected a function, found `int`");
+        // Points at the callee (`g`), not the whole call expression.
+        assert_eq!(&source[d.primary_span.start..d.primary_span.end], "g");
+    }
+
+    #[test]
+    fn check_all_calling_a_locally_inferred_non_fn_value_is_an_error() {
+        // Same underlying bug as the annotated-parameter case, but
+        // reached the other way `check_expr_kind`'s `Call` handling can
+        // find a callee whose type is already concretely known: through
+        // ordinary local inference rather than an explicit annotation.
+        let source = r#"
+fn use_it() {
+    let g = 5;
+    g(1);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "expected a function, found `int`");
+    }
+
+    #[test]
+    fn check_all_calling_an_unannotated_parameter_infers_its_fn_shape_with_no_error() {
+        // The positive case the two tests above are contrasted with:
+        // when the callee's type genuinely isn't known yet (`f` here has
+        // no annotation), calling it is what pins it down to a Fn shape
+        // -- not an error. This is the same mechanism `compose` in
+        // crates/cli/examples/generics.roo relies on for `f`/`g`.
+        let source = r#"
+fn apply(f, x) {
+    f(x)
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let apply = cx
+            .resolve_path(&path(&["apply"]), Namespace::Value)
+            .expect("apply should resolve");
+        assert_eq!(cx.symbols[apply].generics.len(), 2, "<T, U> Fn(Fn(T) -> U, T) -> U");
+    }
+
+    #[test]
     fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
         let mut cx = resolve("fn foo() {}");
         let t = cx.check_expr(&expr("foo()"), None);
@@ -2576,6 +3028,49 @@ fn main() {
     }
 
     #[test]
+    fn check_all_call_mismatch_against_an_annotated_param_points_at_the_annotation() {
+        let source = r#"
+fn add(a: int, b: int) {}
+fn main() {
+    add("wrong", 5);
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(d.related.len(), 1, "{:#?}", d.related);
+        let (span, message) = &d.related[0];
+        assert_eq!(&source[span.start..span.end], "int");
+        assert_eq!(message, "expected due to this");
+    }
+
+    #[test]
+    fn check_all_call_mismatch_against_an_unannotated_param_has_no_related_span() {
+        // `x` has no type annotation of its own -- its expected type
+        // (`int`) only comes from how the body of `takes_something`
+        // happens to use it, not from anything written at the
+        // parameter itself. Pointing "expected due to this" at the
+        // bare parameter name anyway would be misleading (it looks
+        // like an explanation but isn't one), so there should be no
+        // related span at all rather than a low-quality one.
+        let source = r#"
+fn takes_something(x) {
+    let y: int = x;
+    x
+}
+fn use_it() {
+    takes_something("wrong");
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].related.is_empty(), "{:#?}", diagnostics[0].related);
+    }
+
+    #[test]
     fn check_all_call_keeps_checking_later_arguments_after_an_earlier_one_mismatches() {
         let source = r#"
 fn add(a: int, b: int) {}
@@ -2637,5 +3132,399 @@ fn main() {
             "this function takes 2 arguments but 3 arguments were supplied"
         );
         assert_eq!(&source[d.primary_span.start..d.primary_span.end], "3");
+    }
+
+    // -- strongly_connected_components ------------------------------------
+
+    /// Mints `n` distinct [`SymbolId`]s with no [`TypeCheckContext`]
+    /// attached, for exercising the graph algorithm on its own.
+    fn symbol_ids(n: usize) -> Vec<SymbolId> {
+        let mut map: SlotMap<SymbolId, ()> = SlotMap::with_key();
+        (0..n).map(|_| map.insert(())).collect()
+    }
+
+    #[test]
+    fn scc_a_chain_with_no_cycles_is_all_singletons_in_dependency_order() {
+        let ids = symbol_ids(3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+
+        // a -> b -> c, no edges back -- not a cycle anywhere.
+        let mut edges = HashMap::new();
+        edges.insert(a, vec![b]);
+        edges.insert(b, vec![c]);
+        edges.insert(c, vec![]);
+
+        let sccs = strongly_connected_components(&ids, &edges);
+
+        // c depends on nothing, b depends on c, a depends on b -- so
+        // that's the order components must come out in.
+        assert_eq!(sccs, vec![vec![c], vec![b], vec![a]]);
+    }
+
+    #[test]
+    fn scc_a_two_cycle_is_one_component() {
+        let ids = symbol_ids(2);
+        let (a, b) = (ids[0], ids[1]);
+
+        let mut edges = HashMap::new();
+        edges.insert(a, vec![b]);
+        edges.insert(b, vec![a]);
+
+        let sccs = strongly_connected_components(&ids, &edges);
+
+        assert_eq!(sccs.len(), 1, "{sccs:?}");
+        assert_eq!(sccs[0].len(), 2);
+        assert!(sccs[0].contains(&a));
+        assert!(sccs[0].contains(&b));
+    }
+
+    #[test]
+    fn scc_three_way_cycle_is_one_component_that_pops_before_an_unrelated_caller() {
+        let ids = symbol_ids(4);
+        let (a, b, c, caller) = (ids[0], ids[1], ids[2], ids[3]);
+
+        // a -> b -> c -> a is a genuine 3-cycle; caller -> a is a
+        // separate, one-directional reference into it, not part of
+        // the cycle itself.
+        let mut edges = HashMap::new();
+        edges.insert(a, vec![b]);
+        edges.insert(b, vec![c]);
+        edges.insert(c, vec![a]);
+        edges.insert(caller, vec![a]);
+
+        let sccs = strongly_connected_components(&ids, &edges);
+
+        assert_eq!(sccs.len(), 2, "{sccs:?}");
+        assert_eq!(sccs[0].len(), 3);
+        for member in [a, b, c] {
+            assert!(sccs[0].contains(&member));
+        }
+        // The cycle depends on nothing outside itself, so it must be
+        // fully popped before `caller`, which depends on it.
+        assert_eq!(sccs[1], vec![caller]);
+    }
+
+    // -- Checker: strongly-connected generalization -----------------------
+
+    #[test]
+    fn check_all_mutually_recursive_siblings_generalize_together_and_stay_reusable() {
+        // The `if true { x } else { ... }` base case is what makes this
+        // a useful test of `generalize_group`'s shared-variable handling
+        // specifically: it forces each function's own parameter and
+        // return type to unify into *one* variable, and that variable
+        // is *also* shared across ping/pong via their mutual calls -- so
+        // there's exactly one free variable across the whole component,
+        // and both symbols' `generics` need to end up naming the same
+        // id for it. (A version of this test without the `if` base case
+        // -- just `fn ping(x) { pong(x) }` -- still generalizes
+        // correctly, but produces *two* independent generics per
+        // function, one for the parameter and one for the return, since
+        // nothing ever forces those two positions to unify: it's the
+        // same shape Standard ML/OCaml gives `let rec f x = f x`.)
+        let source = r#"
+fn ping(x) {
+    if true { x } else { pong(x) }
+}
+fn pong(y) {
+    if true { y } else { ping(y) }
+}
+fn use_both() {
+    ping(1);
+    pong("hi");
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let ping = cx
+            .resolve_path(&path(&["ping"]), Namespace::Value)
+            .expect("ping should resolve");
+        let pong = cx
+            .resolve_path(&path(&["pong"]), Namespace::Value)
+            .expect("pong should resolve");
+        assert_eq!(cx.symbols[ping].generics.len(), 1);
+        assert_eq!(cx.symbols[pong].generics.len(), 1);
+        // Same shared variable, so the same id both times.
+        assert_eq!(cx.symbols[ping].generics[0], cx.symbols[pong].generics[0]);
+    }
+
+    #[test]
+    fn check_all_a_one_directional_sibling_call_is_not_treated_as_a_cycle() {
+        // `caller` references a sibling (`helper`), but `helper` never
+        // calls back -- not a cycle, so unlike the old whole-sibling-
+        // reference guard, `caller` should still generalize and be
+        // reusable at more than one type.
+        let source = r#"
+fn helper(x) {
+    x
+}
+fn caller(y) {
+    helper(y)
+}
+fn use_it() {
+    caller(1);
+    caller("hi");
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let helper = cx
+            .resolve_path(&path(&["helper"]), Namespace::Value)
+            .expect("helper should resolve");
+        let caller = cx
+            .resolve_path(&path(&["caller"]), Namespace::Value)
+            .expect("caller should resolve");
+        assert_eq!(cx.symbols[helper].generics.len(), 1);
+        assert_eq!(cx.symbols[caller].generics.len(), 1);
+    }
+
+    #[test]
+    fn check_all_self_recursive_function_generalizes_and_stays_reusable() {
+        let source = r#"
+fn identity_rec(x) {
+    if true { x } else { identity_rec(x) }
+}
+fn use_it() {
+    identity_rec(1);
+    identity_rec("hi");
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let identity_rec = cx
+            .resolve_path(&path(&["identity_rec"]), Namespace::Value)
+            .expect("identity_rec should resolve");
+        assert_eq!(cx.symbols[identity_rec].generics.len(), 1);
+    }
+
+    #[test]
+    fn check_all_a_three_way_cycle_generalizes_together() {
+        let source = r#"
+fn a(x) {
+    if true { x } else { b(x) }
+}
+fn b(y) {
+    if true { y } else { c(y) }
+}
+fn c(z) {
+    if true { z } else { a(z) }
+}
+fn use_it() {
+    a(1);
+    b("hi");
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        for name in ["a", "b", "c"] {
+            let symbol = cx
+                .resolve_path(&path(&[name]), Namespace::Value)
+                .unwrap_or_else(|| panic!("{name} should resolve"));
+            assert_eq!(cx.symbols[symbol].generics.len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn check_all_a_fully_annotated_cycle_has_nothing_left_to_generalize() {
+        let source = r#"
+fn ping2(x: int) -> int {
+    pong2(x)
+}
+fn pong2(y: int) -> int {
+    ping2(y)
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let ping2 = cx
+            .resolve_path(&path(&["ping2"]), Namespace::Value)
+            .expect("ping2 should resolve");
+        let pong2 = cx
+            .resolve_path(&path(&["pong2"]), Namespace::Value)
+            .expect("pong2 should resolve");
+        assert_eq!(cx.symbols[ping2].generics.len(), 0);
+        assert_eq!(cx.symbols[pong2].generics.len(), 0);
+    }
+
+    #[test]
+    fn check_all_a_newly_generalized_param_never_reuses_an_explicit_generics_name() {
+        // `T` is already claimed by the explicit `<T>`. `f`'s return
+        // type and `g`'s `_` return type both end up as one more,
+        // separate free variable (`g`'s `Fn(int) -> _` return flows
+        // straight into `f`'s parameter), which needs its own generic
+        // parameter -- and that parameter must not render as `T` too,
+        // even though the two are perfectly sound as distinct
+        // `GenericId`s regardless of what they're named.
+        let source = r#"
+fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
+    f(g(x))
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let compose = cx
+            .resolve_path(&path(&["compose"]), Namespace::Value)
+            .expect("compose should resolve");
+        let generics = cx.symbols[compose].generics.clone();
+        assert_eq!(generics.len(), 2, "{generics:?}");
+
+        let explicit = generics[0];
+        let inferred = generics[1];
+        assert_ne!(explicit, inferred, "should be two distinct GenericIds");
+
+        let explicit_name = cx.generic_names.get(&explicit).cloned();
+        let inferred_name = cx.generic_names.get(&inferred).cloned();
+        assert_eq!(explicit_name.as_deref(), Some("T"));
+        assert_ne!(
+            explicit_name, inferred_name,
+            "the newly-generalized parameter must not render under the \
+             same name as the explicit `<T>`"
+        );
+    }
+
+    #[test]
+    fn check_all_a_real_type_error_inside_a_cyclic_group_is_still_reported() {
+        let source = r#"
+fn ping3(x: int) {
+    pong3(x)
+}
+fn pong3(y: int) {
+    ping3("wrong")
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "expected `int`, found `String`");
+    }
+
+    #[test]
+    fn check_all_nested_mutually_recursive_fns_generalize_together() {
+        // `ping`/`pong` are called from a third nested sibling
+        // (`use_both`) rather than directly from `outer`'s own
+        // statements. That's not incidental: `check_block_expecting`
+        // skips `StmtKind::Item` entirely (nested items are checked
+        // separately, in `Checker::check_items`), so a call written
+        // directly in `outer`'s own body runs *before* `outer`'s nested
+        // sibling group is checked at all -- a pre-existing hoisting-
+        // order quirk unrelated to strongly-connected generalization,
+        // which this test isn't about. Routing the calls through a
+        // sibling that's part of the same `check_items` pass sidesteps
+        // it, the same way top-level calls already need a `use_both`-
+        // style caller rather than a bare module-level statement (roo
+        // has no module-level `let`/statements at all -- see
+        // `book/src/bindings/variables.md`).
+        let source = r#"
+fn outer() {
+    fn ping(x) {
+        if true { x } else { pong(x) }
+    }
+    fn pong(y) {
+        if true { y } else { ping(y) }
+    }
+    fn use_both() {
+        ping(1);
+        pong("hi");
+    }
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let outer = cx
+            .resolve_path(&path(&["outer"]), Namespace::Value)
+            .expect("outer should resolve");
+        let outer_scope = fn_body_scope(&cx, outer);
+
+        let ping = declared_symbol(&cx, outer_scope, Namespace::Value, "ping")
+            .expect("ping should be declared inside outer's body");
+        let pong = declared_symbol(&cx, outer_scope, Namespace::Value, "pong")
+            .expect("pong should be declared inside outer's body");
+        assert_eq!(cx.symbols[ping].generics.len(), 1);
+        assert_eq!(cx.symbols[pong].generics.len(), 1);
+    }
+
+    #[test]
+    fn check_all_a_nested_fn_never_generalizes_a_variable_free_in_an_enclosing_signature() {
+        // A curried `compose`: `inner` and `innermost` are nested
+        // inside `compose` and returned as values, so their types end
+        // up structurally embedded in `compose`'s own return type --
+        // meaning the type variables for `f`'s result, `g`'s result,
+        // and `x` are *also* free in `compose`'s own, still-open
+        // signature at the point `inner`/`innermost` would otherwise
+        // be generalized. If either of them claimed one of those
+        // variables for itself, `compose` would be left with no way
+        // to generalize it at all, pinning `compose` to whatever
+        // concrete types happened to flow through first -- exactly
+        // the bug this test exists to catch a regression of.
+        let source = r#"
+fn compose(f) {
+    fn inner(g) {
+        fn innermost(x) {
+            f(g(x))
+        }
+        innermost
+    }
+    inner
+}
+"#;
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+        let compose = cx
+            .resolve_path(&path(&["compose"]), Namespace::Value)
+            .expect("compose should resolve");
+        let compose_scope = fn_body_scope(&cx, compose);
+
+        let inner = declared_symbol(&cx, compose_scope, Namespace::Value, "inner")
+            .expect("inner should be declared inside compose's body");
+        let inner_scope = fn_body_scope(&cx, inner);
+        let innermost = declared_symbol(&cx, inner_scope, Namespace::Value, "innermost")
+            .expect("innermost should be declared inside inner's body");
+
+        // Every free variable is deferred all the way up to `compose`,
+        // the only one of the three that's ever independently callable
+        // from outside this whole nest -- `inner`/`innermost` have
+        // nothing left of their own to generalize.
+        assert_eq!(cx.symbols[compose].generics.len(), 3, "{:#?}", cx.symbols[compose].generics);
+        assert_eq!(cx.symbols[inner].generics.len(), 0);
+        assert_eq!(cx.symbols[innermost].generics.len(), 0);
+    }
+
+    #[test]
+    fn check_all_a_nested_fns_deferred_generalization_is_actually_usable_at_two_types() {
+        // The behavioral proof behind the structural assertions in
+        // the test above: if `compose` weren't *fully* generalized,
+        // calling it twice at genuinely different, incompatible `f`
+        // shapes would conflict, the same way an under-generalized
+        // sibling function would.
+        let source = r#"
+fn compose(f) {
+    fn inner(g) {
+        fn innermost(x) {
+            f(g(x))
+        }
+        innermost
+    }
+    inner
+}
+fn int_to_string(n: int) -> String {
+    "hi"
+}
+fn bool_to_int(b: bool) -> int {
+    1
+}
+fn use_it() {
+    compose(int_to_string);
+    compose(bool_to_int);
+}
+"#;
+        let cx = check_all(source);
+        assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
     }
 }

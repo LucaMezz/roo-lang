@@ -1,0 +1,26 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "roo-lang's reference CLI -- lexes, parses, and type checks a .roo file"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["cli", "compiler"]
+categories = ["compilers", "command-line-utilities"]
+# repository.workspace = true
+
+[[bin]]
+name = "roo"
+path = "src/main.rs"
+
+[dependencies]
+ast = { version = "0.1.0", path = "../ast" }
+lexer = { version = "0.1.0", path = "../lexer" }
+parser = { version = "0.1.0", path = "../parser" }
+typecheck = { version = "0.1.0", path = "../typecheck" }
+chumsky = { version = "0.13.0", features = ["pratt"] }
+ariadne = { version = "0.6.0", features = ["auto-color"] }
+
+[lints]
+workspace = true

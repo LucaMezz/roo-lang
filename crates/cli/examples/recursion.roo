@@ -1,0 +1,93 @@
+// Interleaved (mutually recursive) and self-recursive sibling
+// functions, generalized together via call-graph strongly-connected-
+// component analysis (`strongly_connected_components` in
+// crates/typecheck/src/lib.rs) rather than one function at a time.
+//
+// This file isn't meant to be *run* -- roo has no interpreter or
+// codegen yet, only a type checker (crates/cli). It's meant to be
+// checked, so you can read the type the checker actually inferred for
+// each function:
+//
+//     cargo run -p cli -- crates/cli/examples/recursion.roo
+//
+// Only features the checker currently implements are used here --
+// unlike the root `examples/`, which sketch the whole language as
+// designed, including parts not built yet.
+
+// `is_even`/`is_odd` call each other, so they form one strongly-
+// connected component: both bodies are checked together, sharing one
+// still-ungeneralized type, before either is generalized. The `if`
+// base case also forces each function's own parameter and return
+// type to unify with each other -- so there's exactly one free type
+// variable across the whole pair, and both come out as
+// `<T> Fn(T) -> T`.
+fn is_even(n) {
+    if true { n } else { is_odd(n) }
+}
+fn is_odd(n) {
+    if true { n } else { is_even(n) }
+}
+
+// A three-function cycle works exactly the same way, just with a
+// bigger strongly-connected component -- `rotate_a`, `rotate_b`, and
+// `rotate_c` all end up sharing the same one generic parameter.
+fn rotate_a(x) {
+    if true { x } else { rotate_b(x) }
+}
+fn rotate_b(x) {
+    if true { x } else { rotate_c(x) }
+}
+fn rotate_c(x) {
+    if true { x } else { rotate_a(x) }
+}
+
+// A function that calls itself is just the one-member case of the
+// same analysis -- no special-casing for plain recursion vs. mutual
+// recursion anywhere in the implementation.
+fn identity_rec(x) {
+    if true { x } else { identity_rec(x) }
+}
+
+// A one-directional sibling call is *not* a cycle: `helper` never
+// calls back into `caller`, so they end up in two separate, singleton
+// components, and `caller` generalizes independently too. This is
+// the case a purely flag-based "did this touch *any* sibling at all"
+// implementation gets conservatively wrong -- it would refuse to
+// generalize `caller` even though there's no real cycle here.
+fn helper(x) {
+    x
+}
+fn caller(y) {
+    helper(y)
+}
+
+// Forwarding-only recursion, with nothing tying the parameter and
+// return types together, generalizes to *two* independent type
+// parameters instead of one -- the same answer OCaml/Standard ML give
+// `let rec f x = f x`. Nothing here is wrong or incomplete; there's
+// just genuinely nothing in either body that could ever equate the
+// two positions.
+fn forward_a(x) {
+    forward_b(x)
+}
+fn forward_b(x) {
+    forward_a(x)
+}
+
+// Every generalized function above is reusable at as many different,
+// unrelated types as it's called at, in the same program. Calling
+// each one twice below, at two unrelated types, is exactly what would
+// *not* type check if generalization had silently failed for any of
+// them -- run this file and confirm there are no diagnostics.
+fn use_everything() {
+    is_even(1);
+    is_odd("two");
+    rotate_a(1);
+    rotate_b("two");
+    identity_rec(1);
+    identity_rec("two");
+    caller(1);
+    caller("two");
+    forward_a(1);
+    forward_a("two");
+}
