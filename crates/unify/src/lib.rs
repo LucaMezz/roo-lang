@@ -24,6 +24,21 @@
 //!   term ids, it either records enough bindings/merges to make `t1 ≟
 //!   t2` hold and returns `Ok`, or returns a [`UnifyError`] explaining
 //!   why they can't be made equal.
+//! - [`UnificationContext::unify_because`] is `unify`, plus a caller-
+//!   supplied *reason* (`R`, a second type parameter alongside the
+//!   constructor type `C` — this crate has no opinion on what a reason
+//!   actually is, the same way it has no opinion on what a constructor
+//!   is) attached to every binding/merge that call makes, including
+//!   ones made while recursing into matching constructors' arguments.
+//!   [`UnificationContext::provenance`] answers "why does `?a` mean
+//!   what it currently does?" later, by finding the most recently
+//!   recorded reason for whatever `?a`'s union-find class currently
+//!   is — the mechanism a caller needs to explain a *later* mismatch
+//!   by citing where one side of it was actually pinned down, not just
+//!   the nearest annotation to the failing comparison itself. Plain
+//!   `unify`/`bind`/`union_vars` never record a reason; a fresh
+//!   [`UnificationContext`] with no reason type in mind at all can
+//!   just leave `R` at its default, `()`, and ignore this entirely.
 //! - `proptest` is a dev-dependency for property-based testing of
 //!   `unify` (e.g. "unifying a term with itself always succeeds",
 //!   "unification is symmetric").
@@ -126,6 +141,19 @@ impl Union for Binding {
     }
 }
 
+/// One recorded reason a variable became bound to a term, or merged
+/// with another variable — see [`UnificationContext::unify_because`].
+/// Kept as a flat, append-only log rather than attached directly to a
+/// union-find class: which variable is a merged class's "representative"
+/// can change after an entry is written (more merges happening later),
+/// so a query has to re-canonicalize (via `find`) at lookup time rather
+/// than trust whatever the representative was when the entry was
+/// recorded — see [`UnificationContext::provenance`].
+struct ProvenanceEntry<R> {
+    var: VarId,
+    reason: R,
+}
+
 /// Owns every [`Term`] and variable created during a unification session.
 ///
 /// Terms live in a `slotmap` arena (`terms`). Variables are tracked two
@@ -138,15 +166,21 @@ impl Union for Binding {
 /// *derived* from one — `var_slots`/`uf_key_to_var` keep an explicit
 /// mapping in both directions, populated in lockstep every time
 /// [`fresh_var`](Self::fresh_var) allocates one of each.
-pub struct UnificationContext<C> {
+///
+/// `R` is an optional, caller-chosen "reason" type for
+/// [`unify_because`](Self::unify_because)/[`provenance`](Self::provenance)
+/// — see the crate-level docs. Defaults to `()` so a caller with no use
+/// for provenance tracking never has to name it.
+pub struct UnificationContext<C, R = ()> {
     terms: SlotMap<TermId, Term<C>>,
     var_slots: SlotMap<VarId, usize>,
     uf_key_to_var: Vec<VarId>,
     bindings: QuickUnionUf<Binding>,
     wildcards: Vec<C>,
+    provenance: Vec<ProvenanceEntry<R>>,
 }
 
-impl<C> UnificationContext<C> {
+impl<C, R> UnificationContext<C, R> {
     /// Creates an empty context with no terms or variables yet.
     pub fn new() -> Self {
         Self {
@@ -155,6 +189,7 @@ impl<C> UnificationContext<C> {
             uf_key_to_var: Vec::new(),
             bindings: QuickUnionUf::new(0),
             wildcards: Vec::new(),
+            provenance: Vec::new(),
         }
     }
 
@@ -181,6 +216,7 @@ impl<C> UnificationContext<C> {
             uf_key_to_var: Vec::new(),
             bindings: QuickUnionUf::new(0),
             wildcards,
+            provenance: Vec::new(),
         }
     }
 
@@ -323,38 +359,98 @@ impl<C> UnificationContext<C> {
     /// of them always unifies successfully against anything — no
     /// constructor/arity check, no descending into either side's
     /// arguments. See `with_wildcard`'s doc comment for what that's for.
+    ///
+    /// Records no provenance — see [`unify_because`](Self::unify_because)
+    /// for the version that does.
     pub fn unify(&mut self, t1: TermId, t2: TermId) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
+        R: Clone,
     {
-        let t1 = self.resolve(t1);
-        let t2 = self.resolve(t2);
+        self.unify_impl(t1, t2, None)
+    }
+
+    /// Same as [`unify`](Self::unify), but records `reason` as the
+    /// cause of every new binding or merge this call makes — including
+    /// ones made while recursing into matching constructors' arguments,
+    /// so a variable pinned down only as an indirect consequence of
+    /// this one top-level equation still remembers *this* call as why.
+    ///
+    /// Query it back later with [`provenance`](Self::provenance) — the
+    /// intended use is explaining a *different*, later mismatch by
+    /// citing where one side of it was actually established, not just
+    /// whatever's nearest to the failing comparison itself.
+    pub fn unify_because(&mut self, t1: TermId, t2: TermId, reason: R) -> Result<(), UnifyError<C>>
+    where
+        C: Clone + fmt::Debug + PartialEq,
+        R: Clone,
+    {
+        self.unify_impl(t1, t2, Some(reason))
+    }
+
+    /// The shared implementation behind [`unify`](Self::unify) and
+    /// [`unify_because`](Self::unify_because) — identical unification
+    /// algorithm either way, differing only in whether a reason gets
+    /// recorded (via [`record_provenance`](Self::record_provenance))
+    /// alongside each binding/merge it makes.
+    fn unify_impl(
+        &mut self,
+        t1: TermId,
+        t2: TermId,
+        reason: Option<R>,
+    ) -> Result<(), UnifyError<C>>
+    where
+        C: Clone + fmt::Debug + PartialEq,
+        R: Clone,
+    {
+        // Resolved separately from `t1`/`t2` themselves -- the match
+        // below needs to see through any existing binding to compare
+        // what each side *currently* means, but a `ConstructorMismatch`/
+        // `ArityMismatch` raised below deliberately reports the
+        // *unresolved* `t1`/`t2` (see those variants' own doc comment):
+        // if either was itself a bare variable before resolving,
+        // that's exactly the identity a caller needs to look up
+        // `provenance` for. Resolving first and shadowing, the way an
+        // earlier version of this function did, would silently
+        // discard that -- by the time the error is built, "was this
+        // ever a variable at all" is no longer answerable.
+        let resolved_t1 = self.resolve(t1);
+        let resolved_t2 = self.resolve(t2);
 
         match (
-            self.term(t1).expect("valid TermId"),
-            self.term(t2).expect("valid TermId"),
+            self.term(resolved_t1).expect("valid TermId"),
+            self.term(resolved_t2).expect("valid TermId"),
         ) {
             (Term::Var(v1), Term::Var(v2)) => {
                 let (v1, v2) = (*v1, *v2);
                 if self.find(v1) != self.find(v2) {
                     self.union_vars(v1, v2);
+                    if let Some(reason) = reason {
+                        self.record_provenance(v1, reason);
+                    }
                 }
                 Ok(())
             }
             (Term::Var(v), _) => {
                 let v = *v;
-                if self.occurs(v, t2) {
+                if self.occurs(v, resolved_t2) {
                     return Err(UnifyError::OccursCheck(v));
                 }
-                self.bind(v, t2);
+                self.bind(v, resolved_t2);
+                if let Some(reason) = reason {
+                    self.record_provenance(v, reason);
+                }
                 Ok(())
             }
             (_, Term::Var(v)) => {
                 let v = *v;
-                if self.occurs(v, t1) {
+                if self.occurs(v, resolved_t1) {
                     return Err(UnifyError::OccursCheck(v));
                 }
-                self.bind(v, t1);
+                self.bind(v, resolved_t1);
+                if let Some(reason) = reason {
+                    self.record_provenance(v, reason);
+                }
                 Ok(())
             }
             (
@@ -371,23 +467,71 @@ impl<C> UnificationContext<C> {
                     return Ok(());
                 }
                 if c1 != c2 {
-                    return Err(UnifyError::ConstructorMismatch(c1.clone(), c2.clone()));
+                    return Err(UnifyError::ConstructorMismatch {
+                        t1,
+                        c1: c1.clone(),
+                        t2,
+                        c2: c2.clone(),
+                    });
                 }
                 if args1.len() != args2.len() {
-                    return Err(UnifyError::ArityMismatch(args1.len(), args2.len()));
+                    return Err(UnifyError::ArityMismatch {
+                        t1,
+                        arity1: args1.len(),
+                        t2,
+                        arity2: args2.len(),
+                    });
                 }
                 let pairs: Vec<(TermId, TermId)> =
                     args1.iter().copied().zip(args2.iter().copied()).collect();
                 for (x, y) in pairs {
-                    self.unify(x, y)?;
+                    self.unify_impl(x, y, reason.clone())?;
                 }
                 Ok(())
             }
         }
     }
+
+    /// Appends `reason` to the provenance log for `var`. Private:
+    /// callers only ever get here through
+    /// [`unify_because`](Self::unify_because)'s bookkeeping, never
+    /// directly — recording a reason with no accompanying bind/merge
+    /// wouldn't mean anything.
+    fn record_provenance(&mut self, var: VarId, reason: R) {
+        self.provenance.push(ProvenanceEntry { var, reason });
+    }
+
+    /// The most recently recorded reason `?a`'s current union-find
+    /// class became what it is, if [`unify_because`](Self::unify_because)
+    /// ever established one for it (directly, or for another variable
+    /// later merged into the same class).
+    ///
+    /// Searches the provenance log newest-first for the latest entry
+    /// whose variable is *currently* — as of this call, via
+    /// [`find`](Self::find) — in the same class as `var`, rather than
+    /// trusting whichever variable id an entry happened to be recorded
+    /// against. That re-canonicalization is what keeps a query correct
+    /// even after further merges happen following the entry's own
+    /// recording; see [`ProvenanceEntry`]'s own doc comment.
+    ///
+    /// `O(n)` in the number of recorded entries — fine for answering
+    /// "why is this mismatched" while building a diagnostic, not meant
+    /// for a hot path.
+    pub fn provenance(&mut self, var: VarId) -> Option<&R> {
+        let target = self.find(var);
+        let mut found = None;
+        for i in (0..self.provenance.len()).rev() {
+            let entry_var = self.provenance[i].var;
+            if self.find(entry_var) == target {
+                found = Some(i);
+                break;
+            }
+        }
+        found.map(|i| &self.provenance[i].reason)
+    }
 }
 
-impl<C> Default for UnificationContext<C> {
+impl<C, R> Default for UnificationContext<C, R> {
     fn default() -> Self {
         Self::new()
     }
@@ -395,16 +539,55 @@ impl<C> Default for UnificationContext<C> {
 
 /// Errors [`UnificationContext::unify`] can fail with when `t1 ≟ t2`
 /// doesn't hold.
+///
+/// `ConstructorMismatch`/`ArityMismatch` carry not just what
+/// disagreed (`c1`/`c2`, `arity1`/`arity2`) but *where* — the specific
+/// pair of terms being compared at the exact point of failure. For a
+/// mismatch found while recursing into matching constructors'
+/// arguments (e.g. unifying `Fn(int) -> String` against `Fn(int) ->
+/// int` fails on the *return* position, not the whole `Fn`), these are
+/// that inner pair, not the original top-level `t1 ≟ t2` the caller
+/// asked about — the precise place a caller doing its own diagnostics
+/// (a rendered "expected/found" message scoped to just the conflicting
+/// piece rather than the whole structure) actually wants to point at.
+///
+/// Deliberately the *unresolved* `t1`/`t2` — as received by whichever
+/// [`unify`](UnificationContext::unify)/[`unify_because`](UnificationContext::unify_because)
+/// call (top-level or, while recursing, one raised against a
+/// constructor's arguments) actually failed, not what they resolve
+/// to. If either was itself a bare, unresolved variable at that point,
+/// that's exactly the identity a caller needs to look
+/// [`provenance`](UnificationContext::provenance) up for — already
+/// resolving it here would erase that, since `resolve` always follows
+/// a bound variable all the way through to its current concrete value.
 #[derive(Debug, thiserror::Error)]
 pub enum UnifyError<C> {
     /// Two applications `f(...)`/`g(...)` had different constructors
     /// (`f != g`).
-    #[error("constructor mismatch: {0:?} != {1:?}")]
-    ConstructorMismatch(C, C),
+    #[error("constructor mismatch: {c1:?} != {c2:?}")]
+    ConstructorMismatch {
+        /// The specific term whose constructor was `c1`.
+        t1: TermId,
+        /// `t1`'s constructor.
+        c1: C,
+        /// The specific term whose constructor was `c2`.
+        t2: TermId,
+        /// `t2`'s constructor.
+        c2: C,
+    },
     /// Two applications of the *same* constructor had a different
     /// number of arguments.
-    #[error("arity mismatch: {0} args vs {1} args")]
-    ArityMismatch(usize, usize),
+    #[error("arity mismatch: {arity1} args vs {arity2} args")]
+    ArityMismatch {
+        /// The specific term with `arity1` arguments.
+        t1: TermId,
+        /// The number of arguments `t1` had.
+        arity1: usize,
+        /// The specific term with `arity2` arguments.
+        t2: TermId,
+        /// The number of arguments `t2` had.
+        arity2: usize,
+    },
     /// Binding `?a` here would create a cycle — `?a` occurs, directly or
     /// transitively, within the term it would be bound to (e.g. trying
     /// to bind `?a ↦ List(?a)`).
@@ -541,6 +724,93 @@ mod tests {
     }
 
     #[test]
+    fn constructor_mismatch_at_the_top_level_carries_the_top_level_terms() {
+        let mut cx = UnificationContext::<&'static str>::new();
+        let a = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let b = cx.insert_term(Term::App {
+            constructor: "Bool",
+            args: vec![],
+        });
+        let Err(UnifyError::ConstructorMismatch { t1, c1, t2, c2 }) = cx.unify(a, b) else {
+            panic!("expected a ConstructorMismatch");
+        };
+        assert_eq!((t1, c1, t2, c2), (a, "Int", b, "Bool"));
+    }
+
+    #[test]
+    fn constructor_mismatch_nested_in_a_matching_outer_constructor_carries_the_inner_terms() {
+        // List(Int) ≟ List(Bool): the *outer* constructors (both
+        // "List") and arities (both 1) agree, so the failure only
+        // surfaces once `unify` recurses into the arguments -- the
+        // error needs to carry that inner Int/Bool pair, not the outer
+        // List(Int)/List(Bool) terms the caller originally asked
+        // about, since those are where the actual disagreement is.
+        let mut cx = UnificationContext::<&'static str>::new();
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let bool_term = cx.insert_term(Term::App {
+            constructor: "Bool",
+            args: vec![],
+        });
+        let list_of_int = cx.insert_term(Term::App {
+            constructor: "List",
+            args: vec![int_term],
+        });
+        let list_of_bool = cx.insert_term(Term::App {
+            constructor: "List",
+            args: vec![bool_term],
+        });
+
+        let Err(UnifyError::ConstructorMismatch { t1, c1, t2, c2 }) =
+            cx.unify(list_of_int, list_of_bool)
+        else {
+            panic!("expected a ConstructorMismatch");
+        };
+        assert_eq!((t1, c1, t2, c2), (int_term, "Int", bool_term, "Bool"));
+    }
+
+    #[test]
+    fn arity_mismatch_carries_the_specific_terms_compared() {
+        let mut cx = UnificationContext::<&'static str>::new();
+        let unary_arg = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let unary = cx.insert_term(Term::App {
+            constructor: "Fn",
+            args: vec![unary_arg],
+        });
+        let elem_a = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let elem_b = cx.insert_term(Term::App {
+            constructor: "Bool",
+            args: vec![],
+        });
+        let binary = cx.insert_term(Term::App {
+            constructor: "Fn",
+            args: vec![elem_a, elem_b],
+        });
+
+        let Err(UnifyError::ArityMismatch {
+            t1,
+            arity1,
+            t2,
+            arity2,
+        }) = cx.unify(unary, binary)
+        else {
+            panic!("expected an ArityMismatch");
+        };
+        assert_eq!((t1, arity1, t2, arity2), (unary, 1, binary, 2));
+    }
+
+    #[test]
     fn unify_binds_a_free_variable() {
         let mut cx = UnificationContext::<&'static str>::new();
         let v = cx.fresh_var();
@@ -603,6 +873,46 @@ mod tests {
             cx.binding(v),
             Some(int_term),
             "the rejected attempt must not have disturbed the existing binding"
+        );
+    }
+
+    #[test]
+    fn constructor_mismatch_against_a_bound_variable_reports_the_variable_unresolved() {
+        // ?v ↦ Int, then unify ?v against Bool -- this fails on Int ≟
+        // Bool once resolved, but the error must report *?v itself*
+        // (the term as it was actually passed in) as `t1`, not `Int`
+        // (what ?v currently resolves to). Reporting the resolved
+        // value would make it structurally impossible for a caller to
+        // ever notice "the left-hand side started life as a bare
+        // variable" and look up its provenance -- `resolve` always
+        // follows a binding all the way through, so a resolved `t1`
+        // could never be `Term::Var` again once `?v` is bound to
+        // anything.
+        let mut cx = UnificationContext::<&'static str>::new();
+        let v = cx.fresh_var();
+        let v_term = cx.insert_term(Term::Var(v));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let bool_term = cx.insert_term(Term::App {
+            constructor: "Bool",
+            args: vec![],
+        });
+
+        cx.unify(v_term, int_term).unwrap();
+        let Err(UnifyError::ConstructorMismatch { t1, c1, t2, c2 }) = cx.unify(v_term, bool_term)
+        else {
+            panic!("expected a ConstructorMismatch");
+        };
+
+        assert_eq!(t1, v_term, "t1 should be ?v itself, not what it resolves to");
+        assert_eq!(c1, "Int", "the *constructor* is still the resolved one");
+        assert_eq!((t2, c2), (bool_term, "Bool"));
+        assert_eq!(
+            cx.term(t1),
+            Some(&Term::Var(v)),
+            "confirms t1 is still literally a Term::Var, ready for a caller to look up"
         );
     }
 
@@ -724,6 +1034,146 @@ mod tests {
         cx.bind(b, int_term);
 
         assert_eq!(cx.resolve(a_term), int_term);
+    }
+
+    // -- provenance --------------------------------------------------
+
+    #[test]
+    fn provenance_is_none_for_an_untouched_variable() {
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let v = cx.fresh_var();
+        assert_eq!(cx.provenance(v), None);
+    }
+
+    #[test]
+    fn plain_unify_records_no_provenance() {
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let v = cx.fresh_var();
+        let v_term = cx.insert_term(Term::Var(v));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+
+        cx.unify(v_term, int_term).unwrap();
+
+        assert_eq!(cx.binding(v), Some(int_term), "unify itself still binds");
+        assert_eq!(
+            cx.provenance(v),
+            None,
+            "but plain unify records no reason for it"
+        );
+    }
+
+    #[test]
+    fn unify_because_records_the_reason_a_variable_was_bound() {
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let v = cx.fresh_var();
+        let v_term = cx.insert_term(Term::Var(v));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+
+        cx.unify_because(v_term, int_term, "because line 12").unwrap();
+
+        assert_eq!(cx.provenance(v), Some(&"because line 12"));
+    }
+
+    #[test]
+    fn unify_because_records_the_reason_for_a_var_var_merge() {
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let a = cx.fresh_var();
+        let b = cx.fresh_var();
+        let a_term = cx.insert_term(Term::Var(a));
+        let b_term = cx.insert_term(Term::Var(b));
+
+        cx.unify_because(a_term, b_term, "because they flow together")
+            .unwrap();
+
+        assert_eq!(cx.provenance(a), Some(&"because they flow together"));
+        assert_eq!(cx.provenance(b), Some(&"because they flow together"));
+    }
+
+    #[test]
+    fn unify_because_threads_the_same_reason_through_nested_constructors() {
+        // Unifying List(?a) ≟ List(Int) recurses into ?a ≟ Int -- the
+        // reason attached to the *outer*, top-level call has to reach
+        // that inner, structurally-implied binding too, not just a
+        // variable unified directly at the top level.
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let v = cx.fresh_var();
+        let v_term = cx.insert_term(Term::Var(v));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let list_of_var = cx.insert_term(Term::App {
+            constructor: "List",
+            args: vec![v_term],
+        });
+        let list_of_int = cx.insert_term(Term::App {
+            constructor: "List",
+            args: vec![int_term],
+        });
+
+        cx.unify_because(list_of_var, list_of_int, "because of this list")
+            .unwrap();
+
+        assert_eq!(cx.provenance(v), Some(&"because of this list"));
+    }
+
+    #[test]
+    fn provenance_reflects_the_most_recent_binding() {
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let a = cx.fresh_var();
+        let b = cx.fresh_var();
+        let a_term = cx.insert_term(Term::Var(a));
+        let b_term = cx.insert_term(Term::Var(b));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+        let bool_term = cx.insert_term(Term::App {
+            constructor: "Bool",
+            args: vec![],
+        });
+
+        // Two independent bindings, each with its own reason -- neither
+        // should bleed into the other's provenance.
+        cx.unify_because(a_term, int_term, "a is Int here").unwrap();
+        cx.unify_because(b_term, bool_term, "b is Bool here").unwrap();
+
+        assert_eq!(cx.provenance(a), Some(&"a is Int here"));
+        assert_eq!(cx.provenance(b), Some(&"b is Bool here"));
+    }
+
+    #[test]
+    fn provenance_survives_a_later_merge_into_the_same_class() {
+        // `a`'s reason is recorded first. `b` is unrelated at that
+        // point, so `provenance(b)` shouldn't see it -- but once `b` is
+        // later merged into `a`'s class (by *any* means, reasoned or
+        // not), querying `b` should find `a`'s reason too, since they
+        // now denote the same thing. This is exactly what makes
+        // `provenance` re-canonicalize with `find` at query time rather
+        // than trusting the variable id an entry was originally
+        // recorded against.
+        let mut cx = UnificationContext::<&'static str, &'static str>::new();
+        let a = cx.fresh_var();
+        let b = cx.fresh_var();
+        let a_term = cx.insert_term(Term::Var(a));
+        let int_term = cx.insert_term(Term::App {
+            constructor: "Int",
+            args: vec![],
+        });
+
+        cx.unify_because(a_term, int_term, "a was pinned here")
+            .unwrap();
+        assert_eq!(cx.provenance(b), None, "b is unrelated so far");
+
+        cx.union_vars(a, b);
+
+        assert_eq!(cx.provenance(b), Some(&"a was pinned here"));
     }
 
     #[test]

@@ -64,7 +64,11 @@ fn use_generics() {
     // A bare `Pair` (no explicit type arguments at all) infers them
     // from context, the same way a bare generic function call does.
     let f: Pair<int, int> = (1, 2);
-    let g: Pair = (1, "two");
+    let g: Pair<char, _> = (1, "two");
+    
+    let (num, str) = g;
+
+    let i = (num, str);
 
     (a, b, c, d, e, f, g)
 }

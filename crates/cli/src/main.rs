@@ -13,7 +13,7 @@ use std::fs;
 use std::ops::Range;
 use std::process::ExitCode;
 
-use ariadne::{Color, Label, Report, ReportKind, sources};
+use ariadne::{Color, Fmt, Label, Report, ReportKind, sources};
 use ast::{Ident, Item, ItemKind, ModKind, Path, PathSegment};
 use chumsky::Parser;
 use typecheck::{Diagnostic, Level, Namespace, TypeCheckContext};
@@ -175,17 +175,49 @@ fn report_kind(level: Level) -> (ReportKind<'static>, Color) {
 /// documented behavior to take on faith). Without this, only
 /// diagnostics that happen to carry a related span would ever show
 /// rustc-style underlines.
+/// Colors each of `ranges` within `message` a different shade than the
+/// rest of the text -- the piece of a compound type mismatch
+/// ([`typecheck::Diagnostic::emphasis`]) that's actually in conflict,
+/// e.g. just `String`/`int` inside "expected `Fn(int) -> String`,
+/// found `Fn(int) -> int`", not the `Fn(int) -> ` both sides already
+/// agree on. `ranges` is empty for the overwhelming majority of
+/// diagnostics, in which case this is a no-op clone of `message`.
+fn emphasize(message: &str, ranges: &[Range<usize>]) -> String {
+    if ranges.is_empty() {
+        return message.to_owned();
+    }
+    let mut sorted: Vec<Range<usize>> = ranges.to_vec();
+    sorted.sort_by_key(|range| range.start);
+
+    let mut out = String::with_capacity(message.len() + 16 * sorted.len());
+    let mut cursor = 0;
+    for range in sorted {
+        // A malformed range (out of order, out of bounds) shouldn't be
+        // able to corrupt the message or panic the CLI -- just skip it
+        // and leave that piece unhighlighted.
+        if range.start < cursor || range.end > message.len() || range.start > range.end {
+            continue;
+        }
+        out.push_str(&message[cursor..range.start]);
+        out.push_str(&format!("{}", (&message[range.clone()]).fg(Color::Magenta)));
+        cursor = range.end;
+    }
+    out.push_str(&message[cursor..]);
+    out
+}
+
 fn report_diagnostic(path: &str, diagnostic: &Diagnostic) -> Report<'static, (SourceId, Range<usize>)> {
     let id = path.to_owned();
     let (kind, color) = report_kind(diagnostic.level());
     let primary = diagnostic.span();
     let primary_range = primary.start..primary.end;
+    let message = emphasize(diagnostic.message(), diagnostic.emphasis());
 
     let mut builder = Report::build(kind, (id.clone(), primary_range.clone()))
-        .with_message(diagnostic.message())
+        .with_message(message.clone())
         .with_label(
             Label::new((id.clone(), primary_range))
-                .with_message(diagnostic.message())
+                .with_message(message)
                 .with_color(color),
         );
 

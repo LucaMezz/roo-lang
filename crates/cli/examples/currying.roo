@@ -88,6 +88,9 @@ fn between(lo: int, x: int, hi: int) -> bool {
     true
 }
 
+type Message = String;
+type Both<A, B> = (A, B);
+
 fn use_currying() {
     // `curry2` is genuinely polymorphic, not pinned to whichever
     // types it happened to see first -- both of these type check in
@@ -112,5 +115,5 @@ fn use_currying() {
     // values by the time the checker sees them, with no distinction
     // between "a real top-level fn," "a nested fn returned by
     // value," and "a curry stage waiting for its next argument."
-    compose::<int, String, int>(add_one)(add_one)(1);
+    compose::<int, any, int>(add_one)(add_one)(if true {1} else {2});
 }

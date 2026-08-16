@@ -15,6 +15,7 @@
 //! Not yet implemented -- nothing here yet.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
@@ -49,6 +50,7 @@ pub struct Diagnostic {
     message: String,
     related: Vec<(Span, String)>,
     notes: Vec<String>,
+    emphasis: Vec<Range<usize>>,
 }
 
 impl Diagnostic {
@@ -75,6 +77,7 @@ impl Diagnostic {
             message: message.into(),
             related: Vec::new(),
             notes: Vec::new(),
+            emphasis: Vec::new(),
         }
     }
 
@@ -85,6 +88,18 @@ impl Diagnostic {
 
     fn with_note(mut self, message: impl Into<String>) -> Self {
         self.notes.push(message.into());
+        self
+    }
+
+    /// Marks a byte range within [`Self::message`] as worth visually
+    /// setting apart from the rest -- e.g. the specific `String` inside
+    /// "expected `Fn(int) -> String`, found `Fn(int) -> int`" that's
+    /// actually the piece in conflict, as opposed to the `Fn(int) -> `
+    /// both sides already agree on. Purely a hint for a renderer (a
+    /// terminal UI, an LSP): this crate has no opinion on *how* that
+    /// gets shown, only on *which* bytes are the interesting ones.
+    fn with_emphasis(mut self, range: Range<usize>) -> Self {
+        self.emphasis.push(range);
         self
     }
 
@@ -118,6 +133,13 @@ impl Diagnostic {
     /// Additional notes attached to this diagnostic.
     pub fn notes(&self) -> &[String] {
         &self.notes
+    }
+
+    /// Byte ranges within [`Self::message`] worth visually setting
+    /// apart from the rest of it -- see [`Self::with_emphasis`].
+    /// Usually empty; never overlapping.
+    pub fn emphasis(&self) -> &[Range<usize>] {
+        &self.emphasis
     }
 }
 
@@ -308,8 +330,11 @@ impl NameInterner {
 pub struct TypeCheckContext {
     /// Used to track type inference variables and their equivalence
     /// classes, and facilitates the unification of different type
-    /// terms.
-    uni_cx: UnificationContext<TyCon>,
+    /// terms. The `Span` parameter is `unify`'s optional provenance
+    /// "reason" type -- see `unify_because`/`provenance` in
+    /// `crates/unify`, and `with_provenance_note` below for how a
+    /// diagnostic actually uses it.
+    uni_cx: UnificationContext<TyCon, Span>,
 
     /// Makes the mapping between ids and name strings for all type
     /// checking in this context.
@@ -721,15 +746,27 @@ impl TypeCheckContext {
 
     /// Creates a new type with all generic type parameters in
     /// the symbol substituted with the given explicit types.
-    fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[TermId]) -> TermId {
+    ///
+    /// Each explicit argument is routed through a fresh variable pinned
+    /// via [`UnificationContext::unify_because`] at the argument's own
+    /// span, rather than substituted in directly -- so a later mismatch
+    /// against that generic parameter's position can cite *this*
+    /// turbofish argument as why it was expected, the same way an
+    /// ordinarily-inferred parameter can already cite where it was
+    /// inferred. The pin is infallible (a brand-new variable can't
+    /// already conflict with anything), so its result is discarded.
+    fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[(TermId, Span)]) -> TermId {
         let ty = self.symbols[symbol].ty;
         if self.symbols[symbol].generics.is_empty() {
             return ty;
         }
         let generics = self.symbols[symbol].generics.clone();
         let mut subst = HashMap::new();
-        for (&id, &term) in generics.iter().zip(explicit) {
-            subst.insert(id, term);
+        for (&id, &(term, span)) in generics.iter().zip(explicit) {
+            let var = self.uni_cx.fresh_var();
+            let var_term = term!(self.uni_cx, var var);
+            let _ = self.uni_cx.unify_because(var_term, term, span);
+            subst.insert(id, var_term);
         }
         self.instantiate_term(ty, &mut subst)
     }
@@ -762,11 +799,11 @@ impl TypeCheckContext {
                 // Retireve and lower all generic type arguments in the last
                 // segment of the path, which should be used to instantiate
                 // the symbol.
-                let arg_tys: Vec<TermId> = generic_args
+                let arg_tys: Vec<(TermId, Span)> = generic_args
                     .args
                     .iter()
                     .filter_map(|arg| match arg {
-                        GenericArg::Arg(ty) => Some(self.lower_ty(ty)),
+                        GenericArg::Arg(ty) => Some((self.lower_ty(ty), ty.span)),
                         GenericArg::Constraint(_) => None,
                     })
                     .collect();
@@ -874,47 +911,133 @@ impl TypeCheckContext {
     /// an unresolved variable renders as `_`, since it doesn't have a
     /// concrete type to show yet.
     fn render_term(&mut self, term: TermId) -> String {
+        let mut buf = String::new();
+        self.render_term_into(&mut buf, term, None);
+        buf
+    }
+
+    /// Like [`Self::render_term`], but also reports the byte range
+    /// within the returned text where `highlight` (if it occurs
+    /// anywhere in `term`'s own structure) ended up -- e.g. rendering
+    /// `Fn(int) -> String` while highlighting the return-type position
+    /// reports the range covering just `String`. `None` if `highlight`
+    /// doesn't occur in `term` at all (nothing to point at) or `term`
+    /// *is* `highlight` at the top level (nothing to set apart from --
+    /// the whole rendered text already covers it).
+    ///
+    /// Lets a caller building a diagnostic message single out the
+    /// *specific* piece of a compound type that actually conflicted --
+    /// e.g. `t1`/`t2` from a [`UnifyError::ConstructorMismatch`] found
+    /// only after recursing into a matching outer constructor -- without
+    /// this crate baking in any opinion about *how* that gets displayed
+    /// (color, underline, ...). That's left entirely to whatever
+    /// renders the diagnostic.
+    fn render_term_highlighting(&mut self, term: TermId, highlight: TermId) -> (String, Option<Range<usize>>) {
+        let mut buf = String::new();
+        let range = self.render_term_into(&mut buf, term, Some(highlight));
+        (buf, range)
+    }
+
+    fn render_term_into(&mut self, buf: &mut String, term: TermId, highlight: Option<TermId>) -> Option<Range<usize>> {
+        if let Some(highlight) = highlight {
+            if self.uni_cx.resolve(term) == self.uni_cx.resolve(highlight) {
+                let start = buf.len();
+                buf.push_str(&self.render_term(term));
+                return Some(start..buf.len());
+            }
+        }
+
         let resolved = self.uni_cx.resolve(term);
         let Some(term) = self.uni_cx.term(resolved).cloned() else {
-            return "<error>".to_owned();
+            buf.push_str("<error>");
+            return None;
         };
 
         let (constructor, args) = match term {
-            Term::Var(_) => return "_".to_owned(),
+            Term::Var(_) => {
+                buf.push('_');
+                return None;
+            }
             Term::App { constructor, args } => (constructor, args),
         };
 
         match constructor {
-            TyCon::Any => "any".to_owned(),
-            TyCon::Never => "!".to_owned(),
-            TyCon::Int => "int".to_owned(),
-            TyCon::Float => "float".to_owned(),
-            TyCon::Bool => "bool".to_owned(),
-            TyCon::Char => "char".to_owned(),
-            TyCon::Str => "String".to_owned(),
-            TyCon::Err => "<error>".to_owned(),
-            TyCon::Array => format!("[{}]", self.render_term(args[0])),
+            TyCon::Any => {
+                buf.push_str("any");
+                None
+            }
+            TyCon::Never => {
+                buf.push('!');
+                None
+            }
+            TyCon::Int => {
+                buf.push_str("int");
+                None
+            }
+            TyCon::Float => {
+                buf.push_str("float");
+                None
+            }
+            TyCon::Bool => {
+                buf.push_str("bool");
+                None
+            }
+            TyCon::Char => {
+                buf.push_str("char");
+                None
+            }
+            TyCon::Str => {
+                buf.push_str("String");
+                None
+            }
+            TyCon::Err => {
+                buf.push_str("<error>");
+                None
+            }
+            TyCon::Array => {
+                buf.push('[');
+                let range = self.render_term_into(buf, args[0], highlight);
+                buf.push(']');
+                range
+            }
             TyCon::Tuple => {
-                let elems: Vec<String> = args.iter().map(|&arg| self.render_term(arg)).collect();
-                format!("({})", elems.join(", "))
+                buf.push('(');
+                let mut range = None;
+                for (i, &arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
+                    range = range.or(self.render_term_into(buf, arg, highlight));
+                }
+                buf.push(')');
+                range
             }
             TyCon::Fn => {
-                let inputs = self.render_term(args[0]);
-                let output = self.render_term(args[1]);
-                format!("Fn{inputs} -> {output}")
+                buf.push_str("Fn");
+                let inputs_range = self.render_term_into(buf, args[0], highlight);
+                buf.push_str(" -> ");
+                let output_range = self.render_term_into(buf, args[1], highlight);
+                inputs_range.or(output_range)
             }
             TyCon::Struct(symbol) | TyCon::Enum(symbol) => {
                 let name = self.symbols[symbol].name;
-                self.names
+                let text = self
+                    .names
                     .name(name)
                     .cloned()
-                    .unwrap_or_else(|| "<unknown>".to_owned())
+                    .unwrap_or_else(|| "<unknown>".to_owned());
+                buf.push_str(&text);
+                None
             }
-            TyCon::Generic(id) => self
-                .generic_names
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| "<generic>".to_owned()),
+            TyCon::Generic(id) => {
+                let text = self
+                    .generic_names
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| "<generic>".to_owned());
+                buf.push_str(&text);
+                None
+            }
         }
     }
 
@@ -961,6 +1084,55 @@ impl TypeCheckContext {
         }
     }
 
+    /// Tries each `(term, label)` candidate in order, and attaches a
+    /// provenance note for the *first* one that's a bare inference
+    /// variable an earlier `unify_because` call already bound or
+    /// merged for a recorded reason -- not just "expected `X`, found
+    /// `Y`", but *why* this side already meant `X`/`Y` by the time
+    /// this comparison ran.
+    ///
+    /// This is the case a plain "expected due to this" note can't
+    /// cover: that note only ever points at *this* comparison's own
+    /// annotation/context (or nothing, if there isn't one), never at
+    /// an unrelated, earlier piece of code that pinned a value down
+    /// through ordinary inference.
+    ///
+    /// Callers pass candidates from most to least precise, e.g. the
+    /// exact failing sub-term first (from a
+    /// [`UnifyError::ConstructorMismatch`]/[`UnifyError::ArityMismatch`]'s
+    /// own `t1`/`t2`, deliberately left unresolved by `unify` for
+    /// exactly this purpose), falling back to the whole compared value
+    /// (the original `actual`/`expected`). Both matter and neither
+    /// subsumes the other: a value like `Fn(int) -> String` built
+    /// straight from concrete pieces (turbofish, a literal signature)
+    /// has no variable anywhere in its own structure to explain, but
+    /// the *symbol holding it* might still be one, bound by some
+    /// earlier, unrelated statement -- the fallback is what finds
+    /// that, once the precise candidate comes up empty. Each label
+    /// describes its own candidate, since whichever one actually gets
+    /// used determines what the resulting note should say.
+    ///
+    /// A no-op (returns `diagnostic` unchanged) if none of the
+    /// candidates are a bare variable with anything recorded for it --
+    /// most unification failures still won't have anything to add
+    /// here, and that's fine; this only ever adds information, never
+    /// replaces the existing "expected due to this" note.
+    fn with_first_provenance_note(
+        &mut self,
+        diagnostic: Diagnostic,
+        candidates: &[(TermId, String)],
+    ) -> Diagnostic {
+        for (term, label) in candidates {
+            let Some(Term::Var(v)) = self.uni_cx.term(*term).cloned() else {
+                continue;
+            };
+            if let Some(&span) = self.uni_cx.provenance(v) {
+                return diagnostic.with_related(span, format!("{label} was inferred here"));
+            }
+        }
+        diagnostic
+    }
+
     fn check_expr_expecting(
         &mut self,
         expr: &Expr,
@@ -975,31 +1147,113 @@ impl TypeCheckContext {
             } else {
                 None
             };
-            if let Err(err) = self.uni_cx.unify(actual, expected) {
-                let expected = self.render_term(expected);
-                let actual = self.render_term(actual);
+            // The reason recorded for whatever this call ends up
+            // binding/merging: prefer the more specific "why do we
+            // expect this type" span (an annotation, a parameter
+            // declaration, ...) when one exists, since it's more
+            // useful to a later mismatch than just pointing back at
+            // this same expression again.
+            let reason = expected_span.unwrap_or(expr.span);
+            if let Err(err) = self.uni_cx.unify_because(actual, expected, reason) {
+                let expected_rendered = self.render_term(expected);
+                let actual_rendered = self.render_term(actual);
                 match err {
                     UnifyError::OccursCheck(_) => {
-                        self.diagnostic(Diagnostic::cyclic_type(expr.span, &expected, &actual));
+                        self.diagnostic(Diagnostic::cyclic_type(
+                            expr.span,
+                            &expected_rendered,
+                            &actual_rendered,
+                        ));
                     }
-                    _ => {
+                    UnifyError::ConstructorMismatch { t1, t2, .. }
+                    | UnifyError::ArityMismatch { t1, t2, .. } => {
+                        // `t2`/`t1` (see the comment further down for
+                        // why they're not always `expected`/`actual`
+                        // themselves) are also exactly the pieces worth
+                        // visually setting apart in this message: for a
+                        // mismatch found only after recursing into a
+                        // matching outer constructor (e.g. `Fn` in
+                        // `Fn(int) -> String` vs `Fn(int) -> int`), a
+                        // renderer can use this to highlight just
+                        // `String`/`int`, not the whole type both sides
+                        // already agree on.
+                        let lead = "expected `";
+                        let mid = "`, found `";
+                        let tail = "`";
+                        let (expected_highlighted, expected_range) =
+                            self.render_term_highlighting(expected, t2);
+                        let (actual_highlighted, actual_range) =
+                            self.render_term_highlighting(actual, t1);
                         let mut diagnostic = Diagnostic::error(
                             expr.span,
-                            format!("expected `{expected}`, found `{actual}`"),
+                            format!("{lead}{expected_highlighted}{mid}{actual_highlighted}{tail}"),
                         );
+                        if let Some(range) = expected_range {
+                            let offset = lead.len();
+                            diagnostic =
+                                diagnostic.with_emphasis(offset + range.start..offset + range.end);
+                        }
+                        if let Some(range) = actual_range {
+                            let offset = lead.len() + expected_highlighted.len() + mid.len();
+                            diagnostic =
+                                diagnostic.with_emphasis(offset + range.start..offset + range.end);
+                        }
                         if let Some(name) = generic_on_expected {
                             diagnostic = diagnostic.with_note(format!(
-                                "`{name}` is generic here and must work for every type, not just `{actual}`"
+                                "`{name}` is generic here and must work for every type, not just `{actual_rendered}`"
                             ));
                         } else if let Some(name) = generic_on_actual {
                             diagnostic = diagnostic.with_note(format!(
-                                "`{name}` is generic here and must work for every type, not just `{expected}`"
+                                "`{name}` is generic here and must work for every type, not just `{expected_rendered}`"
                             ));
                         }
                         let diagnostic = match expected_span {
                             Some(span) => diagnostic.with_related(span, "expected due to this"),
                             None => diagnostic,
                         };
+                        // Beyond *what* was expected/found, explain
+                        // *why* either side already meant that, if
+                        // either started life as a bare variable some
+                        // earlier, unrelated `unify_because` call
+                        // pinned down -- the case a bare "expected due
+                        // to this" note can't cover at all, since
+                        // there's no annotation here to point at in
+                        // the first place.
+                        //
+                        // `t1`/`t2` (from the error itself, per
+                        // `unify_because(actual, expected, ..)`'s own
+                        // argument order, and deliberately left
+                        // unresolved by `unify`) are the *precise*
+                        // pair of sub-terms that actually disagreed,
+                        // not necessarily `actual`/`expected`
+                        // themselves: for a mismatch found only after
+                        // recursing into a matching outer constructor
+                        // (e.g. `Fn` in `Fn(int) -> String` vs
+                        // `Fn(int) -> int`), those are the *inner*
+                        // conflicting pieces (the return type, here),
+                        // so that gets tried first -- falling back to
+                        // `actual`/`expected` themselves covers the
+                        // complementary case, where the specific
+                        // failing piece isn't independently a
+                        // variable, but the *whole* value came from
+                        // resolving one (e.g. a local bound to an
+                        // entirely concrete `Fn` type).
+                        let t2_rendered = self.render_term(t2);
+                        let t1_rendered = self.render_term(t1);
+                        let diagnostic = self.with_first_provenance_note(
+                            diagnostic,
+                            &[
+                                (t2, format!("expected `{t2_rendered}`")),
+                                (expected, format!("expected `{expected_rendered}`")),
+                            ],
+                        );
+                        let diagnostic = self.with_first_provenance_note(
+                            diagnostic,
+                            &[
+                                (t1, format!("found `{t1_rendered}`")),
+                                (actual, format!("found `{actual_rendered}`")),
+                            ],
+                        );
                         self.diagnostic(diagnostic);
                     }
                 }
@@ -1032,17 +1286,17 @@ impl TypeCheckContext {
                     .map(|els| self.check_expr(els, expected))
                     .unwrap_or(unit_term);
 
-                if let Err(err) = self.uni_cx.unify(body_ty, els_ty) {
-                    let body_span = Self::block_value_span(body);
-                    let els_span = match els.as_deref() {
-                        Some(Expr {
-                            kind: ExprKind::Block(block, _),
-                            ..
-                        }) => Self::block_value_span(block),
-                        Some(els) => els.span,
-                        None => body_span,
-                    };
+                let body_span = Self::block_value_span(body);
+                let els_span = match els.as_deref() {
+                    Some(Expr {
+                        kind: ExprKind::Block(block, _),
+                        ..
+                    }) => Self::block_value_span(block),
+                    Some(els) => els.span,
+                    None => body_span,
+                };
 
+                if let Err(err) = self.uni_cx.unify_because(body_ty, els_ty, body_span) {
                     let body_rendered = self.render_term(body_ty);
                     let els_rendered = self.render_term(els_ty);
                     match err {
@@ -1053,16 +1307,60 @@ impl TypeCheckContext {
                                 &els_rendered,
                             ));
                         }
-                        _ => {
-                            let diagnostic = Diagnostic::error(
+                        // `t1`/`t2` here are `body_ty`/`els_ty` as they
+                        // were at the precise point of disagreement --
+                        // see the equivalent comment in
+                        // `check_expr_expecting` for why that's not
+                        // always the same as `body_ty`/`els_ty`
+                        // themselves.
+                        UnifyError::ConstructorMismatch { t1, t2, .. }
+                        | UnifyError::ArityMismatch { t1, t2, .. } => {
+                            // See the equivalent block in
+                            // `check_expr_expecting` for why `t1`/`t2`
+                            // (not `body_ty`/`els_ty` themselves) are
+                            // what's worth highlighting here.
+                            let lead = "expected `";
+                            let mid = "`, found `";
+                            let tail = "`";
+                            let (body_highlighted, body_range) =
+                                self.render_term_highlighting(body_ty, t1);
+                            let (els_highlighted, els_range) =
+                                self.render_term_highlighting(els_ty, t2);
+                            let mut diagnostic = Diagnostic::error(
                                 els_span,
-                                format!("expected `{body_rendered}`, found `{els_rendered}`"),
+                                format!("{lead}{body_highlighted}{mid}{els_highlighted}{tail}"),
                             );
+                            if let Some(range) = body_range {
+                                let offset = lead.len();
+                                diagnostic = diagnostic
+                                    .with_emphasis(offset + range.start..offset + range.end);
+                            }
+                            if let Some(range) = els_range {
+                                let offset = lead.len() + body_highlighted.len() + mid.len();
+                                diagnostic = diagnostic
+                                    .with_emphasis(offset + range.start..offset + range.end);
+                            }
                             let diagnostic = if els.is_some() {
                                 diagnostic.with_related(body_span, "expected because of this")
                             } else {
                                 diagnostic
                             };
+                            let t1_rendered = self.render_term(t1);
+                            let t2_rendered = self.render_term(t2);
+                            let diagnostic = self.with_first_provenance_note(
+                                diagnostic,
+                                &[
+                                    (t1, format!("expected `{t1_rendered}`")),
+                                    (body_ty, format!("expected `{body_rendered}`")),
+                                ],
+                            );
+                            let diagnostic = self.with_first_provenance_note(
+                                diagnostic,
+                                &[
+                                    (t2, format!("found `{t2_rendered}`")),
+                                    (els_ty, format!("found `{els_rendered}`")),
+                                ],
+                            );
                             self.diagnostic(diagnostic);
                         }
                     }
@@ -1212,10 +1510,7 @@ impl TypeCheckContext {
                     }
 
                     output_term
-                } else if matches!(
-                    self.uni_cx.term(resolved_callee),
-                    None | Some(Term::Var(_))
-                ) {
+                } else if matches!(self.uni_cx.term(resolved_callee), None | Some(Term::Var(_))) {
                     // Callee's shape isnt known yet -- still an unbound
                     // inference variable, not yet pinned to anything.
                     // Not enough information to individually check types
@@ -1229,7 +1524,7 @@ impl TypeCheckContext {
                     let ret_var = self.uni_cx.fresh_var();
                     let ret_term = term!(self.uni_cx, var ret_var);
                     let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
-                    let _ = self.uni_cx.unify(callee_ty, fn_term);
+                    let _ = self.uni_cx.unify_because(callee_ty, fn_term, callee.span);
                     ret_term
                 } else {
                     // Callee's type is already known -- and it's
@@ -1461,7 +1756,7 @@ impl TypeCheckContext {
     /// the pattern will end up with.
     fn check_pat(&mut self, pat: &Pat, expected: TermId) -> TermId {
         let actual = self.check_pat_kind(&pat.kind, expected);
-        let _ = self.uni_cx.unify(actual, expected);
+        let _ = self.uni_cx.unify_because(actual, expected, pat.span);
         actual
     }
 
@@ -1471,7 +1766,9 @@ impl TypeCheckContext {
             PatKind::Wild => expected,
             PatKind::Ident(ident, sub) => {
                 let symbol = self.declare(&ident.name, SymbolKind::Local);
-                let _ = self.uni_cx.unify(self.symbols[symbol].ty, expected);
+                let _ = self
+                    .uni_cx
+                    .unify_because(self.symbols[symbol].ty, expected, ident.span);
 
                 if let Some(sub) = sub {
                     self.check_pat(sub, expected);
@@ -2608,7 +2905,11 @@ fn apply(f, x) {
         let apply = cx
             .resolve_path(&path(&["apply"]), Namespace::Value)
             .expect("apply should resolve");
-        assert_eq!(cx.symbols[apply].generics.len(), 2, "<T, U> Fn(Fn(T) -> U, T) -> U");
+        assert_eq!(
+            cx.symbols[apply].generics.len(),
+            2,
+            "<T, U> Fn(Fn(T) -> U, T) -> U"
+        );
     }
 
     #[test]
@@ -3008,6 +3309,39 @@ fn apply(f, x) {
     }
 
     #[test]
+    fn check_all_emphasizes_only_the_specific_conflicting_portion_of_a_compound_type() {
+        // `add_one` and the annotation on `f` agree on everything
+        // except the return type -- `Diagnostic::emphasis` should
+        // single out just `String`/`int`, not the whole
+        // `Fn(int) -> ...` type both sides already share.
+        let source = r#"
+fn add_one(x: int) -> int {
+    x
+}
+fn use_it() {
+    let f: Fn(int) -> String = add_one;
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.message,
+            "expected `Fn(int) -> String`, found `Fn(int) -> int`"
+        );
+        assert_eq!(d.emphasis.len(), 2, "{:#?}", d.emphasis);
+
+        let highlighted: Vec<&str> = d
+            .emphasis
+            .iter()
+            .map(|range| &d.message[range.clone()])
+            .collect();
+        assert_eq!(highlighted, vec!["String", "int"]);
+    }
+
+    #[test]
     fn check_all_call_reports_the_specific_mismatching_argument_not_the_whole_call() {
         let source = r#"
 fn add(a: int, b: int) {}
@@ -3047,14 +3381,17 @@ fn main() {
     }
 
     #[test]
-    fn check_all_call_mismatch_against_an_unannotated_param_has_no_related_span() {
+    fn check_all_call_mismatch_against_an_unannotated_param_has_no_expected_due_to_this_note() {
         // `x` has no type annotation of its own -- its expected type
         // (`int`) only comes from how the body of `takes_something`
         // happens to use it, not from anything written at the
         // parameter itself. Pointing "expected due to this" at the
         // bare parameter name anyway would be misleading (it looks
-        // like an explanation but isn't one), so there should be no
-        // related span at all rather than a low-quality one.
+        // like an explanation but isn't one), so that specific note
+        // should never appear here -- see the test right after this
+        // one for what *does* show up instead, now that provenance
+        // tracking exists: a genuinely useful note pointing at the
+        // `int` ascription that's the *actual* reason.
         let source = r#"
 fn takes_something(x) {
     let y: int = x;
@@ -3067,7 +3404,129 @@ fn use_it() {
         let cx = check_all(source);
         let diagnostics = cx.diagnostics();
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].related.is_empty(), "{:#?}", diagnostics[0].related);
+        assert!(
+            diagnostics[0]
+                .related
+                .iter()
+                .all(|(_, message)| message != "expected due to this"),
+            "{:#?}",
+            diagnostics[0].related
+        );
+    }
+
+    #[test]
+    fn check_all_call_mismatch_against_an_unannotated_param_cites_where_it_was_inferred() {
+        // Companion to the test above: `x`'s expected type (`int`)
+        // was never written down anywhere near the mismatch itself --
+        // it was established two functions away, by `let y: int = x;`
+        // inside `takes_something`'s own body. This is exactly the
+        // case constraint-provenance tracking exists for: nothing
+        // short of remembering *why* `x`'s underlying type variable
+        // was bound to `int` in the first place could ever explain
+        // this mismatch usefully.
+        let source = r#"
+fn takes_something(x) {
+    let y: int = x;
+    x
+}
+fn use_it() {
+    takes_something("wrong");
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(d.related.len(), 1, "{:#?}", d.related);
+        let (span, message) = &d.related[0];
+        assert_eq!(&source[span.start..span.end], "int");
+        assert_eq!(message, "expected `int` was inferred here");
+    }
+
+    #[test]
+    fn check_all_cites_where_an_unannotated_params_fn_shape_was_first_inferred() {
+        // `f` is never annotated at all -- its `Fn(int) -> _` shape is
+        // established entirely by `f(1)` calling it, via the "callee's
+        // shape isn't known yet, infer one from how it's called" path
+        // in `check_expr_kind`'s `Call` handling (a different call
+        // site recording provenance than the one the previous two
+        // tests exercise). The later `let x: String = f;` mismatch has
+        // no annotation on `f` to fall back on either -- the only way
+        // to explain "found `Fn(int) -> _`" at all is to remember which
+        // earlier call pinned it down.
+        let source = r#"
+fn use_it(f) {
+    f(1);
+    let x: String = f;
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        assert_eq!(d.related.len(), 2, "{:#?}", d.related);
+
+        let expected_note = d
+            .related
+            .iter()
+            .find(|(_, message)| message == "expected due to this")
+            .expect("should still cite the `String` annotation");
+        assert_eq!(
+            &source[expected_note.0.start..expected_note.0.end],
+            "String"
+        );
+
+        let provenance_note = d
+            .related
+            .iter()
+            .find(|(_, message)| message.starts_with("found "))
+            .expect("should cite where f's Fn shape was inferred");
+        assert_eq!(&source[provenance_note.0.start..provenance_note.0.end], "f");
+        assert_eq!(provenance_note.1, "found `Fn(int) -> _` was inferred here");
+    }
+
+    #[test]
+    fn check_all_a_turbofish_generic_argument_is_cited_as_provenance_on_mismatch() {
+        // `identity`'s explicit `::<int>` argument is what pins `T` to
+        // `int` for this call -- nothing else in the source establishes
+        // it. `instantiate_with` now routes every explicit turbofish
+        // argument through a fresh variable pinned via `unify_because`
+        // (at the argument's own span) instead of substituting it in
+        // directly, so this pin is a real, queryable provenance entry
+        // just like any other binding -- the mismatch below should be
+        // able to cite the `int` written in the turbofish list itself
+        // as why `int` was expected.
+        let source = r#"
+fn identity<T>(x: T) -> T {
+    x
+}
+fn use_it() {
+    identity::<int>("wrong");
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+        let d = &diagnostics[0];
+        let provenance_note = d
+            .related
+            .iter()
+            .find(|(_, message)| message.starts_with("expected `"))
+            .expect("should cite where the turbofish argument pinned `T`");
+        assert_eq!(
+            &source[provenance_note.0.start..provenance_note.0.end],
+            "int"
+        );
+        assert_eq!(provenance_note.1, "expected `int` was inferred here");
+
+        // That `int` is the one inside `identity::<int>`, not the
+        // parameter's own `x: T` annotation -- the two would otherwise
+        // be indistinguishable by message text alone.
+        let turbofish_int = source.find("::<int>").unwrap() + "::<".len();
+        assert_eq!(provenance_note.0.start, turbofish_int);
     }
 
     #[test]
@@ -3491,7 +3950,12 @@ fn compose(f) {
         // the only one of the three that's ever independently callable
         // from outside this whole nest -- `inner`/`innermost` have
         // nothing left of their own to generalize.
-        assert_eq!(cx.symbols[compose].generics.len(), 3, "{:#?}", cx.symbols[compose].generics);
+        assert_eq!(
+            cx.symbols[compose].generics.len(),
+            3,
+            "{:#?}",
+            cx.symbols[compose].generics
+        );
         assert_eq!(cx.symbols[inner].generics.len(), 0);
         assert_eq!(cx.symbols[innermost].generics.len(), 0);
     }
