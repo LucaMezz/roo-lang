@@ -23,8 +23,11 @@
 // type, so nothing about "this came from `Pair`" survives checking.
 type Pair<T, U> = (T, U);
 
-fn cyclic(x) {
-    x(x)
+#[inline]
+fn flime<T>(x, y) {
+    let a: [T] = x(y);
+    let b: Pair = y(a);
+    a
 }
 
 // Written with no annotations at all, so it's inferred and
@@ -36,7 +39,7 @@ fn identity(x) {
 
 // Declares the exact same signature explicitly. Both functions behave
 // identically at every call site below.
-fn explicit_identity<T>(x: T) -> T {
+fn explicit_identity<U>(x: U) {
     x
 }
 
@@ -48,7 +51,7 @@ fn pair_up<A, B>(a: A, b: B) -> Pair<A, B> {
 
 fn use_generics() {
     // Ordinary inference: no annotation needed anywhere.
-    let a = identity(5);
+    let a = identity(10);
 
     // Fully explicit turbofish -- pins T before the argument is even
     // checked against it.

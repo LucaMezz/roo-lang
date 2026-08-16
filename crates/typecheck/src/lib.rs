@@ -260,6 +260,25 @@ struct Symbol {
     /// at *something* that doesn't actually explain the expected type
     /// is worse than not pointing at anything.
     param_spans: Vec<Option<Span>>,
+
+    /// Only meaningful for a [`SymbolKind::Fn`]: each parameter's own
+    /// name, in declaration order, parallel to `param_spans` and to
+    /// `ty`'s own `Fn` input tuple. Lets [`Self::render_symbol_hover`]
+    /// show a `fn` item the same way it's actually written in source
+    /// (`fn name(a: int, b: String) -> bool`) rather than the bare,
+    /// name-free `Fn(int, String) -> bool` [`Self::render_symbol_type`]
+    /// shows for every other use of a function type.
+    param_names: Vec<String>,
+
+    /// The span of this symbol's own name, at the point it was
+    /// declared -- set once, by [`Self::declare`]/
+    /// [`Self::declare_generic_param`], and never updated afterward.
+    /// Lets a later query (e.g. [`Self::render_symbol_hover`]) tell
+    /// "this is the declaration itself" apart from "this is a later
+    /// reference to it", which the two can render differently for --
+    /// e.g. a type alias's own declaration shows `type Pair<T, U>`,
+    /// while a reference to it elsewhere shows just `Pair<T, U>`.
+    declared_at: Span,
 }
 
 /// The different kinds of symbols.
@@ -271,8 +290,41 @@ enum SymbolKind {
     TyAlias(ScopeId),
     Mod(ScopeId),
     Fn(ScopeId),
+    /// A `let` binding. Checked through the exact same pattern-matching
+    /// logic as [`SymbolKind::Param`] (both are just a name bound by a
+    /// [`PatKind::Ident`]) -- kept as a separate variant purely so a
+    /// later query (e.g. [`TypeCheckContext::render_symbol_hover`])
+    /// can tell which one a given name actually is, and render a `let`
+    /// binding with its own `let` keyword without also putting one in
+    /// front of every parameter.
     Local,
+    /// A `fn` parameter. See [`SymbolKind::Local`]'s doc comment for
+    /// why this is a separate variant from it.
+    Param,
     GenericParam,
+}
+
+/// What kind of symbol a name bound by [`TypeCheckContext::check_pat`]
+/// should be declared as. A `fn` parameter and a `let` binding look
+/// identical as patterns -- both are checked through the exact same
+/// recursive `check_pat`/`check_pat_kind` logic -- so this is the one
+/// piece of context that actually differs between the two call sites
+/// ([`Checker::check_fn_body`]'s parameter loop vs
+/// [`TypeCheckContext::check_local`]), threaded through so the right
+/// [`SymbolKind`] comes out the other end.
+#[derive(Clone, Copy)]
+enum PatDeclKind {
+    Param,
+    Let,
+}
+
+impl PatDeclKind {
+    fn symbol_kind(self) -> SymbolKind {
+        match self {
+            PatDeclKind::Param => SymbolKind::Param,
+            PatDeclKind::Let => SymbolKind::Local,
+        }
+    }
 }
 
 impl SymbolKind {
@@ -286,7 +338,9 @@ impl SymbolKind {
             | SymbolKind::TyAlias(_)
             | SymbolKind::GenericParam
             | SymbolKind::Mod(_) => Namespace::Type,
-            SymbolKind::Variant | SymbolKind::Fn(_) | SymbolKind::Local => Namespace::Value,
+            SymbolKind::Variant | SymbolKind::Fn(_) | SymbolKind::Local | SymbolKind::Param => {
+                Namespace::Value
+            }
         }
     }
 }
@@ -377,6 +431,11 @@ pub struct TypeCheckContext {
     /// never disagree with what actually got resolved. Powers
     /// [`Self::symbol_at`] -- e.g. a language server's hover.
     symbol_spans: Vec<(Span, SymbolId)>,
+
+    /// Every point in the source where a literal expression or a bare
+    /// primitive type name appears -- see [`Self::type_name_at`] for
+    /// why these need their own list, separate from `symbol_spans`.
+    primitive_spans: Vec<(Span, &'static str)>,
 }
 
 impl Default for TypeCheckContext {
@@ -408,6 +467,7 @@ impl TypeCheckContext {
             checking_stack: Vec::new(),
             diagnostics: Vec::new(),
             symbol_spans: Vec::new(),
+            primitive_spans: Vec::new(),
         }
     }
 
@@ -450,6 +510,30 @@ impl TypeCheckContext {
             .filter(|(span, _)| span.start <= offset && offset < span.end)
             .min_by_key(|(span, _)| span.end - span.start)
             .map(|(_, symbol)| *symbol)
+    }
+
+    /// Records that `span` is a literal expression or a bare primitive
+    /// type name (`int`, `float`, `bool`, `char`, `String`, `any`) of
+    /// type `name`. See [`Self::primitive_spans`].
+    fn record_primitive_span(&mut self, span: Span, name: &'static str) {
+        self.primitive_spans.push((span, name));
+    }
+
+    /// The primitive type name written at `offset`, if any -- the
+    /// counterpart to [`Self::symbol_at`] for the two things that never
+    /// get a [`Symbol`] at all, since both map directly to a leaf
+    /// [`TyCon`] variant rather than going through
+    /// [`Self::declare`]/[`Self::resolve_path`]: a literal expression
+    /// (`1` -> `"int"`) and a bare primitive type name written in a
+    /// type annotation or a turbofish argument list (`int`, `float`,
+    /// `bool`, `char`, `String`, `any`). Same narrowest-span-wins rule
+    /// as `symbol_at`.
+    pub fn type_name_at(&self, offset: usize) -> Option<&'static str> {
+        self.primitive_spans
+            .iter()
+            .filter(|(span, _)| span.start <= offset && offset < span.end)
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map(|(_, name)| *name)
     }
 
     /// Does the first pass of the AST which creates all scopes
@@ -566,9 +650,13 @@ impl TypeCheckContext {
         }
     }
 
-    /// Declares a new symbol within the current scope. Creates a new
-    /// inference variable for the type of the symbol.
-    fn declare(&mut self, name: &str, kind: SymbolKind) -> SymbolId {
+    /// Declares a new symbol within the current scope, at `span` (its
+    /// own name's span -- recorded both on the symbol itself, as
+    /// [`Symbol::declared_at`], and via [`Self::record_symbol_span`],
+    /// so hovering the declaration resolves to this symbol exactly the
+    /// same way a later reference to it does). Creates a new inference
+    /// variable for the type of the symbol.
+    fn declare(&mut self, name: &str, span: Span, kind: SymbolKind) -> SymbolId {
         let namespace = kind.namespace();
         let name = self.names.id(name);
         let var = self.uni_cx.fresh_var();
@@ -579,16 +667,19 @@ impl TypeCheckContext {
             ty,
             generics: Vec::new(),
             param_spans: Vec::new(),
+            param_names: Vec::new(),
+            declared_at: span,
         });
         self.insert_in_scope(name, symbol, namespace);
+        self.record_symbol_span(span, symbol);
         symbol
     }
 
-    /// Declares a new generic parameter within the current scope.
-    /// Used to make generic type parameters available within the
-    /// scope of a function, or within the expression of a type
-    /// alias.
-    fn declare_generic_param(&mut self, param_name: &str) -> (SymbolId, GenericId) {
+    /// Declares a new generic parameter within the current scope, at
+    /// `span` -- see [`Self::declare`]. Used to make generic type
+    /// parameters available within the scope of a function, or within
+    /// the expression of a type alias.
+    fn declare_generic_param(&mut self, param_name: &str, span: Span) -> (SymbolId, GenericId) {
         let name = self.names.id(param_name);
         let id = self.generic_ids.insert(());
         self.generic_names.insert(id, param_name.to_owned());
@@ -599,8 +690,11 @@ impl TypeCheckContext {
             ty,
             generics: Vec::new(),
             param_spans: Vec::new(),
+            param_names: Vec::new(),
+            declared_at: span,
         });
         self.insert_in_scope(name, symbol, Namespace::Type);
+        self.record_symbol_span(span, symbol);
         (symbol, id)
     }
 
@@ -904,12 +998,30 @@ impl TypeCheckContext {
             }
             TyKind::Path(path) => match path.segments.as_slice() {
                 // The primitive types in the language are just special path names.
-                [segment] if segment.ident.name == "bool" => term!(self.uni_cx, TyCon::Bool),
-                [segment] if segment.ident.name == "int" => term!(self.uni_cx, TyCon::Int),
-                [segment] if segment.ident.name == "float" => term!(self.uni_cx, TyCon::Float),
-                [segment] if segment.ident.name == "char" => term!(self.uni_cx, TyCon::Char),
-                [segment] if segment.ident.name == "String" => term!(self.uni_cx, TyCon::Str),
-                [segment] if segment.ident.name == "any" => term!(self.uni_cx, TyCon::Any),
+                [segment] if segment.ident.name == "bool" => {
+                    self.record_primitive_span(segment.ident.span, "bool");
+                    term!(self.uni_cx, TyCon::Bool)
+                }
+                [segment] if segment.ident.name == "int" => {
+                    self.record_primitive_span(segment.ident.span, "int");
+                    term!(self.uni_cx, TyCon::Int)
+                }
+                [segment] if segment.ident.name == "float" => {
+                    self.record_primitive_span(segment.ident.span, "float");
+                    term!(self.uni_cx, TyCon::Float)
+                }
+                [segment] if segment.ident.name == "char" => {
+                    self.record_primitive_span(segment.ident.span, "char");
+                    term!(self.uni_cx, TyCon::Char)
+                }
+                [segment] if segment.ident.name == "String" => {
+                    self.record_primitive_span(segment.ident.span, "String");
+                    term!(self.uni_cx, TyCon::Str)
+                }
+                [segment] if segment.ident.name == "any" => {
+                    self.record_primitive_span(segment.ident.span, "any");
+                    term!(self.uni_cx, TyCon::Any)
+                }
                 _ => match self.resolve_path(path, Namespace::Type) {
                     Some(symbol) => {
                         self.record_path_reference(path, symbol);
@@ -1110,6 +1222,160 @@ impl TypeCheckContext {
         format!("<{}> {rendered}", names.join(", "))
     }
 
+    /// Renders a symbol the way a language server's hover should show
+    /// it, given `at` -- the byte offset hover was actually requested
+    /// at (from [`Self::symbol_at`]), needed to tell a symbol's own
+    /// declaration apart from a later reference to it. Richer than
+    /// [`Self::render_symbol_type`] in three ways:
+    ///
+    /// - A [`SymbolKind::Fn`] item is shown the way it's actually
+    ///   written in source (`fn name<T, U>(a: int, b: String) -> bool`),
+    ///   not as the bare, name-free `<T, U> Fn(int, String) -> bool`
+    ///   [`Self::render_symbol_type`] gives it. That bare form is still
+    ///   exactly right everywhere *else* a function type shows up -- a
+    ///   parameter, a variable, a return type that's itself a function,
+    ///   ... -- so this only special-cases the `fn` item itself, never
+    ///   anything merely *typed* as one.
+    /// - A [`SymbolKind::Param`] or [`SymbolKind::Local`] is prefixed
+    ///   with its own name, the way its own declaration reads --
+    ///   `a: int` for a parameter, `let n: int` for a `let` binding
+    ///   (the two are otherwise declared identically, so only the
+    ///   symbol kind tells them apart).
+    /// - A [`SymbolKind::TyAlias`] is shown by name (`Pair<T, U>`)
+    ///   rather than expanded to its underlying type (`(T, U)`) --
+    ///   `type Pair<T, U>` specifically when `at` lands on the alias's
+    ///   own declaration, matching how it's actually written there.
+    ///
+    /// Everything else falls back to [`Self::render_symbol_type`]
+    /// unchanged.
+    pub fn render_symbol_hover(&mut self, symbol: SymbolId, at: usize) -> String {
+        if matches!(self.symbols[symbol].kind, SymbolKind::Fn(_)) {
+            return self.render_fn_item_hover(symbol);
+        }
+        if matches!(self.symbols[symbol].kind, SymbolKind::Param) {
+            let name = self.symbol_display_name(symbol);
+            let ty = self.render_symbol_type(symbol);
+            return format!("{name}: {ty}");
+        }
+        if matches!(self.symbols[symbol].kind, SymbolKind::Local) {
+            let name = self.symbol_display_name(symbol);
+            let ty = self.render_symbol_type(symbol);
+            return format!("let {name}: {ty}");
+        }
+        if matches!(self.symbols[symbol].kind, SymbolKind::TyAlias(_)) {
+            let declared_at = self.symbols[symbol].declared_at;
+            let rendered = self.alias_name_with_generics(symbol);
+            return if declared_at.start <= at && at < declared_at.end {
+                format!("type {rendered}")
+            } else {
+                rendered
+            };
+        }
+        self.render_symbol_type(symbol)
+    }
+
+    /// A symbol's own bare name, with no type/generics attached --
+    /// `"_"` if its name is somehow missing from the interner (should
+    /// never happen, but a hover shouldn't panic over it).
+    fn symbol_display_name(&mut self, symbol: SymbolId) -> String {
+        let name = self.symbols[symbol].name;
+        self.names.name(name).cloned().unwrap_or_else(|| "_".to_owned())
+    }
+
+    /// A symbol's own name followed by its generic parameter list, if
+    /// it has any (`Pair<T, U>`, or just `Meters` for a non-generic
+    /// one) -- shared by [`Self::render_symbol_hover`]'s `TyAlias`
+    /// case for both the declaration (`type` prefix added by the
+    /// caller) and reference (used bare) renderings, since they only
+    /// differ by that prefix.
+    fn alias_name_with_generics(&mut self, symbol: SymbolId) -> String {
+        let name = self.symbol_display_name(symbol);
+        let generics = self.symbols[symbol].generics.clone();
+        if generics.is_empty() {
+            return name;
+        }
+        let names: Vec<String> = generics
+            .iter()
+            .map(|id| {
+                self.generic_names
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "<generic>".to_owned())
+            })
+            .collect();
+        format!("{name}<{}>", names.join(", "))
+    }
+
+    /// The `fn name<T, U>(a: int, b: String) -> bool` rendering
+    /// [`Self::render_symbol_hover`] uses for a [`SymbolKind::Fn`]
+    /// symbol.
+    fn render_fn_item_hover(&mut self, symbol: SymbolId) -> String {
+        let name = self.symbols[symbol].name;
+        let name = self
+            .names
+            .name(name)
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_owned());
+
+        let generics = self.symbols[symbol].generics.clone();
+        let generics_rendered = if generics.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<String> = generics
+                .iter()
+                .map(|id| {
+                    self.generic_names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| "<generic>".to_owned())
+                })
+                .collect();
+            format!("<{}>", names.join(", "))
+        };
+
+        let ty = self.symbols[symbol].ty;
+        let resolved = self.uni_cx.resolve(ty);
+        let Some(Term::App {
+            constructor: TyCon::Fn,
+            args,
+        }) = self.uni_cx.term(resolved).cloned()
+        else {
+            // Shouldn't happen for a well-formed `Fn` symbol, but a
+            // hover shouldn't panic over it -- fall back to the plain
+            // rendering instead.
+            return self.render_symbol_type(symbol);
+        };
+        let (inputs, output) = (args[0], args[1]);
+
+        let resolved_inputs = self.uni_cx.resolve(inputs);
+        let param_types: Vec<TermId> = match self.uni_cx.term(resolved_inputs).cloned() {
+            Some(Term::App {
+                constructor: TyCon::Tuple,
+                args,
+            }) => args,
+            _ => Vec::new(),
+        };
+        let param_names = self.symbols[symbol].param_names.clone();
+
+        let params: Vec<String> = param_types
+            .iter()
+            .enumerate()
+            .map(|(i, &ty)| {
+                let rendered = self.render_term(ty);
+                match param_names.get(i) {
+                    Some(name) => format!("{name}: {rendered}"),
+                    None => rendered,
+                }
+            })
+            .collect();
+
+        let output_rendered = self.render_term(output);
+        format!(
+            "fn {name}{generics_rendered}({}) -> {output_rendered}",
+            params.join(", ")
+        )
+    }
+
     /// Determines the type of an Expression node from the AST, possibly given
     /// additional information about what the type is expected to be.
     fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
@@ -1184,6 +1450,21 @@ impl TypeCheckContext {
         expected_span: Option<Span>,
     ) -> TermId {
         let actual = self.check_expr_kind(&expr.kind, expected);
+        // Literals never get a `Symbol` -- they map directly to a leaf
+        // `TyCon`, not through `declare`/`resolve_path` -- so
+        // `symbol_at` can't cover them; this is their `type_name_at`
+        // counterpart. See `ExprKind::Lit`'s own arm in
+        // `check_expr_kind` for the type each literal kind maps to.
+        if let ExprKind::Lit(lit) = &expr.kind {
+            let name = match lit.kind {
+                LitKind::Bool(_) => "bool",
+                LitKind::Char(_) => "char",
+                LitKind::Int(_) => "int",
+                LitKind::Float(_) => "float",
+                LitKind::Str(_) => "String",
+            };
+            self.record_primitive_span(expr.span, name);
+        }
         if let Some(expected) = expected {
             let generic_on_expected = self.generic_name_of(expected);
             let generic_on_actual = if generic_on_expected.is_none() {
@@ -1563,15 +1844,34 @@ impl TypeCheckContext {
                     // Not enough information to individually check types
                     // of arguments to expected types of parameters, so
                     // infer a Fn shape for the callee from how it's
-                    // actually called here instead. Binding a fresh
-                    // variable can never fail, so this unification is
-                    // infallible.
+                    // actually called here instead.
                     let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
                     let inputs_term = term!(self.uni_cx, TyCon::Tuple => arg_tys);
                     let ret_var = self.uni_cx.fresh_var();
                     let ret_term = term!(self.uni_cx, var ret_var);
                     let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
-                    let _ = self.uni_cx.unify_because(callee_ty, fn_term, callee.span);
+                    // Binding `callee_ty` (a fresh variable) to this
+                    // freshly-synthesized shape is *usually* infallible
+                    // -- but not for self-application (`x(x)`): `args`
+                    // was checked just above, before this unification,
+                    // and if the callee is one of its own arguments,
+                    // `fn_term` ends up structurally containing
+                    // `callee_ty`'s own variable. That's exactly the
+                    // cyclic-type case `unify`'s occurs check exists to
+                    // catch (`x`'s type would have to satisfy `?x = ?x
+                    // -> ?y`, an infinite type), so it has to be
+                    // checked here too, not assumed away.
+                    if let Err(UnifyError::OccursCheck(_)) =
+                        self.uni_cx.unify_because(callee_ty, fn_term, callee.span)
+                    {
+                        let expected_rendered = self.render_term(fn_term);
+                        let actual_rendered = self.render_term(callee_ty);
+                        self.diagnostic(Diagnostic::cyclic_type(
+                            callee.span,
+                            &expected_rendered,
+                            &actual_rendered,
+                        ));
+                    }
                     ret_term
                 } else {
                     // Callee's type is already known -- and it's
@@ -1789,7 +2089,7 @@ impl TypeCheckContext {
         });
 
         // Checks that the pattern
-        self.check_pat(&local.pat, expected);
+        self.check_pat(&local.pat, expected, PatDeclKind::Let);
     }
 
     /// Given two types, it will chose the type which is not the Never `!` type.
@@ -1800,26 +2100,27 @@ impl TypeCheckContext {
 
     /// Checks that a pattern's shape correctly fits a value of the
     /// expected type, and also determines what type each name inside
-    /// the pattern will end up with.
-    fn check_pat(&mut self, pat: &Pat, expected: TermId) -> TermId {
-        let actual = self.check_pat_kind(&pat.kind, expected);
+    /// the pattern will end up with. `decl_kind` says what kind of
+    /// symbol a name the pattern binds should become -- see
+    /// [`PatDeclKind`].
+    fn check_pat(&mut self, pat: &Pat, expected: TermId, decl_kind: PatDeclKind) -> TermId {
+        let actual = self.check_pat_kind(&pat.kind, expected, decl_kind);
         let _ = self.uni_cx.unify_because(actual, expected, pat.span);
         actual
     }
 
-    fn check_pat_kind(&mut self, kind: &PatKind, expected: TermId) -> TermId {
+    fn check_pat_kind(&mut self, kind: &PatKind, expected: TermId, decl_kind: PatDeclKind) -> TermId {
         match kind {
             // The Wildcard pattern `_` deliberately matches with anything.
             PatKind::Wild => expected,
             PatKind::Ident(ident, sub) => {
-                let symbol = self.declare(&ident.name, SymbolKind::Local);
-                self.record_symbol_span(ident.span, symbol);
+                let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
                 let _ = self
                     .uni_cx
                     .unify_because(self.symbols[symbol].ty, expected, ident.span);
 
                 if let Some(sub) = sub {
-                    self.check_pat(sub, expected);
+                    self.check_pat(sub, expected, decl_kind);
                 }
 
                 expected
@@ -1860,7 +2161,7 @@ impl TypeCheckContext {
                                     let var = self.uni_cx.fresh_var();
                                     term!(self.uni_cx, var var)
                                 });
-                            self.check_pat(pat, expected)
+                            self.check_pat(pat, expected, decl_kind)
                         })
                         .collect();
 
@@ -1907,14 +2208,16 @@ impl Visitor for Resolver<'_> {
         match &item.kind {
             ItemKind::Fn(f) => {
                 let scope = self.new_scope();
-                let fn_symbol = self.cx.declare(&f.ident.name, SymbolKind::Fn(scope));
-                self.cx.record_symbol_span(f.ident.span, fn_symbol);
+                let fn_symbol = self
+                    .cx
+                    .declare(&f.ident.name, f.ident.span, SymbolKind::Fn(scope));
 
                 let mut generics = Vec::new();
                 self.with_scope(scope, |this| {
                     for param in &f.generics.params {
-                        let (symbol, id) = this.cx.declare_generic_param(&param.ident.name);
-                        this.cx.record_symbol_span(param.ident.span, symbol);
+                        let (_, id) = this
+                            .cx
+                            .declare_generic_param(&param.ident.name, param.ident.span);
                         generics.push(id);
                     }
                     item.walk(this);
@@ -1924,48 +2227,50 @@ impl Visitor for Resolver<'_> {
             }
             ItemKind::TyAlias(alias) => {
                 let scope = self.new_scope();
-                let alias_symbol = self
-                    .cx
-                    .declare(&alias.ident.name, SymbolKind::TyAlias(scope));
-                self.cx.record_symbol_span(alias.ident.span, alias_symbol);
+                let alias_symbol = self.cx.declare(
+                    &alias.ident.name,
+                    alias.ident.span,
+                    SymbolKind::TyAlias(scope),
+                );
 
                 let mut generics = Vec::new();
                 self.with_scope(scope, |this| {
                     for param in &alias.generics.params {
-                        let (symbol, id) = this.cx.declare_generic_param(&param.ident.name);
-                        this.cx.record_symbol_span(param.ident.span, symbol);
+                        let (_, id) = this
+                            .cx
+                            .declare_generic_param(&param.ident.name, param.ident.span);
                         generics.push(id);
                     }
                 });
                 self.cx.symbols[alias_symbol].generics = generics;
             }
             ItemKind::Enum(ident, _generics, _def) => {
-                let symbol = self.cx.declare(&ident.name, SymbolKind::Enum);
-                self.cx.record_symbol_span(ident.span, symbol);
+                self.cx.declare(&ident.name, ident.span, SymbolKind::Enum);
             }
             ItemKind::Struct(ident, _generics, data) => {
-                let symbol = self.cx.declare(&ident.name, SymbolKind::Struct);
-                self.cx.record_symbol_span(ident.span, symbol);
+                let symbol = self
+                    .cx
+                    .declare(&ident.name, ident.span, SymbolKind::Struct);
                 if !matches!(data, VariantData::Struct(_)) {
                     let name = self.cx.names.id(&ident.name);
                     self.cx.insert_in_scope(name, symbol, Namespace::Value);
                 }
             }
             ItemKind::Trait(t) => {
-                let symbol = self.cx.declare(&t.ident.name, SymbolKind::Trait);
-                self.cx.record_symbol_span(t.ident.span, symbol);
+                self.cx
+                    .declare(&t.ident.name, t.ident.span, SymbolKind::Trait);
             }
             ItemKind::Mod(ident, ModKind::Unloaded) => {
                 // Empty for now. A future `ModuleLoader` fetches this
                 // mod's contents and resolves them into this same scope.
                 let scope = self.new_scope();
-                let symbol = self.cx.declare(&ident.name, SymbolKind::Mod(scope));
-                self.cx.record_symbol_span(ident.span, symbol);
+                self.cx
+                    .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
             }
             ItemKind::Mod(ident, ModKind::Loaded(_)) => {
                 let scope = self.new_scope();
-                let symbol = self.cx.declare(&ident.name, SymbolKind::Mod(scope));
-                self.cx.record_symbol_span(ident.span, symbol);
+                self.cx
+                    .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
                 self.with_scope(scope, |this| item.walk(this));
                 return;
             }
@@ -2038,6 +2343,8 @@ impl Visitor for SignatureLowerer<'_> {
                                 .iter()
                                 .map(|p| p.ty.as_ref().map(|ty| ty.span))
                                 .collect();
+                            this.cx.symbols[symbol].param_names =
+                                f.sig.inputs.iter().map(|p| pat_display_name(&p.pat)).collect();
                         }
                         item.walk(this);
                     });
@@ -2076,6 +2383,22 @@ impl Visitor for SignatureLowerer<'_> {
             }
             _ => {}
         }
+    }
+}
+
+/// The name to display for a parameter pattern in a `fn` item's hover
+/// rendering (see [`TypeCheckContext::render_symbol_hover`]) -- just
+/// the bound name for the common `PatKind::Ident` case (covering both
+/// `x` and `mut x`-style bindings, since [`PatKind::Ident`]'s own
+/// `Ident` is the binding regardless), `_` for a wildcard or anything
+/// else. Every parameter pattern the checker currently supports is one
+/// of these two shapes; falling back to `_` rather than panicking on a
+/// pattern shape added later (destructuring, etc.) keeps hover from
+/// being able to crash the server over it.
+fn pat_display_name(pat: &Pat) -> String {
+    match &pat.kind {
+        PatKind::Ident(ident, _) => ident.name.clone(),
+        _ => "_".to_owned(),
     }
 }
 
@@ -2170,18 +2493,28 @@ fn strongly_connected_components(
 
 /// Walks one `fn`'s body collecting every other member of its sibling
 /// group (including itself) that it references by bare name, for
-/// [`Checker::check_items`] to build a call graph from. Deliberately
-/// coarse: it matches on the referenced *name* alone, not on real
-/// scope-resolved identity, so a local binding that happens to shadow
-/// a sibling's name is (harmlessly) still counted as a reference to
-/// that sibling. This can only ever over-approximate the real call
-/// graph, never under-approximate it -- at worst grouping two
-/// functions into one strongly-connected component that didn't
-/// strictly need to be grouped, which is exactly the same shape of
-/// (safe, sound) conservatism the previous whole-flag approach had
-/// everywhere, not a new source of unsoundness.
+/// [`Checker::check_items`] to build a call graph from.
+///
+/// Matching on the referenced name alone, with no regard for whether
+/// it's actually shadowed by a closer binding, used to be considered a
+/// harmless over-approximation here -- it isn't. A local binding (a
+/// parameter, a `let`, a nested `fn` item) that happens to share a
+/// sibling's name isn't a reference to that sibling at all, and
+/// wrongly counting it as one fabricates a call-graph edge that
+/// shouldn't exist. If that also happens to close a real cycle
+/// elsewhere in the group, [`strongly_connected_components`] merges
+/// two (or more) functions that were never actually mutually
+/// recursive into one component, and they get checked and generalized
+/// *together* -- corrupting both signatures with each other's
+/// constraints, not just producing a merged-but-still-correct result.
+/// `shadowed` is what avoids that: every name locally bound within the
+/// body being walked, seeded with this function's own parameters
+/// before the walk starts and grown as each `let`/nested `fn` item is
+/// passed, so a name only shadows the code that actually comes *after*
+/// its own binding -- matching roo's own sequential scoping rules.
 struct CallGraphCollector<'a> {
     sibling_names: &'a HashMap<&'a str, SymbolId>,
+    shadowed: HashSet<String>,
     edges: Vec<SymbolId>,
 }
 
@@ -2189,11 +2522,61 @@ impl Visitor for CallGraphCollector<'_> {
     fn visit_expr(&mut self, expr: &Expr) {
         if let ExprKind::Path(None, path) = &expr.kind
             && let [segment] = path.segments.as_slice()
+            && !self.shadowed.contains(segment.ident.name.as_str())
             && let Some(&symbol) = self.sibling_names.get(segment.ident.name.as_str())
         {
             self.edges.push(symbol);
         }
         expr.walk(self);
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) {
+        // Walked *before* the new name is added below -- a binding
+        // only shadows the statements that come after it, never its
+        // own initializer (`let x = x + 1;` still means the original
+        // `x` on the right), so the old `shadowed` set has to still be
+        // in effect for this walk.
+        stmt.walk(self);
+        match &stmt.kind {
+            StmtKind::Let(local) => collect_pat_names(&local.pat, &mut self.shadowed),
+            StmtKind::Item(item) => {
+                if let ItemKind::Fn(f) = &item.kind {
+                    self.shadowed.insert(f.ident.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // A nested item's own body is a separate scope, checked -- and,
+    // where it's mutually recursive with its own siblings, call-graphed
+    // and generalized -- entirely on its own by `Checker::check_fn_body`'s
+    // recursive `check_items` call, not by this collector. Walking into
+    // it here would misattribute its inner references to *this*
+    // function's own edge list.
+    fn visit_item(&mut self, _item: &Item) {}
+}
+
+/// Collects every name `pat` binds into `names` -- used by
+/// [`CallGraphCollector`] to track local shadowing. Handles the pattern
+/// shapes [`TypeCheckContext::check_pat_kind`] currently supports
+/// ([`PatKind::Ident`], including its own nested sub-pattern, and
+/// [`PatKind::Tuple`]); anything else binds no names as far as this is
+/// concerned.
+fn collect_pat_names(pat: &Pat, names: &mut HashSet<String>) {
+    match &pat.kind {
+        PatKind::Ident(ident, sub) => {
+            names.insert(ident.name.clone());
+            if let Some(sub) = sub {
+                collect_pat_names(sub, names);
+            }
+        }
+        PatKind::Tuple(pats) => {
+            for pat in pats {
+                collect_pat_names(pat, names);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2259,8 +2642,18 @@ impl Checker<'_> {
                 unreachable!("fns only ever holds ItemKind::Fn items")
             };
             if let Some(body) = f.body.as_ref() {
+                // Seeded with this function's own parameters before the
+                // walk starts -- they shadow a same-named sibling for
+                // the *entire* body, not just from some point onward,
+                // unlike a `let` or a nested `fn` item (see
+                // `CallGraphCollector::visit_stmt`).
+                let mut shadowed = HashSet::new();
+                for param in &f.sig.inputs {
+                    collect_pat_names(&param.pat, &mut shadowed);
+                }
                 let mut collector = CallGraphCollector {
                     sibling_names: &sibling_names,
+                    shadowed,
                     edges: Vec::new(),
                 };
                 collector.visit_block(body);
@@ -2338,7 +2731,7 @@ impl Checker<'_> {
             // the pattern's shape fits input_ty, and declares a local
             // symbol for every name the pattern binds.
             for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
-                this.cx.check_pat(&param.pat, *input_ty);
+                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
             }
 
             // Type-check the body of the function, with the constraint
@@ -2970,6 +3363,30 @@ fn apply(f, x) {
     }
 
     #[test]
+    fn check_all_self_application_is_a_cyclic_type_error() {
+        // `x(x)` is the classic Hindley-Milner example the occurs
+        // check exists to reject: `x`'s own type would have to satisfy
+        // `?x = ?x -> ?y`, an infinite type. The "infer the callee's Fn
+        // shape from how it's called" fallback (the same mechanism the
+        // positive case above relies on) synthesizes that shape from
+        // `x`'s own already-checked argument type here, so unifying it
+        // against `x`'s own callee type is exactly this self-reference
+        // -- and has to actually report it, not silently drop it as
+        // the "binding a fresh variable is infallible" assumption used
+        // to.
+        let source = r#"
+fn cyclic(x) {
+    x(x)
+}
+"#;
+        let cx = check_all(source);
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].level, Level::Error);
+        assert_eq!(diagnostics[0].message, "cyclic type of infinite size");
+    }
+
+    #[test]
     fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
         let mut cx = resolve("fn foo() {}");
         let t = cx.check_expr(&expr("foo()"), None);
@@ -3105,7 +3522,7 @@ fn apply(f, x) {
     fn check_pat_ident_declares_a_local_symbol() {
         let mut cx = TypeCheckContext::new();
         let never_term = term!(cx.uni_cx, TyCon::Never);
-        cx.check_pat(&pat("x"), never_term);
+        cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
 
         assert!(lookup(&cx, cx.current_scope, Namespace::Value, "x"));
     }
@@ -3114,7 +3531,7 @@ fn apply(f, x) {
     fn check_pat_ident_binds_the_locals_type_to_expected() {
         let mut cx = TypeCheckContext::new();
         let never_term = term!(cx.uni_cx, TyCon::Never);
-        cx.check_pat(&pat("x"), never_term);
+        cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
 
         let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
             .expect("x should be declared");
@@ -3126,7 +3543,7 @@ fn apply(f, x) {
     fn check_pat_wild_matches_anything_and_binds_nothing() {
         let mut cx = TypeCheckContext::new();
         let never_term = term!(cx.uni_cx, TyCon::Never);
-        let t = cx.check_pat(&pat("_"), never_term);
+        let t = cx.check_pat(&pat("_"), never_term, PatDeclKind::Let);
         assert_eq!(t, never_term);
         assert!(cx.symbols.is_empty());
     }
@@ -3138,7 +3555,7 @@ fn apply(f, x) {
         let int_term = term!(cx.uni_cx, TyCon::Int);
         let expected = term!(cx.uni_cx, TyCon::Tuple => [never_term, int_term]);
 
-        cx.check_pat(&pat("(a, b)"), expected);
+        cx.check_pat(&pat("(a, b)"), expected, PatDeclKind::Let);
 
         let a = declared_symbol(&cx, cx.current_scope, Namespace::Value, "a")
             .expect("a should be declared");
@@ -3156,7 +3573,7 @@ fn apply(f, x) {
         let int_term = term!(cx.uni_cx, TyCon::Int);
         // `expected` isn't a 2-tuple, so each position gets its own
         // fresh var instead of panicking or forcing the wrong shape.
-        let t = cx.check_pat(&pat("(a, b)"), int_term);
+        let t = cx.check_pat(&pat("(a, b)"), int_term, PatDeclKind::Let);
         let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
         assert_eq!(con, TyCon::Tuple);
         assert_eq!(args.len(), 2);
@@ -3680,6 +4097,127 @@ fn use_it(p: Point) {}
     }
 
     #[test]
+    fn render_symbol_hover_a_fn_item_uses_source_declaration_syntax_with_param_names() {
+        let source = "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U { f(g(x)) }";
+        let mut cx = check_all(source);
+        let offset = source.find("compose").unwrap();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the fn's own name");
+        assert_eq!(
+            cx.render_symbol_hover(symbol, offset),
+            "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
+        );
+    }
+
+    #[test]
+    fn render_symbol_hover_a_parameter_is_prefixed_with_its_own_name() {
+        let source = "fn add_one(x: int) -> int { x }";
+        let mut cx = check_all(source);
+        let offset = source.find("x:").unwrap();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the parameter");
+        assert_eq!(cx.render_symbol_hover(symbol, offset), "x: int");
+    }
+
+    #[test]
+    fn render_symbol_hover_a_let_binding_is_prefixed_with_let_and_its_own_name() {
+        let source = r#"
+fn use_it() {
+    let n = 1;
+}
+"#;
+        let mut cx = check_all(source);
+        let offset = source.find("let n").unwrap() + "let ".len();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the let binding");
+        assert_eq!(cx.render_symbol_hover(symbol, offset), "let n: int");
+    }
+
+    #[test]
+    fn render_symbol_hover_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
+        // `apply`'s own hover gets the special `fn` declaration
+        // rendering, but `f` -- a *parameter* whose type merely
+        // happens to be a function -- should still show the ordinary
+        // `<T, U> Fn(T) -> U` syntax `render_symbol_type` always used,
+        // just with its own name prefixed.
+        let source = "fn apply<T, U>(f: Fn(T) -> U, x: T) -> U { f(x) }";
+        let mut cx = check_all(source);
+        let offset = source.find("f:").unwrap();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the parameter");
+        assert_eq!(cx.render_symbol_hover(symbol, offset), "f: Fn(T) -> U");
+    }
+
+    #[test]
+    fn render_symbol_hover_a_ty_alias_declaration_shows_the_type_keyword() {
+        let source = "type Pair<T, U> = (T, U);";
+        let mut cx = check_all(source);
+        let offset = source.find("Pair").unwrap();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the alias's own name");
+        assert_eq!(cx.render_symbol_hover(symbol, offset), "type Pair<T, U>");
+    }
+
+    #[test]
+    fn render_symbol_hover_a_ty_alias_reference_omits_the_type_keyword_and_the_expansion() {
+        let source = r#"
+type Pair<T, U> = (T, U);
+fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
+    (a, b)
+}
+"#;
+        let mut cx = check_all(source);
+        let offset = source.rfind("Pair").unwrap();
+        let symbol = cx.symbol_at(offset).expect("should resolve at the return-type reference");
+        assert_eq!(cx.render_symbol_hover(symbol, offset), "Pair<T, U>");
+    }
+
+    #[test]
+    fn type_name_at_finds_every_literal_kinds_own_type() {
+        let source = r#"
+fn use_it() {
+    let a = 1;
+    let b = 1.5;
+    let c = 'x';
+    let d = true;
+    let e = "hi";
+}
+"#;
+        let cx = check_all(source);
+        assert_eq!(cx.type_name_at(source.find('1').unwrap()), Some("int"));
+        assert_eq!(cx.type_name_at(source.find("1.5").unwrap()), Some("float"));
+        assert_eq!(cx.type_name_at(source.find("'x'").unwrap()), Some("char"));
+        assert_eq!(cx.type_name_at(source.find("true").unwrap()), Some("bool"));
+        assert_eq!(cx.type_name_at(source.find("\"hi\"").unwrap()), Some("String"));
+    }
+
+    #[test]
+    fn type_name_at_finds_a_primitive_name_in_an_ordinary_type_annotation() {
+        let source = "fn add_one(x: int) -> int { x }";
+        let cx = check_all(source);
+        let offset = source.find("int").unwrap();
+        assert_eq!(cx.type_name_at(offset), Some("int"));
+    }
+
+    #[test]
+    fn type_name_at_finds_a_primitive_generic_argument_in_a_turbofish() {
+        let source = r#"
+fn identity<T>(x: T) -> T {
+    x
+}
+fn use_it() {
+    identity::<int>(1);
+}
+"#;
+        let cx = check_all(source);
+        let offset = source.find("::<int>").unwrap() + "::<".len();
+        assert_eq!(cx.type_name_at(offset), Some("int"));
+    }
+
+    #[test]
+    fn type_name_at_is_none_away_from_any_literal_or_primitive_name() {
+        let source = "fn add_one(x: int) -> int { x }";
+        let cx = check_all(source);
+        let offset = source.find("add_one").unwrap();
+        assert_eq!(cx.type_name_at(offset), None);
+    }
+
+    #[test]
     fn check_all_call_keeps_checking_later_arguments_after_an_earlier_one_mismatches() {
         let source = r#"
 fn add(a: int, b: int) {}
@@ -3886,6 +4424,139 @@ fn use_it() {
             .expect("caller should resolve");
         assert_eq!(cx.symbols[helper].generics.len(), 1);
         assert_eq!(cx.symbols[caller].generics.len(), 1);
+    }
+
+    #[test]
+    fn check_all_a_parameter_shadowing_a_siblings_name_is_not_treated_as_a_call_to_it() {
+        // `apply`'s own parameter is named `f`, which happens to
+        // collide with the *unrelated* top-level `fn f` declared
+        // below it -- `apply`'s own body never actually calls that
+        // `fn f` at all, it calls its own parameter. Before
+        // `CallGraphCollector` tracked shadowing, it matched purely by
+        // name and wrongly recorded an edge `apply -> f`; combined
+        // with `f`'s real call into `apply`, that fabricated a cycle,
+        // merging the two into one strongly-connected component and
+        // corrupting both signatures (`apply` came out as
+        // `Fn(T, T) -> U` instead of `Fn(Fn(T) -> U, T) -> U`, and the
+        // genuine self-application cycle inside `f`'s own body got
+        // misreported on `apply`'s harmless `f(x)` line instead).
+        let source = r#"
+fn apply(f, x) {
+    f(x)
+}
+fn f(x) {
+    apply(x, x)
+}
+"#;
+        let mut cx = check_all(source);
+
+        let apply = cx
+            .resolve_path(&path(&["apply"]), Namespace::Value)
+            .expect("apply should resolve");
+        assert_eq!(
+            cx.render_symbol_type(apply),
+            "<T, U> Fn(Fn(T) -> U, T) -> U"
+        );
+
+        // `f`'s own body (`apply(x, x)`) really is self-application --
+        // `x` gets passed as both `apply`'s `f` argument and its `x`
+        // argument, so `x`'s type would have to satisfy `?x = ?x ->
+        // ?y`. That's still a genuine cyclic-type error, and it
+        // belongs on this call, not on `apply`'s own declaration.
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "cyclic type of infinite size");
+        let call_span = source.rfind("apply(x, x)").unwrap();
+        assert!(
+            diagnostics[0].primary_span.start >= call_span,
+            "expected the diagnostic on f's own `apply(x, x)` call, not apply's declaration: {:#?}",
+            diagnostics[0]
+        );
+    }
+
+    #[test]
+    fn check_all_a_let_binding_shadowing_a_siblings_name_is_not_treated_as_a_call_to_it() {
+        // The same bug as the parameter case above, but the shadowing
+        // name comes from a `let` partway through `apply`'s body
+        // instead of one of its parameters: `let f = g;` aliases
+        // `apply`'s own `g` parameter to the name `f`, which happens
+        // to collide with the unrelated top-level `fn f`. Structurally
+        // identical to the parameter version otherwise (`g`/`x` are
+        // different parameters, so calling the alias `f(x)` is
+        // ordinary higher-order use, not self-application) -- isolates
+        // the `CallGraphCollector` edge fix specifically, since a
+        // version of this using a self-applying alias couldn't tell a
+        // regression here apart from the (separately, already fixed)
+        // self-application occurs-check case.
+        let source = r#"
+fn apply(g, x) {
+    let f = g;
+    f(x)
+}
+fn f(x) {
+    apply(x, x)
+}
+"#;
+        let mut cx = check_all(source);
+
+        let apply = cx
+            .resolve_path(&path(&["apply"]), Namespace::Value)
+            .expect("apply should resolve");
+        assert_eq!(
+            cx.render_symbol_type(apply),
+            "<T, U> Fn(Fn(T) -> U, T) -> U"
+        );
+
+        let diagnostics = cx.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "cyclic type of infinite size");
+        let call_span = source.rfind("apply(x, x)").unwrap();
+        assert!(
+            diagnostics[0].primary_span.start >= call_span,
+            "expected the diagnostic on f's own `apply(x, x)` call, not apply's declaration: {:#?}",
+            diagnostics[0]
+        );
+    }
+
+    #[test]
+    fn call_graph_collector_does_not_descend_into_a_nested_items_own_body() {
+        // A nested `fn` item's own body is checked (and call-graphed)
+        // entirely on its own, as its own sibling group, by
+        // `Checker::check_fn_body`'s recursive `check_items` call --
+        // not by the *enclosing* function's own `CallGraphCollector`
+        // walk. `sibling` here stands in for some member of the
+        // *enclosing* function's own sibling group; `inner`'s call to
+        // it should never show up in the edges collected for the
+        // function whose body `inner` merely happens to be hoisted
+        // into, since that's an edge for `inner`'s own (separate)
+        // group to account for, not this one.
+        //
+        // Exercised directly against `CallGraphCollector` rather than
+        // through `check_all`'s full pipeline: whether a nested item's
+        // own reference gets attributed to its enclosing function is
+        // independent of, and doesn't need, the full checking/
+        // generalization machinery that would otherwise be exercised
+        // incidentally (and fragilely) by a bigger end-to-end example.
+        let block = block("{ fn inner() { sibling() } }");
+
+        let mut cx = TypeCheckContext::new();
+        let scope = cx.current_scope;
+        let sibling_span = Span { start: 0, end: 0 };
+        let sibling = cx.declare("sibling", sibling_span, SymbolKind::Fn(scope));
+        let sibling_names: HashMap<&str, SymbolId> = [("sibling", sibling)].into_iter().collect();
+
+        let mut collector = CallGraphCollector {
+            sibling_names: &sibling_names,
+            shadowed: HashSet::new(),
+            edges: Vec::new(),
+        };
+        collector.visit_block(&block);
+
+        assert!(
+            collector.edges.is_empty(),
+            "a nested item's own call shouldn't be attributed to its enclosing fn: {:?}",
+            collector.edges
+        );
     }
 
     #[test]

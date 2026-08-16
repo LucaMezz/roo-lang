@@ -234,8 +234,8 @@ fn check(text: &str, uri: &Uri) -> Vec<LspDiagnostic> {
 /// Lexes, parses, and checks `text`, then reports the type of whichever
 /// symbol's name `position` lands on, if any -- `None` covers both "the
 /// file doesn't even parse" and "there's no symbol written here"
-/// (whitespace, punctuation, a literal, ...) alike, since a client
-/// treats a missing hover result the same way in either case.
+/// (whitespace, punctuation, ...) alike, since a client treats a
+/// missing hover result the same way in either case.
 fn hover_at(text: &str, position: Position) -> Option<Hover> {
     let tokens = lexer::tokenize_all(text).ok()?;
     let items = parser::module().parse(parser::input(tokens)).into_result().ok()?;
@@ -243,8 +243,15 @@ fn hover_at(text: &str, position: Position) -> Option<Hover> {
 
     let index = LineIndex::new(text);
     let offset = index.offset(text, position);
-    let symbol = cx.symbol_at(offset)?;
-    let ty = cx.render_symbol_type(symbol);
+
+    // A literal (`1`, `"hi"`, ...) and a bare primitive type name
+    // (`int`, `float`, ...) never get a `Symbol` at all, so
+    // `symbol_at` can't find them -- `type_name_at` is their
+    // counterpart, covering exactly the two cases `symbol_at` can't.
+    let ty = match cx.symbol_at(offset) {
+        Some(symbol) => cx.render_symbol_hover(symbol, offset),
+        None => cx.type_name_at(offset)?.to_owned(),
+    };
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
