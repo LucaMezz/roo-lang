@@ -20,7 +20,7 @@ use lsp_types::{
     PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, Uri,
 };
-use typecheck::{CheckedProgram, Diagnostic as RooDiagnostic, Level};
+use typecheck::{CheckedProgram, Diagnostic as RooDiagnostic, Level, Locale};
 
 use crate::line_index::LineIndex;
 
@@ -184,7 +184,7 @@ fn check(text: &str, uri: &Uri) -> Vec<LspDiagnostic> {
         return Vec::new();
     };
 
-    cx.diagnostics()
+    cx.diagnostics(Locale::EnUs)
         .iter()
         .map(|d| roo_diagnostic(&index, text, uri, d))
         .collect()

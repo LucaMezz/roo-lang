@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use ariadne::{Color, Fmt, Label, Report, ReportKind, sources};
 use ast::{Item, ItemKind, ModKind};
 use chumsky::Parser;
-use typecheck::{CheckedProgram, Diagnostic, Level};
+use typecheck::{CheckedProgram, Diagnostic, Level, Locale};
 
 type SourceId = String;
 
@@ -62,14 +62,14 @@ fn main() -> ExitCode {
         print_item(&frozen, item, 1);
     }
 
-    let diagnostics = frozen.diagnostics();
+    let diagnostics = frozen.diagnostics(Locale::EnUs);
     println!();
     if diagnostics.is_empty() {
         println!("no diagnostics -- `{path}` type checks cleanly");
         ExitCode::SUCCESS
     } else {
         println!("{} diagnostic(s):\n", diagnostics.len());
-        for diagnostic in diagnostics {
+        for diagnostic in &diagnostics {
             report_diagnostic(&path, diagnostic).eprint(&mut cache).ok();
         }
         ExitCode::FAILURE

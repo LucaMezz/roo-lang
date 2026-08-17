@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::ops::Range;
 
 use ast::{Pat, PatKind, Span};
@@ -33,6 +34,7 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
     format!("<{}>", names.join(", "))
 }
 
+#[cfg(test)]
 pub(crate) struct Renderer<'a> {
     uni_cx: &'a mut UnificationContext<TyCon, Span>,
     symbols: &'a SlotMap<SymbolId, Symbol>,
@@ -41,6 +43,7 @@ pub(crate) struct Renderer<'a> {
 }
 
 impl TypeCheckContext {
+    #[cfg(test)]
     pub(crate) fn renderer(&mut self) -> Renderer<'_> {
         Renderer {
             uni_cx: &mut self.uni_cx,
@@ -48,6 +51,16 @@ impl TypeCheckContext {
             names: &self.names,
             generic_names: &self.generic_names,
         }
+    }
+
+    pub(crate) fn resolved(&mut self, term: TermId) -> Type {
+        resolve_type(
+            &mut self.uni_cx,
+            &self.symbols,
+            &self.names,
+            &self.generic_names,
+            term,
+        )
     }
 
     #[cfg(test)]
@@ -61,6 +74,7 @@ impl TypeCheckContext {
     }
 }
 
+#[cfg(test)]
 impl Renderer<'_> {
     pub(crate) fn render_term(&mut self, term: TermId) -> String {
         let mut buf = String::new();
@@ -346,6 +360,12 @@ impl Type {
                 format!("Fn({}) -> {}", params.join(", "), output.render())
             }
         }
+    }
+}
+
+impl diagnostics::ToArgValue for Type {
+    fn to_arg_value(&self) -> diagnostics::ArgValue {
+        diagnostics::ArgValue::Text(self.render())
     }
 }
 

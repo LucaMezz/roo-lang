@@ -1859,11 +1859,9 @@ fn check_all_frozen(source: &str) -> CheckedProgram {
 fn freeze_diagnostics_survive_the_freeze_unchanged() {
     let source = "fn use_it(g: int) { g(1); }";
     let frozen = check_all_frozen(source);
-    assert_eq!(frozen.diagnostics().len(), 1, "{:#?}", frozen.diagnostics());
-    assert_eq!(
-        frozen.diagnostics()[0].message(),
-        "expected a function, found `int`"
-    );
+    let diagnostics = frozen.diagnostics(Locale::EnUs);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected a function, found `int`");
 }
 
 #[test]

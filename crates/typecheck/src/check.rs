@@ -5,12 +5,17 @@ use ast::{
     Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, Pat, PatKind, Span,
     Stmt, StmtKind,
 };
+use diagnostics::Related;
 use unify::{Term, UnifyError, term};
 
 use crate::call_graph::{CallGraphCollector, collect_pat_names, strongly_connected_components};
+use crate::errors::{
+    ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
+    expected_due_to, generic_note, provenance,
+};
+use crate::render::Type;
 use crate::{
-    Diagnostic, Namespace, PatDeclKind, ScopeId, SymbolId, SymbolKind, TermId, TyCon,
-    TypeCheckContext,
+    Namespace, PatDeclKind, ScopeId, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext,
 };
 
 impl TypeCheckContext {
@@ -39,20 +44,19 @@ impl TypeCheckContext {
         }
     }
 
-    fn with_first_provenance_note(
+    fn first_provenance(
         &mut self,
-        diagnostic: Diagnostic,
-        candidates: &[(TermId, String)],
-    ) -> Diagnostic {
-        for (term, label) in candidates {
-            let Some(Term::Var(v)) = self.uni_cx.term(*term).cloned() else {
+        candidates: &[(TermId, &'static str, &Type)],
+    ) -> Option<Related> {
+        for &(term, side, kind) in candidates {
+            let Some(Term::Var(v)) = self.uni_cx.term(term).cloned() else {
                 continue;
             };
             if let Some(&span) = self.uni_cx.provenance(v) {
-                return diagnostic.with_related(span, format!("{label} was inferred here"));
+                return Some(provenance(span, side, kind));
             }
         }
-        diagnostic
+        None
     }
 
     fn check_expr_expecting(
@@ -81,69 +85,44 @@ impl TypeCheckContext {
             };
             let reason = expected_span.unwrap_or(expr.span);
             if let Err(err) = self.uni_cx.unify_because(actual, expected, reason) {
-                let expected_rendered = self.renderer().render_term(expected);
-                let actual_rendered = self.renderer().render_term(actual);
+                let expected_ty = self.resolved(expected);
+                let found_ty = self.resolved(actual);
                 match err {
                     UnifyError::OccursCheck(_) => {
-                        self.diagnostics.push(Diagnostic::cyclic_type(
-                            expr.span,
-                            &expected_rendered,
-                            &actual_rendered,
-                        ));
+                        self.diagnostics
+                            .push(CyclicType::new(expr.span, expected_ty, found_ty));
                     }
                     UnifyError::ConstructorMismatch { t1, t2, .. }
                     | UnifyError::ArityMismatch { t1, t2, .. } => {
-                        let lead = "expected `";
-                        let mid = "`, found `";
-                        let tail = "`";
-                        let (expected_highlighted, expected_range) =
-                            self.renderer().render_term_highlighting(expected, t2);
-                        let (actual_highlighted, actual_range) =
-                            self.renderer().render_term_highlighting(actual, t1);
-                        let mut diagnostic = Diagnostic::error(
-                            expr.span,
-                            format!("{lead}{expected_highlighted}{mid}{actual_highlighted}{tail}"),
-                        );
-                        if let Some(range) = expected_range {
-                            let offset = lead.len();
-                            diagnostic =
-                                diagnostic.with_emphasis(offset + range.start..offset + range.end);
-                        }
-                        if let Some(range) = actual_range {
-                            let offset = lead.len() + expected_highlighted.len() + mid.len();
-                            diagnostic =
-                                diagnostic.with_emphasis(offset + range.start..offset + range.end);
-                        }
-                        if let Some(name) = generic_on_expected {
-                            diagnostic = diagnostic.with_note(format!(
-                                "`{name}` is generic here and must work for every type, not just `{actual_rendered}`"
-                            ));
-                        } else if let Some(name) = generic_on_actual {
-                            diagnostic = diagnostic.with_note(format!(
-                                "`{name}` is generic here and must work for every type, not just `{expected_rendered}`"
-                            ));
-                        }
-                        let diagnostic = match expected_span {
-                            Some(span) => diagnostic.with_related(span, "expected due to this"),
-                            None => diagnostic,
-                        };
-                        let t2_rendered = self.renderer().render_term(t2);
-                        let t1_rendered = self.renderer().render_term(t1);
-                        let diagnostic = self.with_first_provenance_note(
-                            diagnostic,
-                            &[
-                                (t2, format!("expected `{t2_rendered}`")),
-                                (expected, format!("expected `{expected_rendered}`")),
-                            ],
-                        );
-                        let diagnostic = self.with_first_provenance_note(
-                            diagnostic,
-                            &[
-                                (t1, format!("found `{t1_rendered}`")),
-                                (actual, format!("found `{actual_rendered}`")),
-                            ],
-                        );
-                        self.diagnostics.push(diagnostic);
+                        let expected_highlight = self.resolved(t2);
+                        let found_highlight = self.resolved(t1);
+
+                        let diagnostic_generic_note = generic_on_expected
+                            .map(|name| generic_note(name, &found_ty))
+                            .or_else(|| {
+                                generic_on_actual.map(|name| generic_note(name, &expected_ty))
+                            });
+
+                        let expected_provenance = self.first_provenance(&[
+                            (t2, "expected", &expected_highlight),
+                            (expected, "expected", &expected_ty),
+                        ]);
+                        let found_provenance = self.first_provenance(&[
+                            (t1, "found", &found_highlight),
+                            (actual, "found", &found_ty),
+                        ]);
+
+                        self.diagnostics.push(TypeMismatch {
+                            span: expr.span,
+                            expected: expected_ty,
+                            found: found_ty,
+                            expected_highlight,
+                            found_highlight,
+                            expected_due_to: expected_span.map(expected_due_to),
+                            generic_note: diagnostic_generic_note,
+                            expected_provenance,
+                            found_provenance,
+                        });
                     }
                 }
                 return term!(self.uni_cx, TyCon::Err);
@@ -186,61 +165,40 @@ impl TypeCheckContext {
                 };
 
                 if let Err(err) = self.uni_cx.unify_because(body_ty, els_ty, body_span) {
-                    let body_rendered = self.renderer().render_term(body_ty);
-                    let els_rendered = self.renderer().render_term(els_ty);
+                    let body_type = self.resolved(body_ty);
+                    let els_type = self.resolved(els_ty);
                     match err {
                         UnifyError::OccursCheck(_) => {
-                            self.diagnostics.push(Diagnostic::cyclic_type(
-                                els_span,
-                                &body_rendered,
-                                &els_rendered,
-                            ));
+                            self.diagnostics
+                                .push(CyclicType::new(els_span, body_type, els_type));
                         }
                         UnifyError::ConstructorMismatch { t1, t2, .. }
                         | UnifyError::ArityMismatch { t1, t2, .. } => {
-                            let lead = "expected `";
-                            let mid = "`, found `";
-                            let tail = "`";
-                            let (body_highlighted, body_range) =
-                                self.renderer().render_term_highlighting(body_ty, t1);
-                            let (els_highlighted, els_range) =
-                                self.renderer().render_term_highlighting(els_ty, t2);
-                            let mut diagnostic = Diagnostic::error(
-                                els_span,
-                                format!("{lead}{body_highlighted}{mid}{els_highlighted}{tail}"),
-                            );
-                            if let Some(range) = body_range {
-                                let offset = lead.len();
-                                diagnostic = diagnostic
-                                    .with_emphasis(offset + range.start..offset + range.end);
-                            }
-                            if let Some(range) = els_range {
-                                let offset = lead.len() + body_highlighted.len() + mid.len();
-                                diagnostic = diagnostic
-                                    .with_emphasis(offset + range.start..offset + range.end);
-                            }
-                            let diagnostic = if els.is_some() {
-                                diagnostic.with_related(body_span, "expected because of this")
-                            } else {
-                                diagnostic
-                            };
-                            let t1_rendered = self.renderer().render_term(t1);
-                            let t2_rendered = self.renderer().render_term(t2);
-                            let diagnostic = self.with_first_provenance_note(
-                                diagnostic,
-                                &[
-                                    (t1, format!("expected `{t1_rendered}`")),
-                                    (body_ty, format!("expected `{body_rendered}`")),
-                                ],
-                            );
-                            let diagnostic = self.with_first_provenance_note(
-                                diagnostic,
-                                &[
-                                    (t2, format!("found `{t2_rendered}`")),
-                                    (els_ty, format!("found `{els_rendered}`")),
-                                ],
-                            );
-                            self.diagnostics.push(diagnostic);
+                            let expected_highlight = self.resolved(t1);
+                            let found_highlight = self.resolved(t2);
+
+                            let expected_provenance = self.first_provenance(&[
+                                (t1, "expected", &expected_highlight),
+                                (body_ty, "expected", &body_type),
+                            ]);
+                            let found_provenance = self.first_provenance(&[
+                                (t2, "found", &found_highlight),
+                                (els_ty, "found", &els_type),
+                            ]);
+
+                            self.diagnostics.push(TypeMismatch {
+                                span: els_span,
+                                expected: body_type,
+                                found: els_type,
+                                expected_highlight,
+                                found_highlight,
+                                expected_due_to: els
+                                    .is_some()
+                                    .then(|| expected_because_of(body_span)),
+                                generic_note: None,
+                                expected_provenance,
+                                found_provenance,
+                            });
                         }
                     }
                 }
@@ -329,12 +287,6 @@ impl TypeCheckContext {
                     let expected = input_tys.len();
                     let actual = args.len();
                     if expected != actual {
-                        let message = format!(
-                            "this function takes {expected} argument{} but {actual} argument{} {} supplied",
-                            if expected == 1 { "" } else { "s" },
-                            if actual == 1 { "" } else { "s" },
-                            if actual == 1 { "was" } else { "were" },
-                        );
                         let span = if actual < expected {
                             let end = args
                                 .last()
@@ -354,7 +306,11 @@ impl TypeCheckContext {
                                     .end,
                             }
                         };
-                        self.diagnostics.push(Diagnostic::error(span, message));
+                        self.diagnostics.push(ArgumentCountMismatch {
+                            span,
+                            expected,
+                            found: actual,
+                        });
                     }
 
                     for (i, arg) in args.iter().enumerate() {
@@ -373,21 +329,18 @@ impl TypeCheckContext {
                     if let Err(UnifyError::OccursCheck(_)) =
                         self.uni_cx.unify_because(callee_ty, fn_term, callee.span)
                     {
-                        let expected_rendered = self.renderer().render_term(fn_term);
-                        let actual_rendered = self.renderer().render_term(callee_ty);
-                        self.diagnostics.push(Diagnostic::cyclic_type(
-                            callee.span,
-                            &expected_rendered,
-                            &actual_rendered,
-                        ));
+                        let expected_ty = self.resolved(fn_term);
+                        let found_ty = self.resolved(callee_ty);
+                        self.diagnostics
+                            .push(CyclicType::new(callee.span, expected_ty, found_ty));
                     }
                     ret_term
                 } else {
-                    let found = self.renderer().render_term(callee_ty);
-                    self.diagnostics.push(Diagnostic::error(
-                        callee.span,
-                        format!("expected a function, found `{found}`"),
-                    ));
+                    let found = self.resolved(callee_ty);
+                    self.diagnostics.push(NotCallable {
+                        span: callee.span,
+                        found,
+                    });
 
                     for arg in args {
                         self.check_expr(arg, None);

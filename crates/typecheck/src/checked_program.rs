@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use ast::{Item, Span};
+use diagnostics::Diagnostic;
 
+use crate::errors::{Locale, TypeCheckDiagnostic};
 use crate::position_index::PositionIndex;
 use crate::render::{Type, resolve_type};
-use crate::{Diagnostic, FnSymbol, SymbolId, SymbolKind, TypeCheckContext};
+use crate::{FnSymbol, SymbolId, SymbolKind, TypeCheckContext};
 
 impl TypeCheckContext {
     fn freeze(mut self) -> CheckedProgram {
@@ -83,7 +85,7 @@ enum FrozenSymbolKind {
 }
 
 pub struct CheckedProgram {
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: Vec<TypeCheckDiagnostic>,
     positions: PositionIndex,
     symbols: HashMap<SymbolId, FrozenSymbol>,
 }
@@ -97,8 +99,9 @@ impl CheckedProgram {
         cx.freeze()
     }
 
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
+    pub fn diagnostics(&self, locale: Locale) -> Vec<Diagnostic> {
+        let catalog = crate::errors::catalog(locale);
+        self.diagnostics.iter().map(|d| d.render(catalog)).collect()
     }
 
     pub fn symbol_at(&self, offset: usize) -> Option<SymbolId> {

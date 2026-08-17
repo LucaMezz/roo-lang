@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use ast::{GenericArg, Path, Span};
 use unify::{Term, TermId, VarId, term};
 
-use crate::{Diagnostic, GenericId, SymbolId, TyCon, TypeCheckContext};
+use crate::errors::GenericArgumentCountMismatch;
+use crate::{GenericId, SymbolId, TyCon, TypeCheckContext};
 
 impl TypeCheckContext {
     fn free_vars(&mut self, term: TermId, out: &mut Vec<VarId>) {
@@ -135,12 +136,11 @@ impl TypeCheckContext {
                 let max = self.symbols[symbol].generics.len();
                 let actual = arg_tys.len();
                 if actual != max {
-                    let message = format!(
-                        "expected {max} generic argument{}, found {actual}",
-                        if max == 1 { "" } else { "s" },
-                    );
-                    self.diagnostics
-                        .push(Diagnostic::error(generic_args.span, message));
+                    self.diagnostics.push(GenericArgumentCountMismatch {
+                        span: generic_args.span,
+                        expected: max,
+                        found: actual,
+                    });
                 }
 
                 self.instantiate_with(symbol, &arg_tys[..actual.min(max)])

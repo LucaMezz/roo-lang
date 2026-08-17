@@ -8,19 +8,20 @@ use unify::{TermId, UnificationContext, term};
 mod call_graph;
 mod check;
 mod checked_program;
-mod diagnostic;
+mod errors;
 mod generic_names;
 mod polymorphism;
 mod position_index;
 mod render;
 
 use check::Checker;
-use diagnostic::Diagnostics;
+use errors::Diagnostics;
 use generic_names::GenericNames;
 use position_index::PositionIndex;
 
 pub use checked_program::CheckedProgram;
-pub use diagnostic::{Diagnostic, Level};
+pub use diagnostics::{Diagnostic, Level};
+pub use errors::Locale;
 
 #[derive(Debug, Clone, PartialEq)]
 enum TyCon {
@@ -218,8 +219,13 @@ impl TypeCheckContext {
     }
 
     #[cfg(test)]
-    pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
-        self.diagnostics.as_slice()
+    pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
+        let catalog = errors::catalog(errors::Locale::EnUs);
+        self.diagnostics
+            .as_slice()
+            .iter()
+            .map(|d| d.render(catalog))
+            .collect()
     }
 
     fn record_path_reference(&mut self, path: &Path, symbol: SymbolId) {
