@@ -12,7 +12,7 @@ mod errors;
 mod generic_names;
 mod polymorphism;
 mod position_index;
-mod render;
+mod types;
 
 use check::Checker;
 use errors::Diagnostics;
@@ -261,7 +261,7 @@ impl TypeCheckContext {
     fn check(&mut self, items: &[Box<Item>]) {
         let mut checker = Checker::new(self);
         let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
-        checker.check_items(&items);
+        checker.check_functions(&items);
     }
 
     fn resolve_path(&mut self, path: &Path, namespace: Namespace) -> Option<SymbolId> {
@@ -603,7 +603,7 @@ impl Visitor for SignatureLowerer<'_> {
                                     .sig
                                     .inputs
                                     .iter()
-                                    .map(|p| render::pat_display_name(&p.pat))
+                                    .map(|p| types::pat_display_name(&p.pat))
                                     .collect();
                             }
                         }

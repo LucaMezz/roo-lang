@@ -13,7 +13,7 @@ use crate::errors::{
     ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
     expected_due_to, generic_note, provenance,
 };
-use crate::render::Type;
+use crate::types::Type;
 use crate::{
     Namespace, PatDeclKind, ScopeId, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext,
 };
@@ -551,7 +551,41 @@ impl<'a> Checker<'a> {
         self.cx.current_scope = parent;
     }
 
-    pub(crate) fn check_items(&mut self, items: &[&Item]) {
+    /// Performs type inference and type checking on the given function
+    /// items in a certain scope.
+    ///
+    /// Generalisation also works in the scenario where functions may
+    /// be recursive or mutually recursive with other functions.
+    /// This is achieved using call-graph SCC analysis, which
+    /// performs generalisation on each strongly connected component
+    /// of the call graph at the same time. For example, consider
+    /// the scenario
+    /// ```ignore
+    /// fn first(x) {
+    ///     second(x)
+    /// }
+    ///
+    /// fn second(x) {
+    ///     first(x)
+    /// }
+    /// ```
+    /// In this case, the functions `first` and `second` make up a
+    /// single strongly connected component within the call-graph.
+    /// Hence, we perform inference across both functions before
+    /// making an attempt to generalise them. Any inference variables
+    /// `?a` that are still free then cause a new generic parameter
+    /// to be introduced. So the signatures would become:
+    /// ```ignore
+    /// fn first<T>(x: T) -> T
+    /// ```
+    /// and
+    /// ```ignore
+    /// fn second<T>(x: T) -> T
+    /// ```
+    pub(crate) fn check_functions(&mut self, items: &[&Item]) {
+        // Checks that all the passed items are indeed functions,
+        // since this function only is concerned with functions,
+        // and collects their symbols.
         let mut fns: Vec<(SymbolId, &Item)> = Vec::new();
         for &item in items {
             if let ItemKind::Fn(f) = &item.kind {
@@ -568,6 +602,8 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        // Just constructs a mapping from function name to
+        // function symbol.
         let sibling_names: HashMap<&str, SymbolId> = fns
             .iter()
             .map(|&(symbol, item)| {
@@ -578,17 +614,28 @@ impl<'a> Checker<'a> {
             })
             .collect();
 
+        // Construct the call-graph on which the connected component
+        // analsyis will be performed on.
         let nodes: Vec<SymbolId> = fns.iter().map(|&(symbol, _)| symbol).collect();
         let mut edges: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+
         for &(symbol, item) in &fns {
             let ItemKind::Fn(f) = &item.kind else {
                 unreachable!("fns only ever holds ItemKind::Fn items")
             };
             if let Some(body) = f.body.as_ref() {
+                // Build a set of the names of all parameters that are the
+                // same as the names of sibling functions. This prevents
+                // making false edges within the call graph.
                 let mut shadowed = HashSet::new();
                 for param in &f.sig.inputs {
                     collect_pat_names(&param.pat, &mut shadowed);
                 }
+
+                // Construct the collector for this function, which will
+                // explore the body of the function and find any calls made
+                // to itself or any other sibling functions, inserting
+                // edges to the call-graph for each.
                 let mut collector = CallGraphCollector {
                     sibling_names: &sibling_names,
                     shadowed,
@@ -601,12 +648,21 @@ impl<'a> Checker<'a> {
 
         let items_by_symbol: HashMap<SymbolId, &Item> = fns.into_iter().collect();
 
+        // Performs generalisation of each strongly connected component
+        // within each constructed call-graph. Performs type inference
+        // and type checking on each function individually before
+        // attempting to generalise.
         for component in strongly_connected_components(&nodes, &edges) {
             for &symbol in &component {
                 if let Some(&item) = items_by_symbol.get(&symbol) {
                     self.check_fn_body(symbol, item);
                 }
             }
+            // Have to check every function in the component before
+            // generalising, since the function's bodies mutually constrain
+            // each other's types through their calls to one another.
+            // You can't know which variables are free until every one
+            // of the constraints have been discovered.
             self.cx.generalize_group(&component);
         }
     }
@@ -645,9 +701,26 @@ impl<'a> Checker<'a> {
             _ => return,
         };
 
+        // Push the current function onto the checking stack. If there
+        // are any other functions defined *within* the function body
+        // currently being checked, then any inference variable `?a`
+        // which is free in both this function and the nested function
+        // won't be generalised as part of the nested function.
+        // It will wait until this function itself finishes checking and
+        // get's generalised.
         self.cx.checking_stack.push(symbol);
 
         self.with_scope(scope, |this| {
+            let nested: Vec<&Item> = body
+                .stmts
+                .iter()
+                .filter_map(|stmt| match &stmt.kind {
+                    StmtKind::Item(nested) => Some(nested.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            this.check_functions(&nested);
+
             for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
                 this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
             }
@@ -658,16 +731,6 @@ impl<'a> Checker<'a> {
             };
             this.cx
                 .check_block_expecting(body, Some(output_term), Some(output_span));
-
-            let nested: Vec<&Item> = body
-                .stmts
-                .iter()
-                .filter_map(|stmt| match &stmt.kind {
-                    StmtKind::Item(nested) => Some(nested.as_ref()),
-                    _ => None,
-                })
-                .collect();
-            this.check_items(&nested);
         });
 
         self.cx.checking_stack.pop();

@@ -2,7 +2,7 @@ use ast::Span;
 use diagnostics::{ArgValue, Note, Related, ToArgValue};
 use diagnostics_derive::Diagnose;
 
-use crate::render::Type;
+use crate::types::Type;
 
 #[derive(Diagnose)]
 #[diagnose(code = 1, level = "error")]

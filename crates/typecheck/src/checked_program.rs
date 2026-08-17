@@ -5,7 +5,7 @@ use diagnostics::Diagnostic;
 
 use crate::errors::{Locale, TypeCheckDiagnostic};
 use crate::position_index::PositionIndex;
-use crate::render::{Type, resolve_type};
+use crate::types::{Type, resolve_type};
 use crate::{FnSymbol, SymbolId, SymbolKind, TypeCheckContext};
 
 impl TypeCheckContext {
