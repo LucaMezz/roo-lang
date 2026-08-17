@@ -317,11 +317,6 @@ fn item_kind<'src>(
     ))
 }
 
-/// Takes `expr`/`block` as parameters rather than building fresh ones —
-/// so that `stmt()` (which already has an already-tied `expr`/`block` of
-/// its own, from `expr()`'s/`block()`'s own recursive ties) can call
-/// this for item-statements without recreating them, which would
-/// recurse forever: `expr -> block -> stmt -> item -> expr -> ...`.
 pub(crate) fn item_with<'src>(
     expr: impl RooParser<'src, Expr> + 'src,
     block: impl RooParser<'src, Block> + 'src,

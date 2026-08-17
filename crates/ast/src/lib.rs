@@ -1,11 +1,3 @@
-//! `ast` is the abstract syntax tree roo-lang source parses into.
-//!
-//! Owns its own strings (`String`/`Box<str>`) rather than borrowing from
-//! the original source text — unlike `lexer`'s `Token<'src>`, nothing here
-//! should need a lifetime parameter, so that `parser`, the type checker,
-//! and the transpiler can all hold onto an AST independently of how long
-//! the source buffer it was parsed from stays alive.
-
 use std::fmt;
 
 pub mod visit;
@@ -80,9 +72,6 @@ pub enum TyKind {
     Tup(Vec<Box<Ty>>),
     Path(Path),
     Paren(Box<Ty>),
-    /// `Fn(int, int) -> int` — grammar.md's `"Fn" "(" (type ("," type)*)? ")" ("->" type)?`.
-    /// Not `FnDecl`: a function *type*'s parameters are bare types, no
-    /// names/patterns, unlike an actual `fn`/closure declaration's params.
     Fn(Box<FnTy>),
     Infer,
     ImplicitSelf,
@@ -279,9 +268,7 @@ pub struct QSelf {
 
 #[derive(Clone, Debug, Walkable)]
 pub enum RangeLimits {
-    /// a..b
     HalfOpen,
-    /// a..=b
     Closed,
 }
 
@@ -313,14 +300,10 @@ pub struct FnDecl {
 
 #[derive(Clone, Debug, Walkable)]
 pub enum FnRetTy {
-    /// No return type specified -- inferred from the fn's body, same as
-    /// an untyped parameter.
     Default(Span),
     Ty(Box<Ty>),
 }
 
-/// The `Fn(int, int) -> int` function *type* — see [`TyKind::Fn`]. Bare
-/// types only, unlike [`FnDecl`]'s named/patterned parameters.
 #[derive(Clone, Debug, Walkable)]
 pub struct FnTy {
     pub inputs: Vec<Box<Ty>>,
@@ -510,69 +493,41 @@ pub enum RangeEnd {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fixity {
-    /// The operator is left-associative
     Left,
-    /// The operator is right-associative
     Right,
-    /// The operator is not associative
     None,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub enum ExprPrecedence {
-    // return, break, yield, closures
     Jump,
-    // = += -= *= /= %= &= |= ^= <<= >>=
     Assign,
-    // .. ..=
     Range,
-    // ||
     LOr,
-    // &&
     LAnd,
-    // == != < > <= >=
     Compare,
-    // |
     BitOr,
-    // ^
     BitXor,
-    // &
     BitAnd,
-    // << >>
     Shift,
-    // + -
     Sum,
-    // * / %
     Product,
-    // as
     Cast,
-    // unary - * ! & &mut
     Prefix,
-    // paths, loops, function calls, array indexing, field expressions, method calls
     Unambiguous,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Walkable)]
 pub enum AssignOpKind {
-    /// The `+=` operator (addition)
     AddAssign,
-    /// The `-=` operator (subtraction)
     SubAssign,
-    /// The `*=` operator (multiplication)
     MulAssign,
-    /// The `/=` operator (division)
     DivAssign,
-    /// The `%=` operator (modulus)
     RemAssign,
-    /// The `^=` operator (bitwise xor)
     BitXorAssign,
-    /// The `&=` operator (bitwise and)
     BitAndAssign,
-    /// The `|=` operator (bitwise or)
     BitOrAssign,
-    /// The `<<=` operator (shift left)
     ShlAssign,
-    /// The `>>=` operator (shift right)
     ShrAssign,
 }
 
@@ -593,7 +548,6 @@ impl AssignOpKind {
         }
     }
 
-    /// AssignOps are always by value.
     pub fn is_by_value(self) -> bool {
         true
     }
@@ -622,41 +576,23 @@ impl UnOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Walkable)]
 pub enum BinOpKind {
-    /// The `+` operator (addition)
     Add,
-    /// The `-` operator (subtraction)
     Sub,
-    /// The `*` operator (multiplication)
     Mul,
-    /// The `/` operator (division)
     Div,
-    /// The `%` operator (modulus)
     Rem,
-    /// The `&&` operator (logical and)
     And,
-    /// The `||` operator (logical or)
     Or,
-    /// The `^` operator (bitwise xor)
     BitXor,
-    /// The `&` operator (bitwise and)
     BitAnd,
-    /// The `|` operator (bitwise or)
     BitOr,
-    /// The `<<` operator (shift left)
     Shl,
-    /// The `>>` operator (shift right)
     Shr,
-    /// The `==` operator (equality)
     Eq,
-    /// The `<` operator (less than)
     Lt,
-    /// The `<=` operator (less than or equal to)
     Le,
-    /// The `!=` operator (not equal to)
     Ne,
-    /// The `>=` operator (greater than or equal to)
     Ge,
-    /// The `>` operator (greater than)
     Gt,
 }
 
@@ -722,7 +658,6 @@ impl BinOpKind {
         }
     }
 
-    /// Returns `true` if the binary operator takes its arguments by value.
     pub fn is_by_value(self) -> bool {
         !self.is_comparison()
     }

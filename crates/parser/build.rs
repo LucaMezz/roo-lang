@@ -1,9 +1,3 @@
-//! Generates one `#[test]` per file in `examples/`, asserting each
-//! parses with no error. Regenerated from whatever `examples/` currently
-//! contains, so the test suite can never silently drift out of sync with
-//! it — mirrors `crates/lexer/build.rs`'s approach, one layer up the
-//! pipeline.
-
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -29,7 +23,6 @@ fn main() {
     fs::write(out_dir.join("example_tests.rs"), out).expect("failed to write generated tests");
 }
 
-/// Emits one test per `.roo` file directly under `examples_dir`.
 fn generate_example_file_tests(examples_dir: &Path, out: &mut String) {
     let mut roo_files = Vec::new();
     collect_files_with_extension(examples_dir, "roo", &mut roo_files);
@@ -89,8 +82,6 @@ fn collect_files_with_extension(dir: &Path, extension: &str, out: &mut Vec<PathB
     }
 }
 
-/// Turns an arbitrary file stem into a valid Rust identifier fragment:
-/// `player-controller` -> `player_controller`.
 fn sanitize_ident(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

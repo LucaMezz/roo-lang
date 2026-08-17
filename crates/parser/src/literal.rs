@@ -1,6 +1,3 @@
-//! Literal parsing (`Lit`/`LitKind`) — char/string escape processing and
-//! integer/float literal text handling live here too.
-
 use crate::*;
 use ast::*;
 use lexer::{NumberKind, Token};
@@ -16,7 +13,6 @@ fn process_escape<'src>(chars: &mut impl Iterator<Item = char>) -> char {
         Some('"') => '"',
         Some('\'') => '\'',
         Some('u') => {
-            // Consume the `{`.
             chars.next();
             let mut hex = String::new();
             for c in chars.by_ref() {
@@ -27,15 +23,13 @@ fn process_escape<'src>(chars: &mut impl Iterator<Item = char>) -> char {
             }
             match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                 Some(c) => c,
-                None => todo!(), // invalid scalar value (out of range or a surrogate)
+                None => todo!(),
             }
         }
         Some(_c) => {
-            /* unknown escape */
             todo!()
         }
         None => {
-            /* unterminated */
             todo!()
         }
     }
@@ -57,8 +51,6 @@ fn process_string<'src>(text: &'src str) -> String {
 
     while let Some(&c) = chars.peek() {
         if c == '"' {
-            // The closing quote — the lexer guarantees this is unescaped
-            // and terminal, so stop without consuming it into the output.
             break;
         }
         if c == '\\' {
@@ -72,18 +64,13 @@ fn process_string<'src>(text: &'src str) -> String {
     result
 }
 
-/// Strips a raw string literal's `r`/`#`*/`"` delimiters. No escape
-/// processing — that's the entire point of a raw string (`r"C:\Users"`,
-/// the `\U` is two literal characters, not an escape).
 fn process_raw_string<'src>(text: &'src str) -> String {
     let hash_count = text[1..].bytes().take_while(|&b| b == b'#').count();
-    let start = 1 + hash_count + 1; // 'r', the opening '#'s, the opening '"'
-    let end = text.len() - hash_count - 1; // the closing '"', the closing '#'s
+    let start = 1 + hash_count + 1;
+    let end = text.len() - hash_count - 1;
     text[start..end].to_owned()
 }
 
-/// Parses an integer literal's raw text (decimal, or `0x`/`0o`/`0b`
-/// prefixed, digit separators and all — see [`NumberKind`]) into its value.
 fn process_int<'src>(text: &'src str) -> u128 {
     let (digits, radix) = match text.get(0..2) {
         Some("0x" | "0X") => (&text[2..], 16),
@@ -96,17 +83,13 @@ fn process_int<'src>(text: &'src str) -> u128 {
 
     match u128::from_str_radix(&digits, radix) {
         Ok(n) => n,
-        Err(_) => todo!(), // literal's value overflows u128
+        Err(_) => todo!(),
     }
 }
 
 fn process_number<'src>(lit: NumberKind<'src>) -> LitKind {
     match lit {
         NumberKind::Int(text) => LitKind::Int(process_int(text)),
-        // Kept raw, same as `LitKind::Float` itself — see decisions and
-        // `NumberKind`'s doc comment: an actual `f64`/`f32` doesn't have
-        // well-behaved `Eq`/`Hash` (NaN, -0.0 vs 0.0), so the value is
-        // left as text rather than parsed here.
         NumberKind::Float(text) => LitKind::Float(text.to_owned()),
     }
 }

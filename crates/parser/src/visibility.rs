@@ -1,5 +1,3 @@
-//! `pub`/`pub(...)` visibility parsing.
-
 use crate::*;
 use ast::*;
 use lexer::Token;

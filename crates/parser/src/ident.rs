@@ -1,26 +1,13 @@
-//! Bare identifiers and loop labels.
-
 use crate::*;
 use ast::*;
 use lexer::Token;
 
-/// An ordinary identifier — deliberately *not* `_`, which is never a real
-/// name (you can't `fn _() {}` any more than you can in Rust) and has its
-/// own dedicated AST nodes instead (`PatKind::Wild`, `ExprKind::Underscore`).
-/// Excluding it here means a future pattern/expression parser can't
-/// accidentally fall through to treating `_` as an ordinary binding just
-/// by forgetting to special-case it — the `_` case has to be handled
-/// deliberately, since this parser will never produce it.
 pub fn ident<'src>() -> impl RooParser<'src, Ident> {
     select! {
         Token::Identifier(name) = e if name != "_" => Ident { name: name.to_owned(), span: span(e) },
     }
 }
 
-/// `outer:` — a loop label. Plain-identifier labels, not Rust's `'outer`
-/// lifetime-sigil form (decisions/0002) — so this is just `ident()`
-/// followed by the `:` the concrete syntax requires, with the colon
-/// itself discarded (`Label` has nothing to store it in).
 pub fn label<'src>() -> impl RooParser<'src, Label> {
     ident()
         .then_ignore(just(Token::Colon))

@@ -1,16 +1,8 @@
-//! Expressions (`Expr`/`ExprKind`) — the Pratt-parsed operator precedence
-//! setup and every `ExprKind` variant's parser live here.
-
 use crate::*;
 use ast::*;
 use chumsky::pratt::*;
 use lexer::{NumberKind, Token};
 
-/// `#[annotations]* ident (":" expr)?` — the no-`: expr` shorthand
-/// (`Point { x }`, short for `Point { x: x }`) refers to a binding with
-/// the same name as the field, so it desugars to a single-segment
-/// `ExprKind::Path` here rather than needing its own `ExprField`
-/// representation.
 fn expr_field<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, ExprField> {
     annotations()
         .then(ident())
@@ -145,12 +137,6 @@ fn expr_path<'src>() -> impl RooParser<'src, ExprKind> {
         .map(|(qself, path)| ExprKind::Path(qself, path))
 }
 
-/// A field access's name: an ordinary [`ident`] (`foo.bar`), or a bare
-/// decimal integer (`foo.0`) for indexing a tuple/tuple-struct field by
-/// position — those have no name at all on the definition side (see
-/// `FieldDef.ident: None` for tuple fields), so this just stores the
-/// digits as `Ident`'s text, the same way rustc's own AST represents a
-/// tuple index as an `Ident` rather than a separate node.
 fn field_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
@@ -579,7 +565,6 @@ mod tests {
 
     #[test]
     fn multiplication_binds_tighter_than_addition() {
-        // 1 + 2 * 3 must be 1 + (2 * 3), not (1 + 2) * 3.
         let tokens = tokens("1 + 2 * 3");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
@@ -598,7 +583,6 @@ mod tests {
 
     #[test]
     fn multiplication_still_binds_tighter_when_written_first() {
-        // 1 * 2 + 3 must be (1 * 2) + 3, not 1 * (2 + 3).
         let tokens = tokens("1 * 2 + 3");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
@@ -617,7 +601,6 @@ mod tests {
 
     #[test]
     fn subtraction_is_left_associative() {
-        // 1 - 2 - 3 must be (1 - 2) - 3, not 1 - (2 - 3).
         let tokens = tokens("1 - 2 - 3");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
@@ -645,8 +628,6 @@ mod tests {
 
     #[test]
     fn rejects_chained_comparisons() {
-        // Comparisons are Fixity::None (non-associative) — `1 < 2 < 3`
-        // isn't a single valid expression.
         let tokens = tokens("1 < 2 < 3");
         assert!(expr().parse(tokens).into_result().is_err());
     }
@@ -677,8 +658,6 @@ mod tests {
 
     #[test]
     fn parses_chained_method_calls() {
-        // Proves the postfix Pratt operator actually loops: each `.foo()`
-        // becomes the receiver for the next one, left to right.
         let tokens = tokens("5.foo().bar()");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::MethodCall(outer) = parsed.kind else {
@@ -697,7 +676,6 @@ mod tests {
 
     #[test]
     fn method_calls_bind_tighter_than_binary_operators() {
-        // 1 + 2.foo() must be 1 + (2.foo()), not (1 + 2).foo().
         let tokens = tokens("1 + 2.foo()");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
@@ -1122,15 +1100,8 @@ mod tests {
 
     #[test]
     fn a_call_immediately_after_a_field_access_is_still_field_then_call() {
-        // `(x.foo)(a)` isn't valid roo syntax for calling a field's value
-        // directly (no parens around `x.foo` here) — but a field access
-        // NOT immediately followed by an ident-then-paren pair (i.e. the
-        // callee itself, not a further `.method()`) should still compose
-        // as Field then Call rather than erroring.
         let tokens = tokens("foo.bar(1)");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
-        // `.bar(1)` right after a field/path must be read as a method
-        // call, never as Field(foo, bar) followed by a bare Call.
         assert!(matches!(parsed.kind, ExprKind::MethodCall(_)));
     }
 
@@ -1192,7 +1163,6 @@ mod tests {
 
     #[test]
     fn assignment_is_right_associative() {
-        // x = y = 5 must be x = (y = 5), not (x = y) = 5.
         let tokens = tokens("x = y = 5");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Assign(lhs, rhs, _) = parsed.kind else {
@@ -1215,7 +1185,6 @@ mod tests {
 
     #[test]
     fn cast_binds_tighter_than_addition() {
-        // 1 + x as float must be 1 + (x as float), not (1 + x) as float.
         let tokens = tokens("1 + x as float");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Binary(op, lhs, rhs) = parsed.kind else {
@@ -1228,7 +1197,6 @@ mod tests {
 
     #[test]
     fn assignment_binds_looser_than_binary_operators() {
-        // x = 1 + 2 must be x = (1 + 2), not (x = 1) + 2.
         let tokens = tokens("x = 1 + 2");
         let parsed = expr().parse(tokens).into_result().expect("should parse");
         let ExprKind::Assign(_, rhs, _) = parsed.kind else {

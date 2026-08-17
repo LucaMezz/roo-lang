@@ -1,13 +1,7 @@
-//! Binary, compound-assignment, and unary operator token parsers.
-
 use crate::*;
 use ast::*;
 use lexer::Token;
 
-/// A binary operator — `+ - * / % && || ^ & | << >> == != < > <= >=`.
-/// Doesn't include `=`/compound-assign operators; those are
-/// [`assign_op`]'s job, since `ExprKind::Assign`/`AssignOp` are separate
-/// from `ExprKind::Binary`/`BinOp` in the AST.
 pub fn bin_op<'src>() -> impl RooParser<'src, BinOp> {
     select! {
         Token::Plus = e => BinOpKind::Add,
@@ -35,9 +29,6 @@ pub fn bin_op<'src>() -> impl RooParser<'src, BinOp> {
     })
 }
 
-/// A compound-assignment operator — `+= -= *= /= %= &= |= ^= <<= >>=`.
-/// Plain `=` isn't here — that's `ExprKind::Assign`, not `AssignOp`; there
-/// is no `AssignOpKind::Assign` variant to produce.
 pub fn assign_op<'src>() -> impl RooParser<'src, AssignOp> {
     select! {
         Token::PlusEq = e => AssignOpKind::AddAssign,
@@ -57,7 +48,6 @@ pub fn assign_op<'src>() -> impl RooParser<'src, AssignOp> {
     })
 }
 
-/// Parses a unary operator
 pub fn un_op<'src>() -> impl RooParser<'src, UnOp> {
     select! {
         Token::Bang => UnOp::Not,

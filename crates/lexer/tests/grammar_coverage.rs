@@ -1,10 +1,3 @@
-//! Hand-written tests covering the lexical surface described in
-//! `book/src/appendix/grammar.md` and the lexical-structure chapters,
-//! beyond what the book's own prose examples happen to exercise:
-//! every keyword individually, every operator/punctuation token, every
-//! literal form and edge case, and a handful of larger synthetic snippets
-//! assembled directly from grammar constructs.
-
 use lexer::{LexError, NumberKind, Token, tokenize_all};
 
 fn lex(src: &str) -> Vec<Token<'_>> {
@@ -29,10 +22,6 @@ fn assert_lex_error(src: &str, expected: LexError) {
         Err(err) => assert_eq!(err, expected, "wrong error for {src:?}"),
     }
 }
-
-// ---------------------------------------------------------------------
-// Strict keywords — appendix/keywords.md's "Strict keywords" table.
-// ---------------------------------------------------------------------
 
 mod strict_keywords {
     use super::*;
@@ -74,13 +63,11 @@ mod strict_keywords {
     keyword_test!(where_, "where", Token::Where);
     keyword_test!(while_, "while", Token::While);
 
-    // Reserved, currently unused (appendix/keywords.md).
     keyword_test!(dyn_, "dyn", Token::Dyn);
     keyword_test!(const_, "const", Token::Const);
 
     #[test]
     fn keywords_dont_match_as_a_prefix_of_a_longer_identifier() {
-        // `letter` must be one Identifier, not `let` + `ter`.
         assert_single("letter", Token::Identifier("letter"));
         assert_single("structural", Token::Identifier("structural"));
         assert_single("format", Token::Identifier("format"));
@@ -89,11 +76,6 @@ mod strict_keywords {
         assert_single("self_destruct", Token::Identifier("self_destruct"));
     }
 }
-
-// ---------------------------------------------------------------------
-// Words that are Rust keywords but ordinary identifiers in roo, per
-// lexical/identifiers-and-keywords.md's "Not keywords in roo" list.
-// ---------------------------------------------------------------------
 
 #[test]
 fn removed_rust_keywords_lex_as_plain_identifiers() {
@@ -107,8 +89,6 @@ fn removed_rust_keywords_lex_as_plain_identifiers() {
 
 #[test]
 fn wildcard_is_an_ordinary_identifier_token() {
-    // "Is `_` a wildcard or a name" is a parser-level distinction, not a
-    // lexical one — see lexical/identifiers-and-keywords.md.
     assert_single("_", Token::Identifier("_"));
     assert_single("_unused", Token::Identifier("_unused"));
 }
@@ -119,11 +99,6 @@ fn identifiers_can_start_with_underscore_or_contain_digits() {
     assert_single("foo_bar_42", Token::Identifier("foo_bar_42"));
     assert_single("__", Token::Identifier("__"));
 }
-
-// ---------------------------------------------------------------------
-// Operators and punctuation — expressions/operators.md +
-// appendix/operator-precedence.md.
-// ---------------------------------------------------------------------
 
 mod operators_and_punctuation {
     use super::*;
@@ -137,14 +112,12 @@ mod operators_and_punctuation {
         };
     }
 
-    // Arithmetic
     op_test!(plus, "+", Token::Plus);
     op_test!(minus, "-", Token::Minus);
     op_test!(star, "*", Token::Star);
     op_test!(slash, "/", Token::Slash);
     op_test!(percent, "%", Token::Percent);
 
-    // Comparison
     op_test!(eq_eq, "==", Token::EqEq);
     op_test!(not_eq, "!=", Token::NotEq);
     op_test!(lt, "<", Token::Lt);
@@ -152,19 +125,16 @@ mod operators_and_punctuation {
     op_test!(lt_eq, "<=", Token::LtEq);
     op_test!(gt_eq, ">=", Token::GtEq);
 
-    // Logical
     op_test!(and_and, "&&", Token::AndAnd);
     op_test!(or_or, "||", Token::OrOr);
     op_test!(bang, "!", Token::Bang);
 
-    // Bitwise
     op_test!(amp, "&", Token::Amp);
     op_test!(pipe, "|", Token::Pipe);
     op_test!(caret, "^", Token::Caret);
     op_test!(shl, "<<", Token::Shl);
     op_test!(shr, ">>", Token::Shr);
 
-    // Assignment
     op_test!(eq, "=", Token::Eq);
     op_test!(plus_eq, "+=", Token::PlusEq);
     op_test!(minus_eq, "-=", Token::MinusEq);
@@ -177,29 +147,23 @@ mod operators_and_punctuation {
     op_test!(shl_eq, "<<=", Token::ShlEq);
     op_test!(shr_eq, ">>=", Token::ShrEq);
 
-    // Range
     op_test!(dot_dot, "..", Token::DotDot);
     op_test!(dot_dot_eq, "..=", Token::DotDotEq);
 
-    // Member/path
     op_test!(dot, ".", Token::Dot);
     op_test!(path_sep, "::", Token::PathSep);
 
-    // Error propagation
     op_test!(question, "?", Token::Question);
 
-    // Arrows
     op_test!(arrow, "->", Token::Arrow);
     op_test!(fat_arrow, "=>", Token::FatArrow);
 
-    // Misc
     op_test!(colon, ":", Token::Colon);
     op_test!(semi, ";", Token::Semi);
     op_test!(comma, ",", Token::Comma);
     op_test!(at, "@", Token::At);
     op_test!(pound, "#", Token::Pound);
 
-    // Brackets
     op_test!(lparen, "(", Token::LParen);
     op_test!(rparen, ")", Token::RParen);
     op_test!(lbrace, "{", Token::LBrace);
@@ -213,7 +177,7 @@ mod operators_and_punctuation {
         assert_tokens("<<=", &[ShlEq]);
         assert_tokens("<< =", &[Shl, Eq]);
         assert_tokens("<=>", &[LtEq, Gt]);
-        assert_tokens("...", &[DotDot, Dot]); // not real roo syntax, but must still lex
+        assert_tokens("...", &[DotDot, Dot]);
         assert_tokens("..=..", &[DotDotEq, DotDot]);
     }
 
@@ -228,17 +192,11 @@ mod operators_and_punctuation {
             "#![replicated]",
             &[Pound, Bang, LBracket, Identifier("replicated"), RBracket],
         );
-        // A bare `#` doesn't feed into raw-string lexing — only `r#*"`
-        // starting from the `r` does.
         assert_tokens("# \"hi\"", &[Pound, StringLiteral("\"hi\"")]);
     }
 
     #[test]
     fn nested_generics_closing_brackets_lex_as_shr_not_two_gt() {
-        // Splitting `>>` back into two `>` for `Vec<Vec<int>>`-style
-        // nested generics is a parser concern, not a lexer one — the
-        // lexer's job is consistent maximal munch (matches how Rust's
-        // own lexer/parser split this responsibility too).
         assert_tokens(
             "Vec<Vec<int>>",
             &[
@@ -271,8 +229,6 @@ mod operators_and_punctuation {
 
     #[test]
     fn pipe_is_shared_between_bitwise_or_and_closure_delimiters() {
-        // `|x| x + 1` — the lexer just emits Pipe both times; telling
-        // "closure start" from "bitwise or" apart is the parser's job.
         assert_tokens(
             "|x| x + 1",
             &[
@@ -286,10 +242,6 @@ mod operators_and_punctuation {
         );
     }
 }
-
-// ---------------------------------------------------------------------
-// Numeric literals — lexical/literals.md.
-// ---------------------------------------------------------------------
 
 mod numeric_literals {
     use super::*;
@@ -336,15 +288,12 @@ mod numeric_literals {
 
     #[test]
     fn float_exponent_without_a_dot() {
-        // Not shown explicitly in the book, but a natural Rust-like form:
-        // an integer-looking mantissa with an exponent is still a float.
         assert_single("5e10", Token::Number(Float("5e10")));
         assert_single("5E-2", Token::Number(Float("5E-2")));
     }
 
     #[test]
     fn trailing_dot_before_identifier_is_not_absorbed_into_the_float() {
-        // `5.sqrt()` — the `.` belongs to member access, not the number.
         assert_tokens(
             "5.sqrt()",
             &[
@@ -417,8 +366,6 @@ mod numeric_literals {
 
     #[test]
     fn hex_int_immediately_followed_by_a_dot_does_not_need_disambiguation() {
-        // Hex/octal/binary have no float form, so a trailing `.` is
-        // always just member access, unconditionally.
         assert_tokens(
             "0xFF.to_string()",
             &[
@@ -431,10 +378,6 @@ mod numeric_literals {
         );
     }
 }
-
-// ---------------------------------------------------------------------
-// String, char, and raw string literals — lexical/literals.md.
-// ---------------------------------------------------------------------
 
 mod string_and_char_literals {
     use super::*;
@@ -553,10 +496,6 @@ mod string_and_char_literals {
     }
 }
 
-// ---------------------------------------------------------------------
-// Comments — lexical/comments.md.
-// ---------------------------------------------------------------------
-
 mod comments {
     use super::*;
 
@@ -644,11 +583,6 @@ mod comments {
     }
 }
 
-// ---------------------------------------------------------------------
-// Larger synthetic snippets, assembled directly from grammar.md
-// constructs not necessarily combined this way anywhere in the book.
-// ---------------------------------------------------------------------
-
 mod composite_constructs {
     use super::*;
 
@@ -695,10 +629,6 @@ mod composite_constructs {
 
     #[test]
     fn let_else_and_while_let() {
-        // Deliberately no loop label here — roo has no Rust-style
-        // `'outer` syntax at all (roo labels are plain identifiers, with
-        // no `'` sigil), so a bare `'` outside a char literal isn't valid
-        // roo lexically either. Labels are covered separately below.
         lex(r#"
             let Some(x) = maybe else {
                 return;

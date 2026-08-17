@@ -1,48 +1,3 @@
-//! `unify` is a general-purpose, reusable unification engine for solving
-//! systems of type equations — not tied to roo-lang's own type system, so
-//! it can be pulled in by any crate that needs to solve a set of
-//! constraints of the form `t1 ≟ t2` ("does term `t1` unify with term
-//! `t2`?") down to a set of variable bindings, or an occurs-check/mismatch
-//! error.
-//!
-//! Notation used throughout these docs: an inference variable is written
-//! `?a`, `?b`, `?T`, ...; `?a ↦ t` means "`?a` is currently bound to
-//! `t`" (an unbound variable has no `↦` at all); `f(t1, ..., tn)` is an
-//! application of constructor `f` to argument terms `t1, ..., tn`.
-//!
-//! Shape:
-//! - Terms and variables live in a [`slotmap`] arena and are referred to
-//!   by id ([`TermId`]/[`VarId`]), rather than a directly recursive
-//!   `enum Term { ... }` of owned/boxed references — keeps terms `Copy`,
-//!   sidesteps the recursive ownership/lifetime issues a self-referential
-//!   term graph would otherwise have, and matches how egraph/union-find-
-//!   based unifiers are usually built.
-//! - Variable-to-term binding (`?a ↦ t`) and the union-find "which
-//!   variables are already known to be equal" structure,
-//!   [`UnificationContext`], are backed by the [`union_find`] crate.
-//! - [`UnificationContext::unify`] is the actual algorithm: given two
-//!   term ids, it either records enough bindings/merges to make `t1 ≟
-//!   t2` hold and returns `Ok`, or returns a [`UnifyError`] explaining
-//!   why they can't be made equal.
-//! - [`UnificationContext::unify_because`] is `unify`, plus a caller-
-//!   supplied *reason* (`R`, a second type parameter alongside the
-//!   constructor type `C` — this crate has no opinion on what a reason
-//!   actually is, the same way it has no opinion on what a constructor
-//!   is) attached to every binding/merge that call makes, including
-//!   ones made while recursing into matching constructors' arguments.
-//!   [`UnificationContext::provenance`] answers "why does `?a` mean
-//!   what it currently does?" later, by finding the most recently
-//!   recorded reason for whatever `?a`'s union-find class currently
-//!   is — the mechanism a caller needs to explain a *later* mismatch
-//!   by citing where one side of it was actually pinned down, not just
-//!   the nearest annotation to the failing comparison itself. Plain
-//!   `unify`/`bind`/`union_vars` never record a reason; a fresh
-//!   [`UnificationContext`] with no reason type in mind at all can
-//!   just leave `R` at its default, `()`, and ignore this entirely.
-//! - `proptest` is a dev-dependency for property-based testing of
-//!   `unify` (e.g. "unifying a term with itself always succeeds",
-//!   "unification is symmetric").
-
 use std::fmt;
 use std::mem;
 
@@ -50,39 +5,15 @@ use slotmap::SlotMap;
 use union_find::{QuickUnionUf, Union, UnionFind, UnionResult};
 
 slotmap::new_key_type! {
-    /// Id of a [`Term`] interned in a unifier's arena. Opaque and
-    /// generation-tagged (via `slotmap`) — the only way to get one is
-    /// from the arena you inserted into, so a stale id from a removed
-    /// term can never silently alias whatever gets inserted in its place.
     pub struct TermId;
 
-    /// Id of an inference variable (written `?a`, `?b`, ... in these
-    /// docs) tracked by a unifier.
     pub struct VarId;
 }
 
-/// A term `t`: either an inference variable `?a`, or an application
-/// `f(t1, ..., tn)` of a constructor `f` to some argument terms.
-/// Arguments are referenced by [`TermId`] rather than owned directly, so
-/// `Term` stays flat/`Copy`-friendly instead of being a directly
-/// recursive, boxed tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term<C> {
-    /// An inference variable `?a`. This node itself never changes once
-    /// inserted — whether/what `?a` is currently bound to lives
-    /// separately, in the owning [`UnificationContext`], and has to be
-    /// looked up via [`UnificationContext::resolve`] or
-    /// [`UnificationContext::binding`] rather than read off this variant
-    /// directly.
     Var(VarId),
-    /// An application `f(t1, ..., tn)` of constructor `f` to some
-    /// argument terms.
-    App {
-        /// The constructor `f` being applied.
-        constructor: C,
-        /// The argument terms `t1, ..., tn`, by id.
-        args: Vec<TermId>,
-    },
+    App { constructor: C, args: Vec<TermId> },
 }
 
 #[macro_export]
@@ -111,27 +42,9 @@ macro_rules! term {
     };
 }
 
-/// A variable class's current binding, if any — `union_find::Union` is a
-/// foreign trait and `Option` isn't a local or fundamental type, so the
-/// orphan rules require this local newtype rather than `impl Union for
-/// Option<TermId>` directly.
 #[derive(Clone, Copy, Default)]
 struct Binding(Option<TermId>);
 
-/// How two variable classes' bindings are combined when
-/// [`UnificationContext::union_vars`] merges them. Needs *some*
-/// deterministic answer to satisfy `union_find::Union` (which can't fail
-/// or see the rest of the arena), so it arbitrarily prefers whichever
-/// side is already bound.
-///
-/// This is safe to be this naive because [`UnificationContext::unify`]
-/// never lets two *different* bindings reach this code: it always
-/// [`resolve`](UnificationContext::resolve)s both sides of a `t1 ≟ t2`
-/// unification first, so by the time its `(?a, ?b)` case calls
-/// `union_vars`, both `?a` and `?b` have already been established to be
-/// currently unbound — this merge only ever really has to combine
-/// `(None, None)`, and which side "wins" doesn't matter. Calling
-/// `union_vars` directly, bypassing `unify`, forgoes that guarantee.
 impl Union for Binding {
     fn union(lval: Self, rval: Self) -> UnionResult<Self> {
         match lval.0 {
@@ -141,36 +54,11 @@ impl Union for Binding {
     }
 }
 
-/// One recorded reason a variable became bound to a term, or merged
-/// with another variable — see [`UnificationContext::unify_because`].
-/// Kept as a flat, append-only log rather than attached directly to a
-/// union-find class: which variable is a merged class's "representative"
-/// can change after an entry is written (more merges happening later),
-/// so a query has to re-canonicalize (via `find`) at lookup time rather
-/// than trust whatever the representative was when the entry was
-/// recorded — see [`UnificationContext::provenance`].
 struct ProvenanceEntry<R> {
     var: VarId,
     reason: R,
 }
 
-/// Owns every [`Term`] and variable created during a unification session.
-///
-/// Terms live in a `slotmap` arena (`terms`). Variables are tracked two
-/// ways at once: a `slotmap` arena (`var_slots`) gives out the opaque,
-/// generation-tagged [`VarId`]s callers hold, while a parallel
-/// `union_find::QuickUnionUf` (`bindings`) tracks which variables have
-/// been unified with each other and what (if anything) their class is
-/// currently bound to. `union_find`'s own keys are plain sequential
-/// integers with no notion of generations, so a `VarId` can't be
-/// *derived* from one — `var_slots`/`uf_key_to_var` keep an explicit
-/// mapping in both directions, populated in lockstep every time
-/// [`fresh_var`](Self::fresh_var) allocates one of each.
-///
-/// `R` is an optional, caller-chosen "reason" type for
-/// [`unify_because`](Self::unify_because)/[`provenance`](Self::provenance)
-/// — see the crate-level docs. Defaults to `()` so a caller with no use
-/// for provenance tracking never has to name it.
 pub struct UnificationContext<C, R = ()> {
     terms: SlotMap<TermId, Term<C>>,
     var_slots: SlotMap<VarId, usize>,
@@ -181,7 +69,6 @@ pub struct UnificationContext<C, R = ()> {
 }
 
 impl<C, R> UnificationContext<C, R> {
-    /// Creates an empty context with no terms or variables yet.
     pub fn new() -> Self {
         Self {
             terms: SlotMap::with_key(),
@@ -193,22 +80,10 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
-    /// Creates an empty context with no terms or variables yet, but
-    /// with `wildcard` registered as a constructor that always unifies
-    /// successfully against anything (see [`unify`](Self::unify)) — for
-    /// a caller whose `C` has some "matches anything" constructor of its
-    /// own (e.g. a gradually-typed language's `any`), not a concept
-    /// `unify` has any built-in notion of otherwise.
     pub fn with_wildcard(wildcard: C) -> Self {
         Self::with_wildcards(vec![wildcard])
     }
 
-    /// Same as [`with_wildcard`](Self::with_wildcard), but for a caller
-    /// that needs more than one absorbing constructor at once — e.g. a
-    /// gradually-typed language's `any` *and* a type checker's own
-    /// error-recovery placeholder, each wildcard for its own unrelated
-    /// reason. `unify` doesn't care why a constructor is a wildcard, or
-    /// how many there are, only whether a given one is in this list.
     pub fn with_wildcards(wildcards: Vec<C>) -> Self {
         Self {
             terms: SlotMap::with_key(),
@@ -220,22 +95,14 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
-    /// Allocates a new term in the arena and returns its id.
-    ///
-    /// No hash-consing/deduplication — every call allocates a fresh
-    /// [`TermId`], even for a `term` equal to one already stored.
     pub fn insert_term(&mut self, term: Term<C>) -> TermId {
         self.terms.insert(term)
     }
 
-    /// Looks up a previously inserted term. `None` if `id` doesn't refer
-    /// to a live term in this context (e.g. it's from a different
-    /// [`UnificationContext`]).
     pub fn term(&self, id: TermId) -> Option<&Term<C>> {
         self.terms.get(id)
     }
 
-    /// Creates a fresh, unbound type variable.
     pub fn fresh_var(&mut self) -> VarId {
         let uf_key = self.bindings.insert(Binding(None));
         let var = self.var_slots.insert(uf_key);
@@ -244,66 +111,28 @@ impl<C, R> UnificationContext<C, R> {
         var
     }
 
-    /// Returns the canonical representative of `?a`'s union-find class
-    /// — two variables that have been [`union_vars`](Self::union_vars)'d
-    /// together, directly or transitively, always find to the same
-    /// representative.
     pub fn find(&mut self, var: VarId) -> VarId {
         let uf_key = self.var_slots[var];
         let root_key = self.bindings.find(uf_key);
         self.uf_key_to_var[root_key]
     }
 
-    /// The term `?a` is currently bound to (`?a ↦ t`), if any.
     pub fn binding(&mut self, var: VarId) -> Option<TermId> {
         let uf_key = self.var_slots[var];
         self.bindings.get(uf_key).0
     }
 
-    /// Binds `?a`'s class directly to `t` (records `?a ↦ t`), returning
-    /// whatever it was previously bound to (if anything). Overwrites
-    /// unconditionally — doesn't check whether `?a` was already bound to
-    /// something else, let alone unify the two.
-    /// [`unify`](Self::unify) never runs into that, since it only ever
-    /// calls `bind` after [`resolve`](Self::resolve) has established
-    /// that `?a` is currently unbound; calling `bind` directly bypasses
-    /// that safeguard.
     pub fn bind(&mut self, var: VarId, term: TermId) -> Option<TermId> {
         let uf_key = self.var_slots[var];
         mem::replace(self.bindings.get_mut(uf_key), Binding(Some(term))).0
     }
 
-    /// Merges `?a` and `?b`'s union-find classes, so that
-    /// `find(?a) == find(?b)` afterward. Returns `true` if they belonged
-    /// to different classes (and were therefore actually merged),
-    /// matching [`union_find::UnionFind::union`]'s own return value.
-    ///
-    /// See `Union for Binding`'s doc comment above for what happens to
-    /// each side's existing binding.
     pub fn union_vars(&mut self, a: VarId, b: VarId) -> bool {
         let ka = self.var_slots[a];
         let kb = self.var_slots[b];
         self.bindings.union(ka, kb)
     }
 
-    /// Follows `id` through any existing variable binding to find out
-    /// what it *currently* denotes.
-    ///
-    /// A [`Term::Var`] arena node never changes once inserted, so
-    /// without this, code looking at a term is not paying attention to
-    /// the existing bindings of the inference variables that appear in
-    /// it — it only ever sees a variable's original, unbound shape, even
-    /// long after that variable has been bound to something else.
-    /// `resolve` fixes that: it "replaces" an inference variable with
-    /// whatever term it's currently bound to (looked up on demand here,
-    /// not physically rewritten anywhere), following the chain if that
-    /// term is itself an already-bound variable, until it reaches either
-    /// an unbound variable or a concrete application.
-    ///
-    /// Formally, for a term `t`:
-    /// - if `t = ?a` and `?a ↦ u`, then `resolve(t) = resolve(u)`
-    /// - if `t = ?a` and `?a` is unbound, `resolve(t) = t`
-    /// - if `t = f(t1, ..., tn)`, `resolve(t) = t` (already concrete)
     pub fn resolve(&mut self, id: TermId) -> TermId {
         match self.term(id).expect("valid TermId") {
             Term::Var(v) => {
@@ -317,20 +146,6 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
-    /// Does `?a` occur, directly or transitively through `App`
-    /// arguments, within the term that `id` currently denotes?
-    ///
-    /// Resolves as it goes, so a variable buried behind other,
-    /// already-bound variables is still found — this is what stops
-    /// [`unify`](Self::unify) from ever producing a cyclic binding like
-    /// `?a ↦ List(?a)`.
-    ///
-    /// Formally, `occurs(?a, t)` holds iff `?a` occurs free in
-    /// `resolve(t)`:
-    /// - `occurs(?a, ?b)` iff `find(?a) == find(?b)` (comparing
-    ///   union-find classes, not raw ids, so a variable already unioned
-    ///   with `?a` under a different id still counts)
-    /// - `occurs(?a, f(t1, ..., tn))` iff `occurs(?a, ti)` for some `ti`
     fn occurs(&mut self, v: VarId, id: TermId) -> bool {
         let id = self.resolve(id);
         match self.term(id).expect("valid TermId") {
@@ -345,23 +160,6 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
-    /// Unifies `t1` and `t2` — checks whether `t1 ≟ t2` holds and, if
-    /// so, records whatever bindings/merges make it hold, directly into
-    /// this context.
-    ///
-    /// Always [`resolve`](Self::resolve)s both sides first, so this
-    /// compares what each term *currently* means rather than the shape
-    /// it had when it was first inserted — see `resolve`'s doc comment
-    /// for why that distinction matters.
-    ///
-    /// If this context has any [`wildcard`](Self::with_wildcard)
-    /// constructors registered, an application whose constructor is one
-    /// of them always unifies successfully against anything — no
-    /// constructor/arity check, no descending into either side's
-    /// arguments. See `with_wildcard`'s doc comment for what that's for.
-    ///
-    /// Records no provenance — see [`unify_because`](Self::unify_because)
-    /// for the version that does.
     pub fn unify(&mut self, t1: TermId, t2: TermId) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
@@ -370,16 +168,6 @@ impl<C, R> UnificationContext<C, R> {
         self.unify_impl(t1, t2, None)
     }
 
-    /// Same as [`unify`](Self::unify), but records `reason` as the
-    /// cause of every new binding or merge this call makes — including
-    /// ones made while recursing into matching constructors' arguments,
-    /// so a variable pinned down only as an indirect consequence of
-    /// this one top-level equation still remembers *this* call as why.
-    ///
-    /// Query it back later with [`provenance`](Self::provenance) — the
-    /// intended use is explaining a *different*, later mismatch by
-    /// citing where one side of it was actually established, not just
-    /// whatever's nearest to the failing comparison itself.
     pub fn unify_because(&mut self, t1: TermId, t2: TermId, reason: R) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
@@ -388,32 +176,11 @@ impl<C, R> UnificationContext<C, R> {
         self.unify_impl(t1, t2, Some(reason))
     }
 
-    /// The shared implementation behind [`unify`](Self::unify) and
-    /// [`unify_because`](Self::unify_because) — identical unification
-    /// algorithm either way, differing only in whether a reason gets
-    /// recorded (via [`record_provenance`](Self::record_provenance))
-    /// alongside each binding/merge it makes.
-    fn unify_impl(
-        &mut self,
-        t1: TermId,
-        t2: TermId,
-        reason: Option<R>,
-    ) -> Result<(), UnifyError<C>>
+    fn unify_impl(&mut self, t1: TermId, t2: TermId, reason: Option<R>) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
         R: Clone,
     {
-        // Resolved separately from `t1`/`t2` themselves -- the match
-        // below needs to see through any existing binding to compare
-        // what each side *currently* means, but a `ConstructorMismatch`/
-        // `ArityMismatch` raised below deliberately reports the
-        // *unresolved* `t1`/`t2` (see those variants' own doc comment):
-        // if either was itself a bare variable before resolving,
-        // that's exactly the identity a caller needs to look up
-        // `provenance` for. Resolving first and shadowing, the way an
-        // earlier version of this function did, would silently
-        // discard that -- by the time the error is built, "was this
-        // ever a variable at all" is no longer answerable.
         let resolved_t1 = self.resolve(t1);
         let resolved_t2 = self.resolve(t2);
 
@@ -492,31 +259,10 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
-    /// Appends `reason` to the provenance log for `var`. Private:
-    /// callers only ever get here through
-    /// [`unify_because`](Self::unify_because)'s bookkeeping, never
-    /// directly — recording a reason with no accompanying bind/merge
-    /// wouldn't mean anything.
     fn record_provenance(&mut self, var: VarId, reason: R) {
         self.provenance.push(ProvenanceEntry { var, reason });
     }
 
-    /// The most recently recorded reason `?a`'s current union-find
-    /// class became what it is, if [`unify_because`](Self::unify_because)
-    /// ever established one for it (directly, or for another variable
-    /// later merged into the same class).
-    ///
-    /// Searches the provenance log newest-first for the latest entry
-    /// whose variable is *currently* — as of this call, via
-    /// [`find`](Self::find) — in the same class as `var`, rather than
-    /// trusting whichever variable id an entry happened to be recorded
-    /// against. That re-canonicalization is what keeps a query correct
-    /// even after further merges happen following the entry's own
-    /// recording; see [`ProvenanceEntry`]'s own doc comment.
-    ///
-    /// `O(n)` in the number of recorded entries — fine for answering
-    /// "why is this mismatched" while building a diagnostic, not meant
-    /// for a hot path.
     pub fn provenance(&mut self, var: VarId) -> Option<&R> {
         let target = self.find(var);
         let mut found = None;
@@ -537,60 +283,22 @@ impl<C, R> Default for UnificationContext<C, R> {
     }
 }
 
-/// Errors [`UnificationContext::unify`] can fail with when `t1 ≟ t2`
-/// doesn't hold.
-///
-/// `ConstructorMismatch`/`ArityMismatch` carry not just what
-/// disagreed (`c1`/`c2`, `arity1`/`arity2`) but *where* — the specific
-/// pair of terms being compared at the exact point of failure. For a
-/// mismatch found while recursing into matching constructors'
-/// arguments (e.g. unifying `Fn(int) -> String` against `Fn(int) ->
-/// int` fails on the *return* position, not the whole `Fn`), these are
-/// that inner pair, not the original top-level `t1 ≟ t2` the caller
-/// asked about — the precise place a caller doing its own diagnostics
-/// (a rendered "expected/found" message scoped to just the conflicting
-/// piece rather than the whole structure) actually wants to point at.
-///
-/// Deliberately the *unresolved* `t1`/`t2` — as received by whichever
-/// [`unify`](UnificationContext::unify)/[`unify_because`](UnificationContext::unify_because)
-/// call (top-level or, while recursing, one raised against a
-/// constructor's arguments) actually failed, not what they resolve
-/// to. If either was itself a bare, unresolved variable at that point,
-/// that's exactly the identity a caller needs to look
-/// [`provenance`](UnificationContext::provenance) up for — already
-/// resolving it here would erase that, since `resolve` always follows
-/// a bound variable all the way through to its current concrete value.
 #[derive(Debug, thiserror::Error)]
 pub enum UnifyError<C> {
-    /// Two applications `f(...)`/`g(...)` had different constructors
-    /// (`f != g`).
     #[error("constructor mismatch: {c1:?} != {c2:?}")]
     ConstructorMismatch {
-        /// The specific term whose constructor was `c1`.
         t1: TermId,
-        /// `t1`'s constructor.
         c1: C,
-        /// The specific term whose constructor was `c2`.
         t2: TermId,
-        /// `t2`'s constructor.
         c2: C,
     },
-    /// Two applications of the *same* constructor had a different
-    /// number of arguments.
     #[error("arity mismatch: {arity1} args vs {arity2} args")]
     ArityMismatch {
-        /// The specific term with `arity1` arguments.
         t1: TermId,
-        /// The number of arguments `t1` had.
         arity1: usize,
-        /// The specific term with `arity2` arguments.
         t2: TermId,
-        /// The number of arguments `t2` had.
         arity2: usize,
     },
-    /// Binding `?a` here would create a cycle — `?a` occurs, directly or
-    /// transitively, within the term it would be bound to (e.g. trying
-    /// to bind `?a ↦ List(?a)`).
     #[error("occurs check failed for {0:?}")]
     OccursCheck(VarId),
 }
@@ -618,7 +326,6 @@ mod tests {
         let b = cx.fresh_var();
         assert!(cx.union_vars(a, b));
         assert_eq!(cx.find(a), cx.find(b));
-        // Already-equal vars: nothing left to merge.
         assert!(!cx.union_vars(a, b));
     }
 
@@ -742,12 +449,6 @@ mod tests {
 
     #[test]
     fn constructor_mismatch_nested_in_a_matching_outer_constructor_carries_the_inner_terms() {
-        // List(Int) ≟ List(Bool): the *outer* constructors (both
-        // "List") and arities (both 1) agree, so the failure only
-        // surfaces once `unify` recurses into the arguments -- the
-        // error needs to carry that inner Int/Bool pair, not the outer
-        // List(Int)/List(Bool) terms the caller originally asked
-        // about, since those are where the actual disagreement is.
         let mut cx = UnificationContext::<&'static str>::new();
         let int_term = cx.insert_term(Term::App {
             constructor: "Int",
@@ -846,10 +547,6 @@ mod tests {
 
     #[test]
     fn unify_rejects_a_variable_already_bound_to_something_else() {
-        // ?v ↦ Int after the first call. Unifying ?v against Bool means
-        // checking Int ≟ Bool, which doesn't hold -- `resolve` is what
-        // makes `unify` see that, instead of treating ?v as still free
-        // and silently rebinding it.
         let mut cx = UnificationContext::<&'static str>::new();
         let v = cx.fresh_var();
         let v_term = cx.insert_term(Term::Var(v));
@@ -878,16 +575,6 @@ mod tests {
 
     #[test]
     fn constructor_mismatch_against_a_bound_variable_reports_the_variable_unresolved() {
-        // ?v ↦ Int, then unify ?v against Bool -- this fails on Int ≟
-        // Bool once resolved, but the error must report *?v itself*
-        // (the term as it was actually passed in) as `t1`, not `Int`
-        // (what ?v currently resolves to). Reporting the resolved
-        // value would make it structurally impossible for a caller to
-        // ever notice "the left-hand side started life as a bare
-        // variable" and look up its provenance -- `resolve` always
-        // follows a binding all the way through, so a resolved `t1`
-        // could never be `Term::Var` again once `?v` is bound to
-        // anything.
         let mut cx = UnificationContext::<&'static str>::new();
         let v = cx.fresh_var();
         let v_term = cx.insert_term(Term::Var(v));
@@ -906,7 +593,10 @@ mod tests {
             panic!("expected a ConstructorMismatch");
         };
 
-        assert_eq!(t1, v_term, "t1 should be ?v itself, not what it resolves to");
+        assert_eq!(
+            t1, v_term,
+            "t1 should be ?v itself, not what it resolves to"
+        );
         assert_eq!(c1, "Int", "the *constructor* is still the resolved one");
         assert_eq!((t2, c2), (bool_term, "Bool"));
         assert_eq!(
@@ -946,9 +636,6 @@ mod tests {
             constructor: "List",
             args: vec![elem],
         });
-        // Different constructor *and* different arity -- the wildcard
-        // check has to fire before either the constructor or the arity
-        // comparison, or this would fail on one of those instead.
         assert!(cx.unify(any_term, list_term).is_ok());
     }
 
@@ -973,10 +660,6 @@ mod tests {
 
     #[test]
     fn a_wildcard_short_circuits_even_nested_inside_a_matching_constructor() {
-        // A nested wildcard argument must not force a real mismatch just
-        // because the *outer* constructors and arities happen to match --
-        // the wildcard check has to fire at every level of the recursive
-        // structural comparison, not just at the top.
         let mut cx = UnificationContext::<&'static str>::with_wildcards(vec!["any", "err"]);
         let err_term = cx.insert_term(Term::App {
             constructor: "err",
@@ -1008,18 +691,11 @@ mod tests {
             constructor: "Int",
             args: vec![],
         });
-        // "any" is just an ordinary constructor value here -- nothing
-        // about the string itself is special. Only a constructor
-        // explicitly registered via `with_wildcard` gets short-circuited.
         assert!(cx.unify(a, b).is_err());
     }
 
     #[test]
     fn resolve_follows_a_chain_of_bound_variables() {
-        // Manually construct ?a ↦ ?b ↦ Int. `unify` itself never creates
-        // a variable-to-variable binding like this -- ?a/?b pairs go
-        // through union_vars instead -- but `resolve` has to handle it
-        // correctly regardless, since `bind` doesn't forbid it.
         let mut cx = UnificationContext::<&'static str>::new();
         let a = cx.fresh_var();
         let b = cx.fresh_var();
@@ -1035,8 +711,6 @@ mod tests {
 
         assert_eq!(cx.resolve(a_term), int_term);
     }
-
-    // -- provenance --------------------------------------------------
 
     #[test]
     fn provenance_is_none_for_an_untouched_variable() {
@@ -1075,7 +749,8 @@ mod tests {
             args: vec![],
         });
 
-        cx.unify_because(v_term, int_term, "because line 12").unwrap();
+        cx.unify_because(v_term, int_term, "because line 12")
+            .unwrap();
 
         assert_eq!(cx.provenance(v), Some(&"because line 12"));
     }
@@ -1097,10 +772,6 @@ mod tests {
 
     #[test]
     fn unify_because_threads_the_same_reason_through_nested_constructors() {
-        // Unifying List(?a) ≟ List(Int) recurses into ?a ≟ Int -- the
-        // reason attached to the *outer*, top-level call has to reach
-        // that inner, structurally-implied binding too, not just a
-        // variable unified directly at the top level.
         let mut cx = UnificationContext::<&'static str, &'static str>::new();
         let v = cx.fresh_var();
         let v_term = cx.insert_term(Term::Var(v));
@@ -1139,10 +810,9 @@ mod tests {
             args: vec![],
         });
 
-        // Two independent bindings, each with its own reason -- neither
-        // should bleed into the other's provenance.
         cx.unify_because(a_term, int_term, "a is Int here").unwrap();
-        cx.unify_because(b_term, bool_term, "b is Bool here").unwrap();
+        cx.unify_because(b_term, bool_term, "b is Bool here")
+            .unwrap();
 
         assert_eq!(cx.provenance(a), Some(&"a is Int here"));
         assert_eq!(cx.provenance(b), Some(&"b is Bool here"));
@@ -1150,14 +820,6 @@ mod tests {
 
     #[test]
     fn provenance_survives_a_later_merge_into_the_same_class() {
-        // `a`'s reason is recorded first. `b` is unrelated at that
-        // point, so `provenance(b)` shouldn't see it -- but once `b` is
-        // later merged into `a`'s class (by *any* means, reasoned or
-        // not), querying `b` should find `a`'s reason too, since they
-        // now denote the same thing. This is exactly what makes
-        // `provenance` re-canonicalize with `find` at query time rather
-        // than trusting the variable id an entry was originally
-        // recorded against.
         let mut cx = UnificationContext::<&'static str, &'static str>::new();
         let a = cx.fresh_var();
         let b = cx.fresh_var();
@@ -1252,14 +914,8 @@ mod tests {
         assert_eq!(cx.term(id), Some(&Term::Var(v)));
     }
 
-    // -- property-based tests --------------------------------------------
-
     use proptest::prelude::*;
 
-    /// A small tree shape to build terms from. `Var(i)` names one of a
-    /// handful of shared variables (see `materialize`) rather than
-    /// creating a fresh one every time, so the same variable can show up
-    /// more than once within (or across) generated shapes.
     #[derive(Debug, Clone)]
     enum Shape {
         Var(u8),
@@ -1268,7 +924,6 @@ mod tests {
         List(Box<Shape>),
     }
 
-    /// Shapes that may contain variables.
     fn any_shape() -> impl Strategy<Value = Shape> {
         let leaf = prop_oneof![
             (0u8..4).prop_map(Shape::Var),
@@ -1280,7 +935,6 @@ mod tests {
         })
     }
 
-    /// Shapes with no variables at all.
     fn ground_shape() -> impl Strategy<Value = Shape> {
         let leaf = prop_oneof![Just(Shape::Int), Just(Shape::Bool)];
         leaf.prop_recursive(4, 16, 2, |inner| {
@@ -1288,11 +942,6 @@ mod tests {
         })
     }
 
-    /// Builds `shape` into `cx`, resolving `Shape::Var(i)` to `vars[i]`
-    /// each time -- so `vars` should be the same slice across every
-    /// `materialize` call in a given test, to keep "variable 0" meaning
-    /// the same variable throughout. Only `any_shape()` ever produces a
-    /// `Var`, and it's only ever paired with a non-empty `vars`.
     fn materialize(
         cx: &mut UnificationContext<&'static str>,
         vars: &[TermId],
@@ -1318,9 +967,6 @@ mod tests {
         }
     }
 
-    /// A fresh context pre-populated with `n` fresh variables (as both
-    /// `VarId`s and the `TermId`s of their `Term::Var` wrappers, for
-    /// `materialize` to hand out).
     fn fresh_context_with_vars(n: usize) -> (UnificationContext<&'static str>, Vec<TermId>) {
         let mut cx = UnificationContext::<&'static str>::new();
         let vars = (0..n)
@@ -1342,9 +988,6 @@ mod tests {
 
         #[test]
         fn unify_is_symmetric(shape1 in any_shape(), shape2 in any_shape()) {
-            // Two separately built, identically-seeded contexts, so
-            // running the forward direction can't leave state behind
-            // that would bias the backward check.
             let (mut cx_fwd, vars_fwd) = fresh_context_with_vars(4);
             let a = materialize(&mut cx_fwd, &vars_fwd, &shape1);
             let b = materialize(&mut cx_fwd, &vars_fwd, &shape2);

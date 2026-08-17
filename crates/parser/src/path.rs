@@ -1,19 +1,6 @@
-//! Paths, path segments, generics, where-clauses, and qualified-self
-//! (`QSelf`) parsing — the mutually recursive `Ty`/`Path`/`GenericArgs`
-//! cluster lives here.
-
 use crate::*;
 use ast::*;
 use lexer::Token;
-
-// A second, independent cycle lives entirely inside generic-arg lists:
-// AssocItemConstraint -> GenericArgs -> GenericArg -> AssocItemConstraint
-// (a constraint's own name can itself carry generics, e.g.
-// `Elem<T> = Wrapper<T>>`). Same problem as the Ty cluster above, same
-// fix: `generic_arg` ties this knot via `recursive()`, and the actual
-// field-building logic lives in these `_with` helpers so both the tied
-// closure and the standalone `pub` functions below can share it without
-// the `pub` functions calling each other's opaque return types directly.
 
 fn assoc_item_constraint_with<'src>(
     ty: impl RooParser<'src, Ty> + 'src,
@@ -34,10 +21,6 @@ fn assoc_item_constraint_with<'src>(
 fn generic_args_with<'src>(
     generic_arg: impl RooParser<'src, GenericArg> + 'src,
 ) -> impl RooParser<'src, GenericArgs> {
-    // grammar.md: `"<" type ("," type)* ">"` — at least one arg, and
-    // actually delimited by `<`/`>` (missing entirely before this fix,
-    // which meant this matched zero args and consumed nothing, silently
-    // leaving any real `<...>` in the input untouched).
     generic_arg
         .separated_by(just(Token::Comma))
         .at_least(1)
@@ -75,13 +58,6 @@ pub fn assoc_item_constraint<'src>(
     assoc_item_constraint_with(ty.clone(), generic_arg(ty))
 }
 
-/// A path segment's leading name — an ordinary [`ident`], or one of the
-/// three reserved words that can start/appear in a path (`self`, `Self`,
-/// `super`; roo has no `crate` root, decisions/0002). These lex as their
-/// own keyword tokens, not `Token::Identifier`, so `ident()` alone never
-/// matches them — this is what lets `use super::Foo;`, `self::Foo`, and
-/// `Self`/`Self::Output` resolve through the same path machinery as any
-/// other name instead of needing their own parallel one.
 fn path_segment_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
@@ -531,8 +507,6 @@ mod tests {
 
     #[test]
     fn rejects_bare_generics_on_a_turbofish_path_segment() {
-        // The whole point: `Vec<int>` (no `::`) must NOT be accepted in
-        // expression position, since `<` is the less-than operator there.
         let tokens = tokens("Vec<int>");
         assert!(
             path_segment_turbofish(ty())
@@ -544,7 +518,6 @@ mod tests {
 
     #[test]
     fn parses_a_turbofish_path_segment_with_no_generics() {
-        // No `::<...>` at all is still just a plain segment.
         let tokens = tokens("foo");
         let parsed = path_segment_turbofish(ty())
             .parse(tokens)
@@ -556,10 +529,6 @@ mod tests {
 
     #[test]
     fn parses_a_multi_segment_turbofish_path_without_generics() {
-        // Ordinary "::" separators between segments must keep working
-        // exactly as before — only a "::" immediately followed by "<" is
-        // ever turbofish; `path_segment_turbofish`'s attempt to treat the
-        // separator as turbofish has to cleanly fail and backtrack here.
         let tokens = tokens("foo::bar::baz");
         let parsed = path_turbofish(ty())
             .parse(tokens)

@@ -1,16 +1,7 @@
-//! Statements, blocks, and match-arm scaffolding (`Local`/`Stmt`/`Block`/
-//! `Guard`/`Arm`).
-
 use crate::*;
 use ast::*;
 use lexer::Token;
 
-/// `#[annotations]* "let" pattern (":" type)? ("=" expr ("else" block)?)? ";"`.
-///
-/// No `pub` here even though `grammar.md`'s `let_stmt` shows one — `Local`
-/// has no `vis` field to put it in. Flagging, not fixing: that's a real
-/// AST/grammar mismatch, same shape as the `GenericParam`/`PatField`
-/// audit gaps earlier, out of scope for "finish `ExprKind`".
 fn local<'src>(
     expr: impl RooParser<'src, Expr> + 'src,
     block: impl RooParser<'src, Block> + 'src,
@@ -42,18 +33,6 @@ fn local<'src>(
         })
 }
 
-/// `item | local | expr ";"? ` — parses `expr` once regardless of
-/// whether a trailing `;` follows, rather than trying `expr ";"` and
-/// `expr` alone as two separate `choice` branches (which would re-parse
-/// the same expression twice on every semicolon-less statement) — same
-/// shared-prefix shape as `meta_item`/`generic_param`.
-///
-/// Uses `item_with(expr, block)`, not the top-level `item()` — `item()`
-/// builds its own fresh `expr`/`block` internally, which here would
-/// recurse forever (`expr -> block -> stmt -> item -> expr -> ...`).
-/// `item_with` instead reuses the `expr`/`block` already being tied by
-/// `expr()`/`block()`'s own recursion, same reason `block` itself takes
-/// `expr` as a parameter instead of calling `expr()` directly.
 fn stmt<'src>(
     expr: impl RooParser<'src, Expr> + 'src,
     block: impl RooParser<'src, Block> + 'src,
@@ -81,18 +60,6 @@ fn stmt<'src>(
     })
 }
 
-/// `"{" statement* "}"` — a block's "trailing expression" isn't a
-/// separate AST field (unlike the tree-sitter grammar's `block` rule,
-/// which does have one); it's just whatever the *last* `Stmt` happens to
-/// be (`StmtKind::Expr`, no semicolon) — `stmt` above already produces
-/// that naturally, nothing extra needed here.
-///
-/// Self-recursive (a block can contain another `{ ... }`), so ties its
-/// own knot via `recursive()`, same as `ty`/`pat`/`expr` — takes `expr`
-/// as a parameter since it's used *from inside* `expr()`'s own
-/// recursive tie (`ExprKind::Block`/`If`/`While`/`ForLoop`/`Loop` all
-/// need a `Block`), so it can't call `expr()` directly without
-/// recreating the exact E0720 cycle `fn_ret_ty` hit earlier.
 pub fn block<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Block> {
     recursive(|block| {
         stmt(expr.clone(), block)

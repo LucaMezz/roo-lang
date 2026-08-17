@@ -1,5 +1,3 @@
-//! Types (`Ty`/`TyKind`), including `Fn` types and function return types.
-
 use crate::*;
 use ast::*;
 use lexer::Token;

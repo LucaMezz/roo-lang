@@ -1,13 +1,6 @@
-//! Converts roo's byte-offset [`ast::Span`]s into the line/UTF-16-column
-//! [`lsp_types::Position`]s the LSP protocol speaks. Built once per
-//! document version so every span in a batch of diagnostics converts in
-//! `O(log n)` rather than rescanning the source per span.
-
 use lsp_types::{Position, Range};
 
 pub struct LineIndex {
-    /// `line_starts[i]` is the byte offset the `i`th line begins at;
-    /// always starts with `0`.
     line_starts: Vec<usize>,
     source_len: usize,
 }
@@ -26,11 +19,6 @@ impl LineIndex {
         }
     }
 
-    /// Converts a byte offset into a `line`/UTF-16 `character`
-    /// [`Position`]. Clamps to the end of the document rather than
-    /// panicking on an out-of-range offset -- a diagnostic computed
-    /// against a slightly stale document version shouldn't be able to
-    /// crash the server.
     pub fn position(&self, source: &str, offset: usize) -> Position {
         let offset = offset.min(self.source_len);
         let line = match self.line_starts.binary_search(&offset) {
@@ -52,13 +40,6 @@ impl LineIndex {
         }
     }
 
-    /// Converts a `line`/UTF-16 `character` [`Position`] back into a
-    /// byte offset -- the inverse of [`Self::position`]. Clamps an
-    /// out-of-range line or character to the nearest valid offset
-    /// (the end of the document, or the end of that line) rather than
-    /// panicking, for the same reason `position` clamps: a stale
-    /// position from a client that raced an edit shouldn't be able to
-    /// crash the server.
     pub fn offset(&self, source: &str, position: Position) -> usize {
         let line = (position.line as usize).min(self.line_starts.len() - 1);
         let line_start = self.line_starts[line];

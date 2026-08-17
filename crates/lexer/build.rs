@@ -1,8 +1,3 @@
-//! Generates one `#[test]` per roo code block in the book, plus one per
-//! file in `examples/`, asserting each lexes with no error. Regenerated
-//! from whatever the book/examples currently say, so the test suite can
-//! never silently drift out of sync with the docs it's checking.
-
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -32,8 +27,6 @@ fn main() {
         .expect("failed to write generated tests");
 }
 
-/// Walks every `.md` file under `book_src`, pulls out every ```` ```roo ````
-/// fenced block, and emits one test per block.
 fn generate_book_snippet_tests(book_src: &Path, out: &mut String) {
     let mut md_files = Vec::new();
     collect_files_with_extension(book_src, "md", &mut md_files);
@@ -52,7 +45,6 @@ fn generate_book_snippet_tests(book_src: &Path, out: &mut String) {
     }
 }
 
-/// Emits one test per `.roo` file directly under `examples_dir`.
 fn generate_example_file_tests(examples_dir: &Path, out: &mut String) {
     let mut roo_files = Vec::new();
     collect_files_with_extension(examples_dir, "roo", &mut roo_files);
@@ -95,12 +87,6 @@ fn write_lex_ok_test(
     out.push('\n');
 }
 
-/// Extracts the contents of every ```` ```roo ````-fenced block in a
-/// markdown file. Deliberately simple line-based scanning rather than a
-/// full markdown parser — the book only ever uses plain triple-backtick
-/// fences, though some are indented (nested inside a list item), so
-/// fence lines are matched trimmed on both ends, not just anchored at
-/// column 0.
 fn extract_roo_blocks(markdown: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut lines = markdown.lines();
@@ -137,8 +123,6 @@ fn collect_files_with_extension(dir: &Path, extension: &str, out: &mut Vec<PathB
     }
 }
 
-/// Turns an arbitrary relative path (or file stem) into a valid Rust
-/// identifier fragment: `data-types/structs` -> `data_types_structs`.
 fn sanitize_ident(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

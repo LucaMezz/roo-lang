@@ -1,5 +1,3 @@
-//! Patterns (`Pat`/`PatKind`).
-
 use crate::*;
 use ast::*;
 use lexer::Token;
@@ -157,15 +155,6 @@ fn pat_kind<'src>(
     ))
 }
 
-/// A single pattern with no top-level `|` or-alternation — required in
-/// closure-parameter position (`|a, b| ...`), where a bare `|` right
-/// after the last parameter is ambiguous between "another or-pattern
-/// alternative" and "closing the parameter list" (real Rust has the
-/// identical `PatNoTopAlt`-vs-`Pat` restriction, for the same reason).
-/// Nested positions (tuple/struct/array elements, parenthesized
-/// sub-patterns, ...) still go through the ordinary or-accepting
-/// `pat()`, since only the outermost level next to the closing `|` is
-/// actually ambiguous.
 pub fn pat_no_top_alt<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'src, Pat> {
     pat_kind(pat(expr.clone()), expr).map_with(|kind, e| Pat {
         kind,
@@ -201,10 +190,6 @@ mod tests {
     use super::*;
     use crate::test_util::tokens;
 
-    // `pat()` doesn't exist yet, so `pat_field()`'s tests stand in a
-    // minimal placeholder pattern parser just to exercise pat_field's
-    // own logic (annotations, shorthand vs `name: pattern`) in
-    // isolation.
     fn dummy_pat<'src>() -> impl RooParser<'src, Pat> {
         ident().map_with(|ident, e| Pat {
             kind: PatKind::Ident(ident, None),
@@ -212,9 +197,6 @@ mod tests {
         })
     }
 
-    // `expr()` doesn't exist yet either — `pat_expr_or_range`'s tests
-    // stand in a minimal literal-only placeholder, since real pattern
-    // range/expr positions are almost always literals anyway.
     fn dummy_expr<'src>() -> impl RooParser<'src, Expr> {
         literal().map_with(|lit, e| Expr {
             kind: ExprKind::Lit(lit),
@@ -353,8 +335,6 @@ mod tests {
 
     #[test]
     fn parses_a_nested_struct_pattern() {
-        // Proves the self-recursion actually works: a struct pattern's
-        // own field can itself be a full struct pattern.
         let tokens = tokens("Outer { inner: Inner { x } }");
         let parsed = pat(dummy_expr())
             .parse(tokens)
@@ -478,9 +458,6 @@ mod tests {
 
     #[test]
     fn prefers_struct_pattern_over_ident_when_a_brace_follows() {
-        // Same "more specific alternative first" hazard as generic_arg
-        // and Fn types: pat_ident must not win just because it can match
-        // the bare identifier and stop before `{ x }` is ever seen.
         let tokens = tokens("Point { x }");
         let parsed = pat(dummy_expr())
             .parse(tokens)
@@ -547,9 +524,6 @@ mod tests {
 
     #[test]
     fn parses_a_single_segment_as_ident_not_path() {
-        // pat_path requires >1 segment (or a qself) — a bare name always
-        // goes through pat_ident instead, since disambiguating "binding
-        // vs. reference to a unit const/variant" needs name resolution.
         let tokens = tokens("Foo");
         let parsed = pat(dummy_expr())
             .parse(tokens)
@@ -739,8 +713,6 @@ mod tests {
 
     #[test]
     fn parses_an_or_pattern_nested_inside_parens() {
-        // Proves Or-wrapping happens through the shared recursive `pat`
-        // handle, not just at the top level.
         let tokens = tokens("(1 | 2)");
         let parsed = pat(dummy_expr())
             .parse(tokens)

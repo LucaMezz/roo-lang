@@ -22,12 +22,19 @@
 // alias isn't a nominal type of its own, just a name for another
 // type, so nothing about "this came from `Pair`" survives checking.
 type Pair<T, U> = (T, U);
+type EitherOrAll<A, B> = (A, [B]);
+type Result<T, E> = (T, E);
 
 #[inline]
-fn flime<T>(x, y) {
-    let a: [T] = x(y);
-    let b: Pair = y(a);
-    a
+fn flime<R>(x, y, z, con) {
+    let a = x(y)(y);
+    let b = identity(y(a)(z));
+    let c = z(identity(b));
+    if con {
+        a
+    } else {
+        b
+    }
 }
 
 // Written with no annotations at all, so it's inferred and
@@ -75,7 +82,7 @@ fn use_generics() {
     
     let (num, str) = g;
 
-    let i = (num, str);
+    let i = (str, num);
 
     (a, b, c, d, e, f, g)
 }

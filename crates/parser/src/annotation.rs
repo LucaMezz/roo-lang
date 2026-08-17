@@ -1,5 +1,3 @@
-//! Roo's `#[...]`/`#![...]` annotation system (`Annotation`/`MetaItem`).
-
 use crate::*;
 use ast::*;
 use lexer::Token;
@@ -86,9 +84,6 @@ mod tests {
 
     #[test]
     fn parses_a_recursively_nested_list_meta_item() {
-        // The exact shape used in examples/ecs.roo's `#[replicated(...)]`:
-        // a list containing a name-value pair and a nested list, whose own
-        // argument is a bare word.
         let tokens = tokens(r#"replicated(rename = "hp", skip_if(default))"#);
         let parsed = meta_item()
             .parse(tokens)
