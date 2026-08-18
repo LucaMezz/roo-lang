@@ -1,3 +1,9 @@
+//! Defines the [`Type`] enum, representing a type in the final
+//! result of the type checking process. This enum is also
+//! responsible for lowering from the terms used internally
+//! throughout the entire type checking process, to the final
+//! Type variants.
+
 use ast::{Pat, PatKind, Span};
 use slotmap::SlotMap;
 use unify::{Term, UnificationContext};
@@ -5,6 +11,10 @@ use unify::{Term, UnificationContext};
 use crate::generic_names::GenericNames;
 use crate::{NameInterner, Symbol, SymbolId, TermId, TyCon, TypeCheckContext};
 
+// Helper to convert a pattern into a string.
+//
+// NOTE currently uses `_` for any pattern which isnt a simple
+// identifier.
 pub(crate) fn pat_display_name(pat: &Pat) -> String {
     match &pat.kind {
         PatKind::Ident(ident, _) => ident.name.clone(),
@@ -13,6 +23,9 @@ pub(crate) fn pat_display_name(pat: &Pat) -> String {
 }
 
 impl TypeCheckContext {
+    // Produces a final completely resolved type from an intermediate
+    // term. This is done once the entirety of the type checking
+    // process is completed.
     pub(crate) fn resolved(&mut self, term: TermId) -> Type {
         resolve_type(
             &mut self.uni_cx,
@@ -24,6 +37,15 @@ impl TypeCheckContext {
     }
 }
 
+/// A fully resolved type.
+///
+/// The entire type checking process operates on `Term`s which are only
+/// used internally. `Term` is the live, mutable representation that
+/// checking and inference actually works with, and only makes sense
+/// in terms of a `UnificationContext`.
+///
+/// internal `Term`s are first lowered to `Types` once the checking
+/// process is complete.
 #[derive(Debug, Clone)]
 pub(crate) enum Type {
     Any,
@@ -43,6 +65,7 @@ pub(crate) enum Type {
 }
 
 impl Type {
+    /// A string representation of the type.
     pub(crate) fn render(&self) -> String {
         match self {
             Type::Any => "any".to_owned(),
@@ -74,6 +97,14 @@ impl diagnostics::ToArgValue for Type {
     }
 }
 
+/// Converts an intermediate `Term` used throughout type checking
+/// into a fully-resolved `Type`. This essentially freezes the Term,
+/// replacing any still unbound inference variables with
+/// [`Type::Unresolved`].
+///
+/// The resulting `Type` is recursive and can be read entirely on
+/// its own without needing to have access to names, symbols,
+/// generics, or the unification context.
 pub(crate) fn resolve_type(
     uni_cx: &mut UnificationContext<TyCon, Span>,
     symbols: &SlotMap<SymbolId, Symbol>,
