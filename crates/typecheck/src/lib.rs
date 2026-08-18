@@ -1,3 +1,11 @@
+//! Contains the type checking stage of the interpreter.
+//!
+//! The type checking stage depends on the AST that was constructed
+//! by the `parser` during the previous stage. Given some AST, the
+//! type checker does several passes of the AST.
+//!
+//!     1.
+
 use std::collections::HashMap;
 
 use ast::visit::{Visitor, Walkable};
@@ -23,82 +31,190 @@ pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
+/// The enum containing all the possible constructors which can
+/// appear within terms. Specifically, a `Term` represents a type
+/// which may contain unknowns, i.e. unbound inference variables
+/// like `?a`. A `Term` is defined recursively, as
+///
+///     t ::= a  |  f(t_1, t_2, ..., t_n)
+///
+/// for some natural n >= 0, where `f` is a constructor, and
+/// t_1,...,t_n are themselves terms. Call t_1,...,t_n the
+/// `arguments`.
+///
+/// For example, the `Term` which represents the `Int` type would
+/// be the [`TyCon::Any`] constructor, applied to zero arguments.
 #[derive(Debug, Clone, PartialEq)]
 enum TyCon {
+    // ===============
+    // Primitive Types
+    // ===============
+    // Always take 0 arguments.
+    //
+    /// The `<error>` type. Used to indicate there has been some
+    /// kind of type error.
+    Err,
+
+    /// The `any` type. Used to opt out of static type checking
+    /// in favour of runtime type checking.
     Any,
 
+    /// The Never `!` type. Indicates that no value is ever produced.
+    /// Directly equivalent to the Never `!` type from Rust.
     Never,
 
+    /// The `int` type. An integer value.
     Int,
+
+    /// The `float` type. A floating point value.
     Float,
+
+    /// The `bool` type. Either `true` or `false`.
     Bool,
+
+    /// The `char` type. A character.
     Char,
+
+    /// The `String` type. A string of characters of arbitrary
+    /// length.
     Str,
 
+    /// The `Fn` type. Always takes exactly two arguments.
+    /// The first is a Tuple term containing terms representing types
+    /// of all the parameters of the function, and the second being
+    /// a term representing the return type of the function.
     Fn,
+
+    /// The Array `[T]` type. Always takes exactly one argument,
+    /// which is a term representing the type of the elements
+    /// held by the array.
     Array,
+
+    /// The Tuple `(T, U, ...)` type. Takes any finite number of
+    /// arguments, where the ith argument is a term representing
+    /// the type of the ith position in the tuple.
     Tuple,
 
+    /// A Struct. Always takes zero arguments. Note that this
+    /// constructor always referes to some specific named struct.
+    /// This ensures nominal typing. Two structs are only ever
+    /// equal if they are actually the same exact named struct, not
+    /// just if they have the same shape.
     Struct(SymbolId),
+
+    /// An Enum. Always takes zero arguments. Note that this
+    /// constructor always referes to some specific named enum.
+    /// This ensures nominal typing. Two enums are only ever
+    /// equal if they are actually the same exact named enum, not
+    /// just if they have the same shape.
     Enum(SymbolId),
 
+    /// A generic type parameter. Always takes zero arguments.
+    /// Two generics are only ever equal if they refer to the
+    /// exact same named generic.
     Generic(GenericId),
-
-    Err,
 }
 
 slotmap::new_key_type! {
+    /// A handle to a scope stored in the scope arena within
+    /// the [`TypeCheckContext`]
     pub struct ScopeId;
 
+    /// A handle to a symbol stored in the symbol arena within
+    /// the [`TypeCheckContext`]
     pub struct SymbolId;
 
+    /// A handle to a generic parameter stored in the generic
+    /// arena within the [`TypeCheckContext`].
     pub struct GenericId;
 }
 
+/// A handle to a name. Use the NameInterner to transition
+/// between a NameId, and the actual string which it is
+/// associated with.
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct NameId(usize);
 
+/// A kind of namespace within each scope.
+///
+/// A scope has two separate namespaces for symbols. One only
+/// contains symbols which represent types within the scope,
+/// while the other only contains symbols which represent
+/// values within the scope.
 #[derive(Clone, Copy)]
 enum Namespace {
+    /// The namespace of Types within a scope.
     Type,
 
+    /// The namespace of Values within a scope.
     Value,
 }
 
+/// A scope. Represents a context where symbols can be defined.
+///
+/// Scopes are created for things such as function bodies,
+/// blocks, etc.
 struct Scope {
+    /// A handle to the enclosing scope.
     parent: Option<ScopeId>,
 
+    /// The [Namespace::Type] namespace. Maps the name of each
+    /// type defined in this scope to its symbol's handle.
     types: HashMap<NameId, SymbolId>,
 
+    /// The [Namespace::Value] namespace. Maps the name of
+    /// each value defined in this scope to its symbol's
+    /// handle.
     values: HashMap<NameId, SymbolId>,
 }
 
+/// A symbol within a symbol table.
 struct Symbol {
+    /// An interned string which is the name of the symbol.
     name: NameId,
 
+    /// The specific kind of symbol that it is.
     kind: SymbolKind,
 
+    /// The term representing the type associated with this
+    /// symbol.
     ty: TermId,
 
+    /// The generic parameters associated with this symbol.
     generics: Vec<GenericId>,
 
+    /// The span within the source code that resulted in
+    /// the introduction of this symbol.
     declared_at: Span,
 }
 
+/// Extra information about a function symbol.
 struct FnSymbol {
+    /// A handle to the scope of the function body.
     scope: ScopeId,
 
+    /// The span of each of the parameters of the function
+    /// within the source code.
     param_spans: Vec<Option<Span>>,
 
+    /// The name of each of the parameters as they appear
+    /// in the source code.
     param_names: Vec<String>,
 }
 
+/// The specific kind of [`Symbol`].
 enum SymbolKind {
     Struct,
     Enum,
     Variant,
     Trait,
+    /// A type alias. Type aliases need their own scope
+    /// because they can have generic type parameters which
+    /// should only exist during the evaluation of the
+    /// type on the right hand side of the alias.
     TyAlias(ScopeId),
+    /// A module. Here, the [`ScopeId`] is a handle to the
+    /// scope of the module body.
     Mod(ScopeId),
     Fn(FnSymbol),
     Local,
@@ -106,6 +222,9 @@ enum SymbolKind {
     GenericParam,
 }
 
+/// Differentiates between a variable introduced to the scope
+/// of a function via being a parameter, and one introduced
+/// by a let binding.
 #[derive(Clone, Copy)]
 enum PatDeclKind {
     Param,
@@ -122,6 +241,8 @@ impl PatDeclKind {
 }
 
 impl SymbolKind {
+    /// Which [`Namespace`] a symbol of this kind belongs to
+    /// within a [`Scope`].
     fn namespace(&self) -> Namespace {
         match self {
             SymbolKind::Struct
@@ -137,12 +258,14 @@ impl SymbolKind {
     }
 }
 
+/// Maps names to unique integer [`NameId`]s.
 struct NameInterner {
     strings: Vec<String>,
     ids: HashMap<String, NameId>,
 }
 
 impl NameInterner {
+    /// Create a new empty [`NameInterner`].
     pub fn new() -> Self {
         Self {
             strings: vec![],
@@ -150,6 +273,7 @@ impl NameInterner {
         }
     }
 
+    /// Get the [`NameId`] associated with the given name.
     pub fn id(&mut self, string: &str) -> NameId {
         if let Some(id) = self.ids.get(string) {
             return *id;
@@ -161,30 +285,63 @@ impl NameInterner {
         id
     }
 
+    /// Get the name string associated with a given [`NameId`].
     pub fn name(&self, id: NameId) -> Option<&String> {
         self.strings.get(id.0)
     }
 }
 
+/// Holds all state required to perform type checking on an
+/// entire program. Also provides methods used to complete
+/// the type checking and type inference.
 struct TypeCheckContext {
+    /// Keeps track of what every inference variable
+    /// throughout the entire program is bound to. Facilitates
+    /// O(1) unification of two terms, performing the required
+    /// substitutions to ensure two terms are equal. Also
+    /// stores a [`Span`] with the reason two terms were
+    /// unified.
     uni_cx: UnificationContext<TyCon, Span>,
 
+    /// Maps all names used throughout the type checking
+    /// process to unique name IDs to improve performance.
+    /// They are cheap to copy and hash, etc.
     names: NameInterner,
 
+    /// The symbol table. Contains all symbols within the
+    /// program. It is a generational arena where a
+    /// [`SymbolId`] is a unique handle to a [`Symbol`].
     symbols: SlotMap<SymbolId, Symbol>,
 
+    /// Contains all scopes within the program. It is a
+    /// generational arena where a [`ScopeId`] is a unique
+    /// handle to a certain [`Scope`].
     scopes: SlotMap<ScopeId, Scope>,
 
+    /// Identifies a unique generic type parameter which appears
+    /// somewhere in the program.
+    ///
+    /// TODO No need for a SlotMap here. GenericIds are never
+    /// deleted from the arena, so need for a generational arena.
     generic_ids: SlotMap<GenericId, ()>,
 
+    /// Store and synthesise names for generics. See
+    /// [`GenericNames`] for more info.
     generic_names: GenericNames,
 
+    /// A handle to the scope that is currently being checked.
     current_scope: ScopeId,
 
+    /// A stack for identifying and generalising free inference
+    /// variables across a chain of nested functions. Contains
+    /// a handle to the [`Symbol`]s of all enclosing functions.
     checking_stack: Vec<SymbolId>,
 
+    /// All the diagnostics that have been accumulated so far.
     diagnostics: Diagnostics,
 
+    /// An index which allows you to query for symbols and types
+    /// and other things, based on spans within the source code.
     positions: PositionIndex,
 }
 
@@ -195,6 +352,7 @@ impl Default for TypeCheckContext {
 }
 
 impl TypeCheckContext {
+    /// Create a new blank [`TypeCheckContext`].
     fn new() -> Self {
         let mut scopes = SlotMap::with_key();
         let root = scopes.insert(Scope {
@@ -228,6 +386,7 @@ impl TypeCheckContext {
             .collect()
     }
 
+    /// Updates the [`PositionIndex`] to include a newly found path.
     fn record_path_reference(&mut self, path: &Path, symbol: SymbolId) {
         if let Some(segment) = path.segments.last() {
             self.positions.record_symbol(segment.ident.span, symbol);
@@ -244,6 +403,26 @@ impl TypeCheckContext {
         self.positions.type_name_at(offset)
     }
 
+    /// Performs the resolution stage of the type checking.
+    ///
+    /// This is the first stage of the type checking process.
+    /// It walks the AST, and creates a new symbol in the symbol
+    /// table for each item.
+    ///
+    /// For example, say one of the items is a `function`
+    /// ```ignore
+    /// fn add_int<T>(a: T, b: int) {
+    ///     a + b
+    /// }
+    /// ```
+    /// Then a new [`Symbol`] is created within the symbol table
+    /// for it, with [`SymbolKind::Fn`] kind. Note that in this
+    /// stage *does* create a [`Scope`] for the function body,
+    /// and declares symbols for the generic type parameters,
+    /// in this case just `T`. However, this stage does *not*
+    /// try to determine the type of the new symbol for the
+    /// function yet. Instead, it just assigns a fresh inference
+    /// variable to represent its type.
     fn resolve(&mut self, items: &[Box<Item>]) {
         let mut resolver = Resolver { cx: self };
         for item in items {
@@ -251,6 +430,34 @@ impl TypeCheckContext {
         }
     }
 
+    /// Performs lowering of signatures. It does this for
+    /// functions and also type aliases.
+    ///
+    /// This is the second stage of the type checking process.
+    /// In the previous `resolve` stage, it created new symbols
+    /// for all of the items within the AST. However, it only
+    /// assigns a fresh inference variable as the type of each
+    /// symbol.
+    ///
+    /// This stage uses information in the AST about types of
+    /// the symbols and lowers those types into Terms. It does
+    /// this for all applicable kinds of items.
+    ///
+    /// For example, say one of the items is a function
+    /// ```ignore
+    /// fn add_int<T>(a: T, b: int) {
+    ///     a + b
+    /// }
+    /// ```
+    /// In the previous resolution stage, a new [`Symbol`] of
+    /// kind [`SymbolKind::Fn`] would have been created inside
+    /// the symbol table. Now, a new `Term` is created for the
+    /// type of this `add_int` function, based on the type
+    /// annotations in the signature only. So the [`Symbol`]
+    /// will now have type `Fn<T>(T, int) -> ?a`. The return
+    /// type is an inference variable because there is no
+    /// return type annotation, and no type checking or
+    /// inference of function bodies has been performed yet.
     fn lower_signatures(&mut self, items: &[Box<Item>]) {
         let mut lowerer = SignatureLowerer { cx: self };
         for item in items {
@@ -258,12 +465,66 @@ impl TypeCheckContext {
         }
     }
 
+    /// Performs type checking of function bodies.
+    ///
+    /// This is the third and final stage of the type checking
+    /// process. So far after the `resolve` and
+    /// `lower_signatures` stages have compelted, we have a
+    /// symbol table where functions all have types matching
+    /// the types annotated in their signatures (including
+    /// inference variables `?a` where type annotations were
+    /// left out).
+    ///
+    /// This stage performs type checking and inference on
+    /// the body of all functions. It also unifies the term
+    /// representing the type of the function that was created
+    /// in the previous `lower_signatures` stage.
+    ///
+    /// For example, say there is a function
+    /// ```ignore
+    /// fn apply(f, x: int) {
+    ///     f(x)
+    /// }
+    /// ```
+    /// The symbol for `add_int` would have had its type
+    /// recorded as `Fn(?a, x: int) -> ?b` in the previous
+    /// step.
+    ///
+    /// Now we look at the body of the function. Since the
+    /// parameter `f` is called with argument `x`, it would
+    /// introduce the constraint that `f` must have type
+    /// `Fn(int) -> ?c`, since `f` must be a function that
+    /// can be called for that call to be valid, and it must
+    /// support a parameter of type `int` since `x : int`.
+    ///
+    /// Additionally, since the call is also the last
+    /// expression in the function and has no semicolon,
+    /// we also require that the type of the expression
+    /// matches the return type of the function `apply`.
+    ///
+    /// So we `unify(?c, ?b)` which means that both these
+    /// inference variables must bind to the same term.
+    /// Suppose the representative is ?b. Then the inferred
+    /// type of the function at this point is
+    /// `Fn( Fn(int) -> ?b ) -> ?b`.
+    ///
+    /// At this point [`Self::generalize_group`] introduces
+    /// a new type parameter `T` giving final inferred type
+    /// `Fn<T>( Fn(int) -> T ) -> T`.
     fn check(&mut self, items: &[Box<Item>]) {
         let mut checker = Checker::new(self);
         let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
         checker.check_functions(&items);
     }
 
+    /// Returns a handle to the [`Symbol`] which the given path
+    /// references, if it exists in the given namespace.
+    ///
+    /// Searches for the symbol represented by the first
+    /// segment in the path recursively up the chain of
+    /// enclosed scopes. If it finds it, it then continues
+    /// recursively resolving the shortened path until
+    /// it potentially arrives at a symbol.
     fn resolve_path(&mut self, path: &Path, namespace: Namespace) -> Option<SymbolId> {
         let mut segments = path.segments.iter().peekable();
 
@@ -296,6 +557,8 @@ impl TypeCheckContext {
         Some(symbol)
     }
 
+    /// Directly checks if the given scope contains a symbol
+    /// with a given name, which belongs to a certain namespace.
     fn lookup_in_scope(
         &self,
         scope: ScopeId,
@@ -309,6 +572,9 @@ impl TypeCheckContext {
         map.get(&name).copied()
     }
 
+    /// Recursively searches the current scope and enclosing
+    /// scopes for a [`Symbol`] with a given name and which
+    /// belongs to the specified namespace.
     fn lookup_up_scope_chain(
         &self,
         mut scope: ScopeId,
@@ -323,6 +589,11 @@ impl TypeCheckContext {
         }
     }
 
+    /// Declares a new [`Symbol`] in a scope of a certain kind.
+    ///
+    /// Note that a fresh inference variable `?a` is created to
+    /// represent the type of this symbol until something else
+    /// later constrains it.
     fn declare(&mut self, name: &str, span: Span, kind: SymbolKind) -> SymbolId {
         let namespace = kind.namespace();
         let name = self.names.id(name);
@@ -340,6 +611,17 @@ impl TypeCheckContext {
         symbol
     }
 
+    /// Declares a new generic parameter within the current
+    /// scope. For example, say there is a function
+    /// ```ignore
+    /// fn identity<T>(x: T) -> T {
+    ///     x
+    /// }
+    /// ```
+    /// then when resolving this function, the scope of the
+    /// body is entered, and a new [`SymbolKind::GenericParam`]
+    /// is created for `T` inside that scope so `T` becomes
+    /// a valid type that can be used within the function body.
     fn declare_generic_param(&mut self, param_name: &str, span: Span) -> (SymbolId, GenericId) {
         let name = self.names.id(param_name);
         let id = self.generic_ids.insert(());
@@ -357,6 +639,8 @@ impl TypeCheckContext {
         (symbol, id)
     }
 
+    /// Inserts a symbol into the current [`Scope`] via its
+    /// handle.
     fn insert_in_scope(&mut self, name: NameId, symbol: SymbolId, namespace: Namespace) {
         let scope = &mut self.scopes[self.current_scope];
         match namespace {
@@ -365,6 +649,9 @@ impl TypeCheckContext {
         };
     }
 
+    /// Convert a [`Ty`] AST node into a Term which represents
+    /// that type and which can actually be used by the type
+    /// checker to perform checking and inference.
     fn lower_ty(&mut self, ty: &Ty) -> TermId {
         match &ty.kind {
             TyKind::Never => term!(self.uni_cx, TyCon::Never),
@@ -379,6 +666,9 @@ impl TypeCheckContext {
                 let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
                 let inputs_term = term!(self.uni_cx, TyCon::Tuple => input_args);
                 let output_term = match output {
+                    // When a function doesn't annotate a return type,
+                    // inroduce a fresh inference variable `?a` to
+                    // represent its type.
                     FnRetTy::Default(_) => {
                         let var = self.uni_cx.fresh_var();
                         term!(self.uni_cx, var var)
@@ -388,6 +678,8 @@ impl TypeCheckContext {
                 term!(self.uni_cx, TyCon::Fn => [inputs_term, output_term])
             }
             TyKind::Path(path) => match path.segments.as_slice() {
+                // The primitive / builtin types in the language are
+                // just represented by hardcoded paths.
                 [segment] if segment.ident.name == "bool" => {
                     self.positions.record_primitive(segment.ident.span, "bool");
                     term!(self.uni_cx, TyCon::Bool)
@@ -426,7 +718,10 @@ impl TypeCheckContext {
                 },
             },
             TyKind::ImplicitSelf => unimplemented!(),
-
+            // When `_` is used as a type annotation, it means
+            // the type should be inferred. Hence, introduce
+            // a fresh inference variable `?a` to represent
+            // this type.
             TyKind::Infer => {
                 let var = self.uni_cx.fresh_var();
                 term!(self.uni_cx, var var)
@@ -436,11 +731,17 @@ impl TypeCheckContext {
     }
 }
 
+/// The AST Visitor that performs the Resolution stage of the
+/// type checking. Walks the AST, creating new symbols in the
+/// symbol table for each item it finds.
 struct Resolver<'a> {
+    /// Mutable reference to the underlying TypeCheckContext.
     cx: &'a mut TypeCheckContext,
 }
 
 impl Resolver<'_> {
+    /// Creates a new [`Scope`] in the underling
+    /// [`TypeCheckContext`], and returns a handle to it.
     fn new_scope(&mut self) -> ScopeId {
         let parent = self.cx.current_scope;
         self.cx.scopes.insert(Scope {
@@ -450,6 +751,13 @@ impl Resolver<'_> {
         })
     }
 
+    /// Enters the given scope, performs some function while
+    /// inside that scope, and then exits the scope once the
+    /// function is complete.
+    ///
+    /// This ensures that even an early exit will still
+    /// ensure that the current_scope is updated back to
+    /// the parent scope.
     fn with_scope(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self)) {
         let parent = self.cx.current_scope;
         self.cx.current_scope = scope;
@@ -536,11 +844,22 @@ impl Visitor for Resolver<'_> {
     }
 }
 
+/// Performs the signature lowering stage of the type checking.
+/// Fills in the types of the symbols created by the [`Resolver`]
+/// where possible, for example for functions and type aliases.
 struct SignatureLowerer<'a> {
+    /// A mutable reference to the underlying TypeCheckContext.
     cx: &'a mut TypeCheckContext,
 }
 
 impl SignatureLowerer<'_> {
+    /// Enters the given scope, performs some function while
+    /// inside that scope, and then exits the scope once the
+    /// function is complete.
+    ///
+    /// This ensures that even an early exit will still
+    /// ensure that the current_scope is updated back to
+    /// the parent scope.
     fn with_scope(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self)) {
         let parent = self.cx.current_scope;
         self.cx.current_scope = scope;
@@ -548,6 +867,9 @@ impl SignatureLowerer<'_> {
         self.cx.current_scope = parent;
     }
 
+    /// Creates a term representing the type of a function
+    /// based on the explicit type annotations within its
+    /// signature.
     fn lower_fn_sig(&mut self, f: &Fn) -> TermId {
         let inputs = f
             .sig
@@ -591,7 +913,12 @@ impl Visitor for SignatureLowerer<'_> {
                         if let Some(symbol) = symbol {
                             let fn_term = this.lower_fn_sig(f);
                             let symbol_ty = this.cx.symbols[symbol].ty;
+                            // Unifies the fresh placeholder inference variable which
+                            // was created during the previous Resolution stage with the
+                            // term created by lowering the function signature.
                             let _ = this.cx.uni_cx.unify(symbol_ty, fn_term);
+
+                            // Collect information about parameter names and spans.
                             if let SymbolKind::Fn(fn_data) = &mut this.cx.symbols[symbol].kind {
                                 fn_data.param_spans = f
                                     .sig
@@ -625,6 +952,10 @@ impl Visitor for SignatureLowerer<'_> {
                     self.with_scope(scope, |this| {
                         let aliased = this.cx.lower_ty(ty);
                         let symbol_ty = this.cx.symbols[symbol].ty;
+                        // Unifies the fresh placeholder inference variable which
+                        // was created during the previous Resolution stage with the
+                        // term created by lowering the type of the expression being
+                        // aliased.
                         let _ = this.cx.uni_cx.unify(symbol_ty, aliased);
                     });
                 }
