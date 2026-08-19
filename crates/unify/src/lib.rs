@@ -1,3 +1,4 @@
+//! Facilitates the creation and unification of terms
 use std::fmt;
 use std::mem;
 
@@ -263,9 +264,15 @@ impl<C, R> UnificationContext<C, R> {
         self.provenance.push(ProvenanceEntry { var, reason });
     }
 
+    /// Retrieves the most recent recorded provenance related
+    /// to the type variable provided.
     pub fn provenance(&mut self, var: VarId) -> Option<&R> {
+        // Get the representative of the set.
         let target = self.find(var);
         let mut found = None;
+        // Search backwards through the provenance list to
+        // find the most recent entry which has the same
+        // representative as the `var` provided.
         for i in (0..self.provenance.len()).rev() {
             let entry_var = self.provenance[i].var;
             if self.find(entry_var) == target {
