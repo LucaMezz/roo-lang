@@ -2,6 +2,7 @@
 /.cargo/config.toml
 /book/book
 /book/mdbook-roo-highlight/target
+/spec
 
 # LaTeX build artifacts
 spec/*.aux
