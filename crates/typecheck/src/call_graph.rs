@@ -1,9 +1,60 @@
 use std::collections::{HashMap, HashSet};
 
-use ast::visit::{Visitor, Walkable};
-use ast::{Expr, ExprKind, Item, ItemKind, Pat, PatKind, Stmt, StmtKind};
+use ast::{
+    Expr, ExprKind, Stmt, StmtKind,
+    visit::{Visitor, Walkable},
+};
 
-use crate::SymbolId;
+use crate::{Namespace, SymbolId, SymbolKind, TypeCheckContext};
+
+pub trait AdjacencyListGraph {
+    fn nodes(&self) -> &HashSet<SymbolId>;
+    fn edges(&self) -> &HashMap<SymbolId, HashSet<SymbolId>>;
+}
+
+#[derive(Debug)]
+pub struct CallGraph {
+    /// A list of all of the functions which appear in this call graph.
+    nodes: HashSet<SymbolId>,
+    /// A list of calls from the body of one function to another.
+    edges: HashMap<SymbolId, HashSet<SymbolId>>,
+    /// The current function.
+    curr: Option<SymbolId>,
+}
+
+impl CallGraph {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashSet::new(),
+            edges: HashMap::new(),
+            curr: None,
+        }
+    }
+
+    pub fn call(&mut self, from: SymbolId, to: SymbolId) {
+        self.nodes.insert(from);
+        self.nodes.insert(to);
+        let edge_set = self.edges.get_mut(&from);
+        match edge_set {
+            Some(edges) => {
+                edges.insert(to);
+            }
+            None => {
+                self.edges.insert(from, HashSet::from([to]));
+            }
+        }
+    }
+}
+
+impl AdjacencyListGraph for CallGraph {
+    fn nodes(&self) -> &HashSet<SymbolId> {
+        &self.nodes
+    }
+
+    fn edges(&self) -> &HashMap<SymbolId, HashSet<SymbolId>> {
+        &self.edges
+    }
+}
 
 /// Finds the strongly connected components within the given function
 /// call graph, using Tarjan's algorithm to do it in O(V+E) time.
@@ -11,10 +62,10 @@ use crate::SymbolId;
 /// Used to perform call-graph SCC analysis on recursive or mutually
 /// recursive functions so that free inference variables can be
 /// generalised by introducing type parameters.
-pub(crate) fn strongly_connected_components(
-    nodes: &[SymbolId],
-    edges: &HashMap<SymbolId, Vec<SymbolId>>,
-) -> Vec<Vec<SymbolId>> {
+pub(crate) fn strongly_connected_components<G>(graph: &G) -> Vec<Vec<SymbolId>>
+where
+    G: AdjacencyListGraph,
+{
     struct State {
         index: HashMap<SymbolId, u32>,
         lowlink: HashMap<SymbolId, u32>,
@@ -25,7 +76,7 @@ pub(crate) fn strongly_connected_components(
     }
 
     /// Explores a single node.
-    fn visit(node: SymbolId, edges: &HashMap<SymbolId, Vec<SymbolId>>, state: &mut State) {
+    fn visit(node: SymbolId, edges: &HashMap<SymbolId, HashSet<SymbolId>>, state: &mut State) {
         state.index.insert(node, state.next_index);
         state.lowlink.insert(node, state.next_index);
         state.next_index += 1;
@@ -33,7 +84,7 @@ pub(crate) fn strongly_connected_components(
         state.on_stack.insert(node);
 
         // Explores each edge out of the current node.
-        for &successor in edges.get(&node).map(Vec::as_slice).unwrap_or_default() {
+        for &successor in edges.get(&node).into_iter().flatten() {
             if !state.index.contains_key(&successor) {
                 // If the node this edge points to has not been visited previously, then
                 // visit it, since the connected component it belongs to has not yet been
@@ -97,74 +148,46 @@ pub(crate) fn strongly_connected_components(
     // Visit an unexplored node in the call graph. Explore it until
     // an entire strongly connected component is found. Repeat until
     // all nodes have been explored.
-    for &node in nodes {
+    for &node in graph.nodes() {
         if !state.index.contains_key(&node) {
-            visit(node, edges, &mut state);
+            visit(node, graph.edges(), &mut state);
         }
     }
     state.sccs
 }
 
-/// Responsible for finding paths to functions, to help construct
-/// the call graph so that SCC analysis can be performed on it.
-pub(crate) struct CallGraphCollector<'a> {
-    /// The name of all functions in the same scope as the one
-    /// being explored.
-    pub(crate) sibling_names: &'a HashMap<&'a str, SymbolId>,
-    /// A list of functions that have been shadowed and so any
-    /// occurrences of that name should not have an edge made
-    /// because the name no longer represents a function.
-    pub(crate) shadowed: HashSet<String>,
-    pub(crate) edges: Vec<SymbolId>,
+pub struct CallGraphCollector<'a> {
+    graph: &'a mut CallGraph,
+    cx: &'a mut TypeCheckContext,
+    from: SymbolId,
 }
 
-impl Visitor for CallGraphCollector<'_> {
+impl<'a> CallGraphCollector<'a> {
+    pub fn new(from: SymbolId, graph: &'a mut CallGraph, cx: &'a mut TypeCheckContext) -> Self {
+        Self { from, graph, cx }
+    }
+}
+
+impl<'a> Visitor for CallGraphCollector<'a> {
     fn visit_expr(&mut self, expr: &Expr) {
-        // For any reference to one of the sibling functions,
-        // create a new edge which will be included in the
-        // constructed call graph. Ignore shadowed functions.
-        if let ExprKind::Path(None, path) = &expr.kind
-            && let [segment] = path.segments.as_slice()
-            && !self.shadowed.contains(segment.ident.name.as_str())
-            && let Some(&symbol) = self.sibling_names.get(segment.ident.name.as_str())
-        {
-            self.edges.push(symbol);
-        }
-        expr.walk(self);
+        match &expr.kind {
+            ExprKind::Path(_, path) => {
+                if let Some(to) = self.cx.resolve_path(path, Namespace::Value) {
+                    if let Some(symbol) = self.cx.symbols.get(to) {
+                        if let SymbolKind::Fn(_) = symbol.kind {
+                            self.graph.call(self.from, to);
+                        }
+                    }
+                }
+            }
+            _ => expr.walk(self),
+        };
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt) {
-        stmt.walk(self);
-        // Builds the list of shadowed names.
         match &stmt.kind {
-            StmtKind::Let(local) => collect_pat_names(&local.pat, &mut self.shadowed),
-            StmtKind::Item(item) => {
-                if let ItemKind::Fn(f) = &item.kind {
-                    self.shadowed.insert(f.ident.name.clone());
-                }
-            }
-            _ => {}
+            StmtKind::Item(_) => {}
+            _ => stmt.walk(self),
         }
-    }
-
-    fn visit_item(&mut self, _item: &Item) {}
-}
-
-/// Collects the names of all local variables that are introduced
-/// by the pattern, to help build a set of shadowed names.
-pub(crate) fn collect_pat_names(pat: &Pat, names: &mut HashSet<String>) {
-    match &pat.kind {
-        PatKind::Ident(ident, sub) => {
-            names.insert(ident.name.clone());
-            if let Some(sub) = sub {
-                collect_pat_names(sub, names);
-            }
-        }
-        PatKind::Tuple(pats) => {
-            for pat in pats {
-                collect_pat_names(pat, names);
-            }
-        }
-        _ => {}
     }
 }

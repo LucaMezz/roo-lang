@@ -6,7 +6,9 @@ use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
 use unify::Term;
 
-use crate::call_graph::{CallGraphCollector, strongly_connected_components};
+use crate::call_graph::{
+    AdjacencyListGraph, CallGraph, CallGraphCollector, strongly_connected_components,
+};
 
 fn resolve(source: &str) -> TypeCheckContext {
     let tokens = lexer::tokenize_all(source).expect("should lex");
@@ -1226,7 +1228,7 @@ fn outer(x: int) {
     }
 }
 "#;
-    let mut cx = check_all(source);
+    let cx = check_all(source);
 
     let param_decl_offset = source.find("x: int").unwrap();
     let param_use_offset = source.rfind('x').unwrap();
@@ -1731,12 +1733,11 @@ fn scc_a_chain_with_no_cycles_is_all_singletons_in_dependency_order() {
     let ids = symbol_ids(3);
     let (a, b, c) = (ids[0], ids[1], ids[2]);
 
-    let mut edges = HashMap::new();
-    edges.insert(a, vec![b]);
-    edges.insert(b, vec![c]);
-    edges.insert(c, vec![]);
+    let mut graph = CallGraph::new();
+    graph.call(a, b);
+    graph.call(b, c);
 
-    let sccs = strongly_connected_components(&ids, &edges);
+    let sccs = strongly_connected_components(&graph);
 
     assert_eq!(sccs, vec![vec![c], vec![b], vec![a]]);
 }
@@ -1746,11 +1747,11 @@ fn scc_a_two_cycle_is_one_component() {
     let ids = symbol_ids(2);
     let (a, b) = (ids[0], ids[1]);
 
-    let mut edges = HashMap::new();
-    edges.insert(a, vec![b]);
-    edges.insert(b, vec![a]);
+    let mut graph = CallGraph::new();
+    graph.call(a, b);
+    graph.call(b, a);
 
-    let sccs = strongly_connected_components(&ids, &edges);
+    let sccs = strongly_connected_components(&graph);
 
     assert_eq!(sccs.len(), 1, "{sccs:?}");
     assert_eq!(sccs[0].len(), 2);
@@ -1763,13 +1764,13 @@ fn scc_three_way_cycle_is_one_component_that_pops_before_an_unrelated_caller() {
     let ids = symbol_ids(4);
     let (a, b, c, caller) = (ids[0], ids[1], ids[2], ids[3]);
 
-    let mut edges = HashMap::new();
-    edges.insert(a, vec![b]);
-    edges.insert(b, vec![c]);
-    edges.insert(c, vec![a]);
-    edges.insert(caller, vec![a]);
+    let mut graph = CallGraph::new();
+    graph.call(a, b);
+    graph.call(b, c);
+    graph.call(c, a);
+    graph.call(caller, a);
 
-    let sccs = strongly_connected_components(&ids, &edges);
+    let sccs = strongly_connected_components(&graph);
 
     assert_eq!(sccs.len(), 2, "{sccs:?}");
     assert_eq!(sccs[0].len(), 3);
@@ -1903,29 +1904,34 @@ fn call_graph_collector_does_not_descend_into_a_nested_items_own_body() {
 
     let mut cx = TypeCheckContext::new();
     let scope = cx.current_scope;
-    let sibling_span = Span { start: 0, end: 0 };
-    let sibling = cx.declare(
+    let dummy_span = Span { start: 0, end: 0 };
+    cx.declare(
         "sibling",
-        sibling_span,
+        dummy_span,
         SymbolKind::Fn(FnSymbol {
             scope,
             param_spans: Vec::new(),
             param_names: Vec::new(),
         }),
     );
-    let sibling_names: HashMap<&str, SymbolId> = [("sibling", sibling)].into_iter().collect();
+    let outer = cx.declare(
+        "outer",
+        dummy_span,
+        SymbolKind::Fn(FnSymbol {
+            scope,
+            param_spans: Vec::new(),
+            param_names: Vec::new(),
+        }),
+    );
 
-    let mut collector = CallGraphCollector {
-        sibling_names: &sibling_names,
-        shadowed: HashSet::new(),
-        edges: Vec::new(),
-    };
+    let mut graph = CallGraph::new();
+    let mut collector = CallGraphCollector::new(outer, &mut graph, &mut cx);
     collector.visit_block(&block);
 
     assert!(
-        collector.edges.is_empty(),
+        graph.edges().is_empty(),
         "a nested item's own call shouldn't be attributed to its enclosing fn: {:?}",
-        collector.edges
+        graph.edges()
     );
 }
 

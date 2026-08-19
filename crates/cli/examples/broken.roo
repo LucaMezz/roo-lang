@@ -1,11 +1,15 @@
+// 1
 fn outer_1(x) {
+    // 2
     fn inner_1(y) {
         outer_2(y)
     }
     inner_1(x)
 }
 
+// 3
 fn outer_2(x) {
+    // 4
     fn inner_2(y) {
         outer_1(y)
     }

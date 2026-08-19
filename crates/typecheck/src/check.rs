@@ -1,14 +1,11 @@
-use std::collections::{HashMap, HashSet};
-
-use ast::visit::Visitor;
 use ast::{
     Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, Pat, PatKind, Span,
-    Stmt, StmtKind,
+    Stmt, StmtKind, visit::Visitor,
 };
 use diagnostics::Related;
 use unify::{Term, UnifyError, term};
 
-use crate::call_graph::{CallGraphCollector, collect_pat_names, strongly_connected_components};
+use crate::call_graph::{CallGraph, CallGraphCollector, strongly_connected_components};
 use crate::errors::{
     ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
     expected_due_to, generic_note, provenance,
@@ -644,7 +641,7 @@ impl<'a> Checker<'a> {
     /// ```ignore
     /// fn second<T>(x: T) -> T
     /// ```
-    pub(crate) fn check_functions(&mut self, items: &[&Item]) {
+    pub(crate) fn check_functions(&mut self, items: &[&Item], graph: &mut CallGraph) {
         // Checks that all the passed items are indeed functions,
         // since this function only is concerned with functions,
         // and collects their symbols.
@@ -664,72 +661,14 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        // Just constructs a mapping from function name to
-        // function symbol.
-        let sibling_names: HashMap<&str, SymbolId> = fns
-            .iter()
-            .map(|&(symbol, item)| {
-                let ItemKind::Fn(f) = &item.kind else {
-                    unreachable!("fns only ever holds ItemKind::Fn items")
-                };
-                (f.ident.name.as_str(), symbol)
-            })
-            .collect();
-
-        // Construct the call-graph on which the connected component
-        // analsyis will be performed on.
-        let nodes: Vec<SymbolId> = fns.iter().map(|&(symbol, _)| symbol).collect();
-        let mut edges: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
-
-        for &(symbol, item) in &fns {
-            let ItemKind::Fn(f) = &item.kind else {
-                unreachable!("fns only ever holds ItemKind::Fn items")
-            };
-            if let Some(body) = f.body.as_ref() {
-                // Build a set of the names of all parameters that are the
-                // same as the names of sibling functions. This prevents
-                // making false edges within the call graph.
-                let mut shadowed = HashSet::new();
-                for param in &f.sig.inputs {
-                    collect_pat_names(&param.pat, &mut shadowed);
-                }
-
-                // Construct the collector for this function, which will
-                // explore the body of the function and find any calls made
-                // to itself or any other sibling functions, inserting
-                // edges to the call-graph for each.
-                let mut collector = CallGraphCollector {
-                    sibling_names: &sibling_names,
-                    shadowed,
-                    edges: Vec::new(),
-                };
-                collector.visit_block(body);
-                edges.insert(symbol, collector.edges);
-            }
+        for (symbol, item) in fns {
+            self.check_fn_body(symbol, item, graph);
         }
 
-        let items_by_symbol: HashMap<SymbolId, &Item> = fns.into_iter().collect();
-
-        // Performs generalisation of each strongly connected component
-        // within each constructed call-graph. Performs type inference
-        // and type checking on each function individually before
-        // attempting to generalise.
-        for component in strongly_connected_components(&nodes, &edges) {
-            for &symbol in &component {
-                if let Some(&item) = items_by_symbol.get(&symbol) {
-                    self.check_fn_body(symbol, item);
-                }
-            }
-            // Have to check every function in the component before
-            // generalising, since the function's bodies mutually constrain
-            // each other's types through their calls to one another.
-            // You can't know which variables are free until every one
-            // of the constraints have been discovered.
-            self.cx.generalize_group(&component);
-        }
+        // self.cx.generalize_group(&component);
     }
 
-    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item) {
+    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item, graph: &mut CallGraph) {
         let ItemKind::Fn(f) = &item.kind else {
             return;
         };
@@ -785,7 +724,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .collect();
-            this.check_functions(&nested);
+            this.check_functions(&nested, graph);
 
             let output_span = match &f.sig.output {
                 FnRetTy::Default(span) => *span,
@@ -793,6 +732,9 @@ impl<'a> Checker<'a> {
             };
             this.cx
                 .check_block_expecting(body, Some(output_term), Some(output_span));
+
+            let mut collector = CallGraphCollector::new(symbol, graph, this.cx);
+            collector.visit_item(item);
         });
 
         self.cx.checking_stack.pop();
