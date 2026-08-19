@@ -19,6 +19,10 @@ use crate::{
 };
 
 impl TypeCheckContext {
+    /// Returns the span of the final expression in the block which
+    /// produces the return value of the function, if it exists.
+    /// Otherwise, the function returns the empty tuple `()`, and
+    /// it falls back to the span of the entire block.
     fn block_value_span(block: &Block) -> Span {
         match block.stmts.last() {
             Some(Stmt {
@@ -29,10 +33,18 @@ impl TypeCheckContext {
         }
     }
 
+    /// Returns a handle to a Term representing the type of an Expr
+    /// node from the AST, with the added constraint that the term
+    /// *must* be equal to an expected Term, if one is provided.
+    ///
+    /// This method is simply a wrapper of
+    /// [`Self::check_expr_expecting`]. See for more info.
     pub(crate) fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
         self.check_expr_expecting(expr, expected, None)
     }
 
+    /// Returns the name of a generic parameter, if such a generic
+    /// parameter exists.
     fn generic_name_of(&mut self, term: TermId) -> Option<String> {
         let resolved = self.uni_cx.resolve(term);
         match self.uni_cx.term(resolved)? {
@@ -59,6 +71,52 @@ impl TypeCheckContext {
         None
     }
 
+    /// Typechecks the given expression, and then attempts to unify
+    /// it with the expected term if one is given. If unification
+    /// fails, then one of two diagnostics is emitted:
+    ///
+    ///     1. CyclicType: indicates that the only way to unify the
+    ///         expected and actual terms is to create a cyclic
+    ///         term of infinite size. For example, unifying
+    ///             
+    ///             Array(?a) ~ ?a
+    ///         
+    ///         has a solution, but its size is
+    ///         infinite:
+    ///         
+    ///             Array(Array(...))
+    ///
+    ///         Which can't exist in practice, hence the error.
+    ///
+    ///     2. TypeMismatch: indicates that unification failed, and
+    ///         there does not exist any set of substitutions that
+    ///         would cause the two terms to become equal.
+    ///
+    ///         One reason is that somewhere in the term, two
+    ///         corresponding constructors are not equal to one
+    ///         another. For example:
+    ///
+    ///             ...Array(...)... != ...Fn(...)...
+    ///
+    ///         Then clearly these terms cannot be made the same
+    ///         by making inference variable substitutions, so this
+    ///         raises an error.
+    ///
+    ///         Another reason is that the 'arities' of two
+    ///         corresponding constructors are not equal, i.e. they
+    ///         have a differing number of constructors. For example:
+    ///
+    ///             ...Tuple(?a, ?b)... != ...Tuple(?a, ?b, ...)...
+    ///             
+    ///         They are clearly not equal, hence the error.
+    ///
+    /// Specifically, this function calls [`Self::check_expr_kind`]
+    /// which is what handles the type checking of the expression
+    /// itself before we do the final unification which can result
+    /// in the above errors.
+    ///
+    /// Note that [`Self::check_expr_kind`] also may attempt to
+    /// perform unifications, and hence may emit its own error.
     fn check_expr_expecting(
         &mut self,
         expr: &Expr,
@@ -66,6 +124,8 @@ impl TypeCheckContext {
         expected_span: Option<Span>,
     ) -> TermId {
         let actual = self.check_expr_kind(&expr.kind, expected);
+        // Record locations of primitive types in expressions.
+        // Useful for LSP.
         if let ExprKind::Lit(lit) = &expr.kind {
             let name = match lit.kind {
                 LitKind::Bool(_) => "bool",
@@ -84,6 +144,8 @@ impl TypeCheckContext {
                 None
             };
             let reason = expected_span.unwrap_or(expr.span);
+
+            // Attempt to
             if let Err(err) = self.uni_cx.unify_because(actual, expected, reason) {
                 let expected_ty = self.resolved(expected);
                 let found_ty = self.resolved(actual);
@@ -711,6 +773,10 @@ impl<'a> Checker<'a> {
         self.cx.checking_stack.push(symbol);
 
         self.with_scope(scope, |this| {
+            for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
+                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
+            }
+
             let nested: Vec<&Item> = body
                 .stmts
                 .iter()
@@ -720,10 +786,6 @@ impl<'a> Checker<'a> {
                 })
                 .collect();
             this.check_functions(&nested);
-
-            for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
-                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
-            }
 
             let output_span = match &f.sig.output {
                 FnRetTy::Default(span) => *span,

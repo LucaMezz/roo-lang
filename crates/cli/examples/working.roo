@@ -1,0 +1,27 @@
+// Working
+
+fn foo(x) {
+    fn helper() {
+        x
+    }
+    helper()
+}
+
+// Now working
+
+fn apply(f) {
+    // `f` declared here
+    fn to(x) {
+        f(x)
+    }
+    to
+}
+
+// Now working
+
+fn compose_t(f, g) {
+    fn composed(x) {
+        f(g(x))
+    }
+    composed
+}

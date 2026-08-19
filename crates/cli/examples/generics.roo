@@ -56,6 +56,29 @@ fn pair_up<A, B>(a: A, b: B) -> Pair<A, B> {
     (a, b)
 }
 
+fn out(x) {
+    fn inn(y) {
+        y
+    }
+    inn(x)
+}
+
+fn foo<T>(a: T) {
+    bar(a)
+}
+
+fn bar(a) {
+    foo(a)
+}
+
+fn outer(x, z) {
+    fn helper(y) {
+        y
+    }
+    let a = helper(x);
+    let b = helper(z);
+}
+
 fn use_generics() {
     // Ordinary inference: no annotation needed anywhere.
     let a = identity(10);

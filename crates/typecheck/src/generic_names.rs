@@ -43,6 +43,18 @@ impl GenericNames {
         self.names.get(id)
     }
 
+    /// Returns every name assigned to a generic parameter so far,
+    /// whether explicit or synthesised. Used to seed the `taken`
+    /// set before generalising a new function or group of
+    /// functions, so that a synthesised name never collides with
+    /// one already assigned to a *different* [`GenericId`] that
+    /// may end up embedded in the same rendered signature (e.g. a
+    /// nested function's generic showing up inside its enclosing
+    /// function's type once the enclosing function returns it).
+    pub(crate) fn all_names(&self) -> HashSet<String> {
+        self.names.values().cloned().collect()
+    }
+
     /// Resets the internal synthetic counter back to 0. Used
     /// whenever beginning to generalise a new function or group
     /// of functions, since we would like them to reuse the same

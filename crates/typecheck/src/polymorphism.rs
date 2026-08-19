@@ -97,7 +97,7 @@ impl TypeCheckContext {
         // another function in the group. This is likely the cause of an
         // issue with LSP of mutually recursive functions where only one
         // explicitly specifies its generic type parameter.
-        let mut taken: HashSet<String> = HashSet::new();
+        let mut taken: HashSet<String> = self.generic_names.all_names();
         for &symbol in members {
             for &id in &self.symbols[symbol].generics {
                 if let Some(name) = self.generic_names.get(&id) {

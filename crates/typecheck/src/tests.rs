@@ -1218,6 +1218,30 @@ fn check_all_recurses_into_a_nested_fns_body() {
 }
 
 #[test]
+fn check_all_nested_fn_body_resolves_a_reference_to_an_outer_params_symbol() {
+    let source = r#"
+fn outer(x: int) {
+    fn inner() {
+        x;
+    }
+}
+"#;
+    let mut cx = check_all(source);
+
+    let param_decl_offset = source.find("x: int").unwrap();
+    let param_use_offset = source.rfind('x').unwrap();
+    assert_ne!(param_decl_offset, param_use_offset);
+
+    let decl_symbol = cx
+        .symbol_at(param_decl_offset)
+        .expect("should resolve at outer's parameter declaration");
+    let use_symbol = cx
+        .symbol_at(param_use_offset)
+        .expect("inner's reference to x should resolve to outer's parameter");
+    assert_eq!(decl_symbol, use_symbol);
+}
+
+#[test]
 fn check_all_emphasizes_only_the_specific_conflicting_portion_of_a_compound_type() {
     let source = r#"
 fn add_one(x: int) -> int {
@@ -2087,7 +2111,15 @@ fn compose(f) {
         "{:#?}",
         cx.symbols[compose].generics
     );
-    assert_eq!(cx.symbols[inner].generics.len(), 0);
+    // `inner` legitimately generalizes 1 variable of its own: the type shared
+    // between `innermost`'s parameter `x` and `inner`'s own parameter `g`'s
+    // domain. That variable is not free in the enclosing signature (`f`'s
+    // domain/codomain never mention it), so under standard let-polymorphism
+    // it's sound for `inner` to generalize it rather than deferring to
+    // `compose`. The other 2 variables that stay free at this point (`f`'s
+    // domain and codomain) are correctly excluded, and end up on `compose`
+    // instead -- which is what this test is actually asserting.
+    assert_eq!(cx.symbols[inner].generics.len(), 1);
     assert_eq!(cx.symbols[innermost].generics.len(), 0);
 }
 

@@ -1,0 +1,13 @@
+fn outer_1(x) {
+    fn inner_1(y) {
+        outer_2(y)
+    }
+    inner_1(x)
+}
+
+fn outer_2(x) {
+    fn inner_2(y) {
+        outer_1(y)
+    }
+    inner_2(x)
+}
