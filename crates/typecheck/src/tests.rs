@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashSet;
 use std::ops::Range;
 
 use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
@@ -2082,6 +2081,56 @@ fn outer() {
         .expect("pong should be declared inside outer's body");
     assert_eq!(cx.symbols[ping].generics.len(), 1);
     assert_eq!(cx.symbols[pong].generics.len(), 1);
+}
+
+#[test]
+fn check_all_mutual_recursion_reached_only_through_a_nested_fn_value_is_one_scc() {
+    let source = r#"
+fn outer_1(x) {
+    fn inner_1(y) {
+        outer_2(y)
+    }
+    let _inner_1 = inner_1;
+    _inner_1(x)
+}
+
+fn outer_2(x) {
+    fn inner_2(y) {
+        outer_1(y)
+    }
+    let _inner_2 = inner_2;
+    _inner_2(x)
+}
+"#;
+    let mut cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let outer_1 = cx
+        .resolve_path(&path(&["outer_1"]), Namespace::Value)
+        .expect("outer_1 should resolve");
+    let outer_2 = cx
+        .resolve_path(&path(&["outer_2"]), Namespace::Value)
+        .expect("outer_2 should resolve");
+    let inner_1 = declared_symbol(
+        &cx,
+        fn_body_scope(&cx, outer_1),
+        Namespace::Value,
+        "inner_1",
+    )
+    .expect("inner_1 should be declared inside outer_1's body");
+    let inner_2 = declared_symbol(
+        &cx,
+        fn_body_scope(&cx, outer_2),
+        Namespace::Value,
+        "inner_2",
+    )
+    .expect("inner_2 should be declared inside outer_2's body");
+
+    let expected = "<T, U> Fn(T) -> U";
+    assert_eq!(cx.render_symbol_type(outer_1), expected);
+    assert_eq!(cx.render_symbol_type(outer_2), expected);
+    assert_eq!(cx.render_symbol_type(inner_1), expected);
+    assert_eq!(cx.render_symbol_type(inner_2), expected);
 }
 
 #[test]

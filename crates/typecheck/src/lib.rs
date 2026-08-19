@@ -4,7 +4,9 @@
 //! by the `parser` during the previous stage. Given some AST, the
 //! type checker does several passes of the AST.
 //!
+//! ```text
 //!     1.
+//! ```
 
 use std::collections::HashMap;
 
@@ -22,7 +24,7 @@ mod polymorphism;
 mod position_index;
 mod types;
 
-use check::Checker;
+use check::{Checker, collect_fn_items};
 use errors::Diagnostics;
 use generic_names::GenericNames;
 use position_index::PositionIndex;
@@ -31,14 +33,16 @@ pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
-use crate::call_graph::{CallGraph, strongly_connected_components};
+use crate::call_graph::{CallAnalysis, CallGraph, SCCCollector};
 
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
 /// which may contain unknowns, i.e. unbound inference variables
 /// like `?a`. A `Term` is defined recursively, as
 ///
+/// ```text
 ///     t ::= a  |  f(t_1, t_2, ..., t_n)
+/// ```
 ///
 /// for some natural n >= 0, where `f` is a constructor, and
 /// t_1,...,t_n are themselves terms. Call t_1,...,t_n the
@@ -378,6 +382,13 @@ impl TypeCheckContext {
         }
     }
 
+    fn with_scope(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self)) {
+        let parent = self.current_scope;
+        self.current_scope = scope;
+        f(self);
+        self.current_scope = parent;
+    }
+
     #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
         let catalog = errors::catalog(errors::Locale::EnUs);
@@ -514,12 +525,20 @@ impl TypeCheckContext {
     /// a new type parameter `T` giving final inferred type
     /// `Fn<T>( Fn(int) -> T ) -> T`.
     fn check(&mut self, items: &[Box<Item>]) {
-        let mut checker = Checker::new(self);
         let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
+
+        let mut items_by_symbol = HashMap::new();
+        collect_fn_items(self, &items, &mut items_by_symbol);
+
+        let mut checker = Checker::new(self);
         let mut graph = CallGraph::new();
-        checker.check_functions(&items, &mut graph);
-        let sccs = strongly_connected_components(&graph);
-        sccs.iter().for_each(|scc| self.generalize_group(scc));
+        let mut sccc = SCCCollector::new();
+        let mut analysis = CallAnalysis {
+            graph: &mut graph,
+            sccc: &mut sccc,
+        };
+        checker.check_functions(&items, &mut analysis, &items_by_symbol);
+        dbg!(sccc.sccs());
     }
 
     /// Returns a handle to the [`Symbol`] which the given path

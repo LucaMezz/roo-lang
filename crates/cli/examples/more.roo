@@ -1,0 +1,9 @@
+
+fn foo(x) {
+    let _bar = bar;
+    _bar(x)
+}
+
+fn bar(x) {
+    foo(x)
+}

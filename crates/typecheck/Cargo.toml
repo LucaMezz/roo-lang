@@ -14,6 +14,7 @@ categories = ["compilers"]
 ast = { version = "0.1.0", path = "../ast" }
 unify = { version = "0.1.0", path = "../unify" }
 slotmap = "1.1.1"
+indexmap = "2"
 thiserror = "2.0.20"
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
 diagnostics-derive = { version = "0.1.0", path = "../diagnostics-derive" }

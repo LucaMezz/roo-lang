@@ -52,7 +52,12 @@ impl TypeCheckContext {
     ///
     /// Helps to determine when an inference variable in a function
     /// `f` is truly free and can be generalised, or if its type is
-    /// already b
+    /// already bound
+    ///
+    /// FIXME With the revised SCC collection which already handles
+    /// nested functions, I think we no longer need to keep track of a
+    /// separate checking stack, and instead just check the free
+    /// variables across everything in the SCC.
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
         for i in 0..self.checking_stack.len() {
@@ -81,6 +86,7 @@ impl TypeCheckContext {
     /// surrounding function at all, inner generalises it and introduces
     /// a new generic type parameter `T`. Then the body of `outer`
     /// gets checked, given the fact that `inner` is now generic.
+    ///
     pub(crate) fn generalize_group(&mut self, members: &[SymbolId]) {
         // Restart synthetic names for generic type parameters back to `T`.
         self.generic_names.reset_synthetic_counter();
