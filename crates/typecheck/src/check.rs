@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use ast::{
     Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, Pat, PatKind, Span,
     Stmt, StmtKind, visit::Visitor,
@@ -643,7 +641,7 @@ impl<'a> Checker<'a> {
     /// ```ignore
     /// fn second<T>(x: T) -> T
     /// ```
-    pub(crate) fn check_functions(&mut self, items: &[&Item]) {
+    pub(crate) fn check_functions(&mut self, items: &[&Item], graph: &mut CallGraph) {
         // Checks that all the passed items are indeed functions,
         // since this function only is concerned with functions,
         // and collects their symbols.
@@ -663,28 +661,23 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        let mut graph = CallGraph::new();
-        for &(symbol, item) in &fns {
-            self.declare_fn_params(symbol, item);
-            self.collect_fn_calls(symbol, item, &mut graph);
+        for (symbol, item) in fns {
+            self.check_fn_body(symbol, item, graph);
         }
 
-        let items_by_symbol: HashMap<SymbolId, &Item> = fns.into_iter().collect();
-
-        for component in strongly_connected_components(&graph) {
-            for &symbol in &component {
-                if let Some(&item) = items_by_symbol.get(&symbol) {
-                    self.check_fn_body(symbol, item);
-                }
-            }
-            self.cx.generalize_group(&component);
-        }
+        // self.cx.generalize_group(&component);
     }
 
-    fn fn_signature_parts(&mut self, symbol: SymbolId) -> Option<(ScopeId, Vec<TermId>, TermId)> {
+    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item, graph: &mut CallGraph) {
+        let ItemKind::Fn(f) = &item.kind else {
+            return;
+        };
         let scope = match &self.cx.symbols[symbol].kind {
             SymbolKind::Fn(fn_data) => fn_data.scope,
-            _ => return None,
+            _ => return,
+        };
+        let Some(body) = f.body.as_ref() else {
+            return;
         };
 
         let symbol_ty = self.cx.symbols[symbol].ty;
@@ -696,7 +689,9 @@ impl<'a> Checker<'a> {
             }) => Some((args[0], args[1])),
             _ => None,
         };
-        let (inputs_term, output_term) = fn_args?;
+        let Some((inputs_term, output_term)) = fn_args else {
+            return;
+        };
 
         let resolved_inputs = self.cx.uni_cx.resolve(inputs_term);
         let input_tys = match self.cx.uni_cx.term(resolved_inputs) {
@@ -704,59 +699,7 @@ impl<'a> Checker<'a> {
                 constructor: TyCon::Tuple,
                 args,
             }) => args.clone(),
-            _ => return None,
-        };
-
-        Some((scope, input_tys, output_term))
-    }
-
-    fn declare_fn_params(&mut self, symbol: SymbolId, item: &Item) {
-        let ItemKind::Fn(f) = &item.kind else {
-            return;
-        };
-        if f.body.is_none() {
-            return;
-        }
-        let Some((scope, input_tys, _)) = self.fn_signature_parts(symbol) else {
-            return;
-        };
-
-        self.with_scope(scope, |this| {
-            for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
-                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
-            }
-        });
-    }
-
-    fn collect_fn_calls(&mut self, symbol: SymbolId, item: &Item, graph: &mut CallGraph) {
-        graph.declare(symbol);
-
-        let ItemKind::Fn(f) = &item.kind else {
-            return;
-        };
-        if f.body.is_none() {
-            return;
-        }
-        let scope = match &self.cx.symbols[symbol].kind {
-            SymbolKind::Fn(fn_data) => fn_data.scope,
             _ => return,
-        };
-
-        self.with_scope(scope, |this| {
-            let mut collector = CallGraphCollector::new(symbol, graph, this.cx);
-            collector.visit_item(item);
-        });
-    }
-
-    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item) {
-        let ItemKind::Fn(f) = &item.kind else {
-            return;
-        };
-        let Some(body) = f.body.as_ref() else {
-            return;
-        };
-        let Some((scope, _input_tys, output_term)) = self.fn_signature_parts(symbol) else {
-            return;
         };
 
         // Push the current function onto the checking stack. If there
@@ -769,6 +712,10 @@ impl<'a> Checker<'a> {
         self.cx.checking_stack.push(symbol);
 
         self.with_scope(scope, |this| {
+            for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
+                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
+            }
+
             let nested: Vec<&Item> = body
                 .stmts
                 .iter()
@@ -777,7 +724,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .collect();
-            this.check_functions(&nested);
+            this.check_functions(&nested, graph);
 
             let output_span = match &f.sig.output {
                 FnRetTy::Default(span) => *span,
@@ -785,6 +732,9 @@ impl<'a> Checker<'a> {
             };
             this.cx
                 .check_block_expecting(body, Some(output_term), Some(output_span));
+
+            let mut collector = CallGraphCollector::new(symbol, graph, this.cx);
+            collector.visit_item(item);
         });
 
         self.cx.checking_stack.pop();

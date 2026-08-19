@@ -31,10 +31,6 @@ impl CallGraph {
         }
     }
 
-    pub fn declare(&mut self, symbol: SymbolId) {
-        self.nodes.insert(symbol);
-    }
-
     pub fn call(&mut self, from: SymbolId, to: SymbolId) {
         self.nodes.insert(from);
         self.nodes.insert(to);
