@@ -31,8 +31,6 @@ pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
-use crate::call_graph::{CallGraph, strongly_connected_components};
-
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
 /// which may contain unknowns, i.e. unbound inference variables
@@ -516,10 +514,7 @@ impl TypeCheckContext {
     fn check(&mut self, items: &[Box<Item>]) {
         let mut checker = Checker::new(self);
         let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
-        let mut graph = CallGraph::new();
-        checker.check_functions(&items, &mut graph);
-        let sccs = strongly_connected_components(&graph);
-        sccs.iter().for_each(|scc| self.generalize_group(scc));
+        checker.check_functions(&items);
     }
 
     /// Returns a handle to the [`Symbol`] which the given path
