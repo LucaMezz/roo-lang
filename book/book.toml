@@ -1,7 +1,7 @@
 [book]
-title = "The roo Programming Language"
+title = "The Roo Programming Language"
 authors = ["The roo-lang project"]
-description = "The language specification and guide for roo, an embeddable, gradually-typed scripting language."
+description = "The language specification and guide for Roo, an embeddable, gradually-typed scripting language."
 language = "en"
 src = "src"
 
