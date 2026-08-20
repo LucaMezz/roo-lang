@@ -5,8 +5,6 @@ use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
 use unify::Term;
 
-use crate::call_graph::{AdjacencyListGraph, CallGraphCollector};
-
 fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let items = parser::module()
@@ -1836,42 +1834,6 @@ fn f(x) {
         diagnostics[0].span().start >= call_span,
         "expected the diagnostic on f's own `apply(x, x)` call, not apply's declaration: {:#?}",
         diagnostics[0]
-    );
-}
-
-#[test]
-fn call_graph_collector_does_not_descend_into_a_nested_items_own_body() {
-    let block = block("{ fn inner() { sibling() } }");
-
-    let mut cx = TypeCheckContext::new();
-    let scope = cx.current_scope;
-    let dummy_span = Span { start: 0, end: 0 };
-    cx.declare(
-        "sibling",
-        dummy_span,
-        SymbolKind::Fn(FnSymbol {
-            scope,
-            param_spans: Vec::new(),
-            param_names: Vec::new(),
-        }),
-    );
-    let outer = cx.declare(
-        "outer",
-        dummy_span,
-        SymbolKind::Fn(FnSymbol {
-            scope,
-            param_spans: Vec::new(),
-            param_names: Vec::new(),
-        }),
-    );
-
-    let mut collector = CallGraphCollector::new(outer, &mut cx);
-    collector.visit_block(&block);
-
-    assert!(
-        cx.graph.edges().is_empty(),
-        "a nested item's own call shouldn't be attributed to its enclosing fn: {:?}",
-        cx.graph.edges()
     );
 }
 
