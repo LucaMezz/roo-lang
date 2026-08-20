@@ -1,17 +1,39 @@
+//! Contains definition of the [`Diagnostic`] struct that
+//! represents a diagnostic which can be consumed by
+//! other crates, which contains the rendered messages.
+//!
+//! Crates can define a catalog of diagnostics which they
+//! may emit. A .ftl file for each locale can then be
+//! created which contains the written messages associated
+//! with each diagnostic.
+//!
+//! This module also facilitates rendering diagnostics,
+//! where the actual messages are separated into different
+//! `Fluent` .ftl files. This is so that the messages
+//! can be localised.
 use std::ops::Range;
 
 use ast::Span;
 use fluent_bundle::{FluentArgs, FluentResource, FluentValue, concurrent::FluentBundle};
 use unic_langid::LanguageIdentifier;
 
+/// The severity of a diagnostic. Errors should cause a script
+/// to fail running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
+    /// A fatal error. This prevents the script from being
+    /// interpreted.
     Error,
+    /// A warning which is not fatal, but points to a
+    /// potential issue.
     Warning,
+    /// A general note.
     Note,
+    /// A helpful message.
     Help,
 }
 
+/// A unique error code to identify a particular diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorCode(pub u32);
 
@@ -21,49 +43,82 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
+/// A diagnostic produced by the compiler to report an error,
+/// warning, or other issue in the source code.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    /// The span within the source code that resulted in this
+    /// diagnostic being raised.
     primary_span: Span,
+    /// The severity of the diagnostic.
     level: Level,
+    /// The main message describing the reason this diagnostic
+    /// was produced.
     message: String,
+    /// Contains zero or more spans within the source code that
+    /// are directly related to this diagnostic, each including
+    /// a message describing that relationship.
     related: Vec<(Span, String)>,
+    /// Extra information about the diagnostic.
     notes: Vec<String>,
+    /// Areas which should be emphasised within the diagnostic.
     emphasis: Vec<Range<usize>>,
 }
 
 impl Diagnostic {
+    /// Returns the severity of the diagnostic.
     pub fn level(&self) -> Level {
         self.level
     }
 
+    /// Returns the main message describing the reason for the
+    /// diagnostic.
     pub fn message(&self) -> &str {
         &self.message
     }
 
+    /// Returns the main span within the source code which
+    /// caused the diagnostic to be emitted.
     pub fn span(&self) -> Span {
         self.primary_span
     }
 
+    /// A number of tuples, each representing a piece of
+    /// related information about the diagnostic.
+    ///
+    /// Each includes the span in the source where this related
+    /// piece of information exists, as well as a message
+    /// describing that relationship.
     pub fn related(&self) -> &[(Span, String)] {
         &self.related
     }
 
+    /// Returns the notes about this diagnostic.
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
 
+    /// Returns the areas of the main message which should be
+    /// embpasised, e.g. highlighted.
     pub fn emphasis(&self) -> &[Range<usize>] {
         &self.emphasis
     }
 }
 
+/// A small closed set of value types that can be interpolated
+/// into Fluent messages.
 #[derive(Debug, Clone)]
 pub enum ArgValue {
+    /// A number
     Number(i64),
+    /// Text
     Text(String),
 }
 
+/// A type which can be converted to an [`ArgValue`].
+/// This allows it to be interpolated into Fluent messages.
 pub trait ToArgValue {
+    /// Converts to an [`ArgValue`].
     fn to_arg_value(&self) -> ArgValue;
 }
 
@@ -91,45 +146,64 @@ impl ToArgValue for str {
     }
 }
 
+/// Information related to a main diagnostic.
 #[derive(Debug, Clone)]
 pub struct Related {
+    /// The span this related info points to.
     pub span: Span,
+    /// The Fluent message id to render.
     pub message_id: &'static str,
+    /// Arguments interpolated into the message.
     pub args: Vec<(&'static str, ArgValue)>,
 }
 
+/// An extra note attached to a diagnostic.
 #[derive(Debug, Clone)]
 pub struct Note {
+    /// The Fluent message id to render.
     pub message_id: &'static str,
+    /// Arguments interpolated into the message.
     pub args: Vec<(&'static str, ArgValue)>,
 }
 
+/// A single kind of diagnostic a crate can emit, before rendering.
 pub trait Diagnose {
+    /// This diagnostic's unique error code.
     const CODE: ErrorCode;
+    /// This diagnostic's severity.
     const LEVEL: Level;
 
+    /// The primary span the diagnostic is raised at.
     fn span(&self) -> Span;
+    /// The Fluent message id for the main message.
     fn message_id(&self) -> &'static str;
+    /// Arguments interpolated into the main message.
     fn args(&self) -> Vec<(&'static str, ArgValue)>;
 
+    /// Pairs of (container arg, fragment arg) to highlight within
+    /// the rendered message.
     fn emphasize(&self) -> Vec<(&'static str, &'static str)> {
         Vec::new()
     }
 
+    /// Other spans related to this diagnostic.
     fn related(&self) -> Vec<Related> {
         Vec::new()
     }
 
+    /// Extra notes to attach to this diagnostic.
     fn notes(&self) -> Vec<Note> {
         Vec::new()
     }
 }
 
+/// Renders [`Diagnose`] values into [`Diagnostic`]s for a given locale.
 pub struct Catalog {
     bundle: FluentBundle<FluentResource>,
 }
 
 impl Catalog {
+    /// Builds a catalog for `locale` from Fluent `.ftl` sources.
     pub fn new(locale: &str, sources: &[&str]) -> Self {
         let language: LanguageIdentifier = locale.parse().expect("invalid locale identifier");
         let mut bundle = FluentBundle::new_concurrent(vec![language]);
@@ -144,6 +218,8 @@ impl Catalog {
         Self { bundle }
     }
 
+    /// Renders a [`Diagnose`] value's messages and computes its
+    /// emphasis ranges, producing a [`Diagnostic`].
     pub fn render<D: Diagnose>(&self, diagnostic: &D) -> Diagnostic {
         let args = diagnostic.args();
         let message = self.format(diagnostic.message_id(), &args);
@@ -254,6 +330,8 @@ fn locate(
     None
 }
 
+/// Declares an enum of [`Diagnose`] types a crate can emit, along
+/// with a `render` method and a test asserting error codes are unique.
 #[macro_export]
 macro_rules! catalog {
     ($vis:vis enum $enum_name:ident { $($name:ident),+ $(,)? }) => {
