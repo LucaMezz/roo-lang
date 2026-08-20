@@ -1,23 +1,18 @@
-use std::collections::HashMap;
-
 use ast::{
     Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, Pat, PatKind, Span,
-    Stmt, StmtKind, visit::Visitor,
+    Stmt, StmtKind,
 };
 use diagnostics::Related;
 use unify::{Term, UnifyError, term};
 
-use crate::call_graph::{CallAnalysis, CallGraph, CallGraphCollector, Frame};
 use crate::errors::{
     ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
     expected_due_to, generic_note, provenance,
 };
 use crate::types::Type;
-use crate::{
-    Namespace, PatDeclKind, ScopeId, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext,
-};
+use crate::{Namespace, PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext};
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     /// Returns the span of the final expression in the block which
     /// produces the return value of the function, if it exists.
     /// Otherwise, the function returns the empty tuple `()`, and
@@ -306,6 +301,7 @@ impl TypeCheckContext {
                 match self.resolve_path(path, Namespace::Value) {
                     Some(symbol) => {
                         self.record_path_reference(path, symbol);
+                        self.check_referenced_fn(symbol);
                         self.instantiate_path(symbol, path)
                     }
                     None => term!(self.uni_cx, TyCon::Err),
@@ -598,61 +594,14 @@ impl TypeCheckContext {
     }
 }
 
-pub(crate) struct Checker<'a> {
-    cx: &'a mut TypeCheckContext,
-}
-
-impl<'a> Checker<'a> {
-    pub(crate) fn new(cx: &'a mut TypeCheckContext) -> Self {
-        Self { cx }
-    }
-
-    fn with_scope(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self)) {
-        let parent = self.cx.current_scope;
-        self.cx.current_scope = scope;
-        f(self);
-        self.cx.current_scope = parent;
-    }
-
-    /// Performs type inference and type checking on the given function
-    /// items in a certain scope.
-    ///
-    /// Generalisation also works in the scenario where functions may
-    /// be recursive or mutually recursive with other functions.
-    /// This is achieved using call-graph SCC analysis, which
-    /// performs generalisation on each strongly connected component
-    /// of the call graph at the same time. For example, consider
-    /// the scenario
-    /// ```ignore
-    /// fn first(x) {
-    ///     second(x)
-    /// }
-    ///
-    /// fn second(x) {
-    ///     first(x)
-    /// }
-    /// ```
-    /// In this case, the functions `first` and `second` make up a
-    /// single strongly connected component within the call-graph.
-    /// Hence, we perform inference across both functions before
-    /// making an attempt to generalise them. Any inference variables
-    /// `?a` that are still free then cause a new generic parameter
-    /// to be introduced. So the signatures would become:
-    /// ```ignore
-    /// fn first<T>(x: T) -> T
-    /// ```
-    /// and
-    /// ```ignore
-    /// fn second<T>(x: T) -> T
-    /// ```
+impl<'ast> TypeCheckContext<'ast> {
     fn resolve_fns<'b>(&mut self, items: &[&'b Item]) -> Vec<(SymbolId, &'b Item)> {
         let mut fns = Vec::new();
         for &item in items {
             if let ItemKind::Fn(f) = &item.kind {
-                let name = self.cx.names.id(&f.ident.name);
+                let name = self.names.id(&f.ident.name);
                 if let Some(symbol) =
-                    self.cx
-                        .lookup_in_scope(self.cx.current_scope, name, Namespace::Value)
+                    self.lookup_in_scope(self.current_scope, name, Namespace::Value)
                 {
                     fns.push((symbol, item));
                 }
@@ -661,64 +610,77 @@ impl<'a> Checker<'a> {
         fns
     }
 
-    pub(crate) fn check_functions(
-        &mut self,
-        items: &[&Item],
-        analysis: &mut CallAnalysis,
-        items_by_symbol: &HashMap<SymbolId, &Item>,
-    ) {
+    pub(crate) fn check_functions(&mut self, items: &[&Item]) {
         for (symbol, item) in self.resolve_fns(items) {
-            if let Some(scc) = self.check_fn_body(symbol, item, analysis, items_by_symbol) {
-                self.cx.generalize_group(&scc);
+            if let Some(scc) = self.check_fn_body(symbol, item) {
+                self.generalize_group(&scc);
             }
         }
     }
 
-    fn check_nested_functions(
+    fn record_edge(
         &mut self,
-        items: &[&Item],
-        graph: &mut CallGraph,
-        frame: &mut Frame<'_>,
-        items_by_symbol: &HashMap<SymbolId, &Item>,
-    ) {
-        for (symbol, item) in self.resolve_fns(items) {
-            let scc = frame.edge(symbol, |sccc| {
-                self.check_fn_body(
-                    symbol,
-                    item,
-                    &mut CallAnalysis { graph, sccc },
-                    items_by_symbol,
-                )
-            });
-            if let Some(scc) = scc {
-                self.cx.generalize_group(&scc);
-            }
-        }
-    }
-
-    fn check_fn_body(
-        &mut self,
-        symbol: SymbolId,
-        item: &Item,
-        analysis: &mut CallAnalysis,
-        items_by_symbol: &HashMap<SymbolId, &Item>,
+        from: SymbolId,
+        to: SymbolId,
+        check: impl FnOnce(&mut Self) -> Option<Vec<SymbolId>>,
     ) -> Option<Vec<SymbolId>> {
-        if analysis.sccc.is_visited(symbol) {
+        if !self.sccc.is_visited(to) {
+            let completed = check(self);
+            if self.sccc.is_visited(to) {
+                self.sccc.pull_lowlink(from, to);
+            }
+            completed
+        } else {
+            self.sccc.note_back_edge(from, to);
+            None
+        }
+    }
+
+    fn check_nested_functions(&mut self, items: &[&Item], from: SymbolId) {
+        for (symbol, item) in self.resolve_fns(items) {
+            let scc = self.record_edge(from, symbol, |this| this.check_fn_body(symbol, item));
+            if let Some(scc) = scc {
+                self.generalize_group(&scc);
+            }
+        }
+    }
+
+    fn check_referenced_fn(&mut self, symbol: SymbolId) {
+        let Some(&item) = self.items_by_symbol.get(&symbol) else {
+            return;
+        };
+
+        let scc = match self.current_fn {
+            Some(from) => {
+                self.graph.call(from, symbol);
+                self.record_edge(from, symbol, |this| this.check_fn_body(symbol, item))
+            }
+            None if !self.sccc.is_visited(symbol) => self.check_fn_body(symbol, item),
+            None => None,
+        };
+
+        if let Some(scc) = scc {
+            self.generalize_group(&scc);
+        }
+    }
+
+    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item) -> Option<Vec<SymbolId>> {
+        if self.sccc.is_visited(symbol) {
             return None;
         }
 
         let ItemKind::Fn(f) = &item.kind else {
             return None;
         };
-        let scope = match &self.cx.symbols[symbol].kind {
+        let scope = match &self.symbols[symbol].kind {
             SymbolKind::Fn(fn_data) => fn_data.scope,
             _ => return None,
         };
         let body = f.body.as_ref()?;
 
-        let symbol_ty = self.cx.symbols[symbol].ty;
-        let resolved = self.cx.uni_cx.resolve(symbol_ty);
-        let fn_args = match self.cx.uni_cx.term(resolved) {
+        let symbol_ty = self.symbols[symbol].ty;
+        let resolved = self.uni_cx.resolve(symbol_ty);
+        let fn_args = match self.uni_cx.term(resolved) {
             Some(Term::App {
                 constructor: TyCon::Fn,
                 args,
@@ -726,8 +688,8 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let (inputs_term, output_term) = fn_args?;
-        let resolved_inputs = self.cx.uni_cx.resolve(inputs_term);
-        let input_tys = match self.cx.uni_cx.term(resolved_inputs) {
+        let resolved_inputs = self.uni_cx.resolve(inputs_term);
+        let input_tys = match self.uni_cx.term(resolved_inputs) {
             Some(Term::App {
                 constructor: TyCon::Tuple,
                 args,
@@ -735,21 +697,21 @@ impl<'a> Checker<'a> {
             _ => return None,
         };
 
-        // Push the current function onto the checking stack. If there
-        // are any other functions defined *within* the function body
-        // currently being checked, then any inference variable `?a`
-        // which is free in both this function and the nested function
-        // won't be generalised as part of the nested function.
-        // It will wait until this function itself finishes checking and
-        // get's generalised.
-        self.cx.checking_stack.push(symbol);
-
-        let mut frame = analysis.sccc.enter(symbol);
+        self.sccc.enter(symbol);
+        let parent_fn = self.current_fn;
+        self.current_fn = Some(symbol);
+        self.checking_stack.push(symbol);
 
         self.with_scope(scope, |this| {
             for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
-                this.cx.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
+                this.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
             }
+
+            let output_span = match &f.sig.output {
+                FnRetTy::Default(span) => *span,
+                FnRetTy::Ty(ty) => ty.span,
+            };
+            this.check_block_expecting(body, Some(output_term), Some(output_span));
 
             let nested: Vec<&Item> = body
                 .stmts
@@ -759,49 +721,16 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .collect();
-            this.check_nested_functions(&nested, analysis.graph, &mut frame, items_by_symbol);
-
-            let output_span = match &f.sig.output {
-                FnRetTy::Default(span) => *span,
-                FnRetTy::Ty(ty) => ty.span,
-            };
-            this.cx
-                .check_block_expecting(body, Some(output_term), Some(output_span));
-
-            let mut collector = CallGraphCollector::new(symbol, analysis.graph, this.cx);
-            collector.visit_item(item);
-            let calls = collector.into_calls();
-
-            for to in calls {
-                let scc = frame.edge(to, |sccc| {
-                    items_by_symbol.get(&to).and_then(|&callee_item| {
-                        this.check_fn_body(
-                            to,
-                            callee_item,
-                            &mut CallAnalysis {
-                                graph: analysis.graph,
-                                sccc,
-                            },
-                            items_by_symbol,
-                        )
-                    })
-                });
-                if let Some(scc) = scc {
-                    this.cx.generalize_group(&scc);
-                }
-            }
+            this.check_nested_functions(&nested, symbol);
         });
 
-        self.cx.checking_stack.pop();
-        frame.finish()
+        self.checking_stack.pop();
+        self.current_fn = parent_fn;
+        self.sccc.exit(symbol)
     }
 }
 
-pub(crate) fn collect_fn_items<'a>(
-    cx: &mut TypeCheckContext,
-    items: &[&'a Item],
-    items_by_symbol: &mut HashMap<SymbolId, &'a Item>,
-) {
+pub(crate) fn collect_fn_items<'ast>(cx: &mut TypeCheckContext<'ast>, items: &[&'ast Item]) {
     for &item in items {
         let ItemKind::Fn(f) = &item.kind else {
             continue;
@@ -810,7 +739,7 @@ pub(crate) fn collect_fn_items<'a>(
         let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Value) else {
             continue;
         };
-        items_by_symbol.insert(symbol, item);
+        cx.items_by_symbol.insert(symbol, item);
 
         let Some(body) = f.body.as_ref() else {
             continue;
@@ -828,6 +757,6 @@ pub(crate) fn collect_fn_items<'a>(
             })
             .collect();
 
-        cx.with_scope(scope, |cx| collect_fn_items(cx, &nested, items_by_symbol));
+        cx.with_scope(scope, |cx| collect_fn_items(cx, &nested));
     }
 }

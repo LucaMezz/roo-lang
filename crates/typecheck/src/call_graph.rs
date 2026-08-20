@@ -57,26 +57,16 @@ impl AdjacencyListGraph for CallGraph {
     }
 }
 
-/// Bundles the call graph together with the SCC collector used to
-/// analyse it, since the two are always threaded through the checker
-/// together.
-pub struct CallAnalysis<'a> {
-    pub graph: &'a mut CallGraph,
-    pub sccc: &'a mut SCCCollector,
-}
-
-pub struct CallGraphCollector<'a> {
-    graph: &'a mut CallGraph,
-    cx: &'a mut TypeCheckContext,
+pub struct CallGraphCollector<'a, 'ast> {
+    cx: &'a mut TypeCheckContext<'ast>,
     from: SymbolId,
     calls: IndexSet<SymbolId>,
 }
 
-impl<'a> CallGraphCollector<'a> {
-    pub fn new(from: SymbolId, graph: &'a mut CallGraph, cx: &'a mut TypeCheckContext) -> Self {
+impl<'a, 'ast> CallGraphCollector<'a, 'ast> {
+    pub fn new(from: SymbolId, cx: &'a mut TypeCheckContext<'ast>) -> Self {
         Self {
             from,
-            graph,
             cx,
             calls: IndexSet::new(),
         }
@@ -87,14 +77,14 @@ impl<'a> CallGraphCollector<'a> {
     }
 }
 
-impl<'a> Visitor for CallGraphCollector<'a> {
+impl<'a, 'ast> Visitor for CallGraphCollector<'a, 'ast> {
     fn visit_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Path(_, path) => {
                 if let Some(to) = self.cx.resolve_path(path, Namespace::Value) {
                     if let Some(symbol) = self.cx.symbols.get(to) {
                         if let SymbolKind::Fn(_) = symbol.kind {
-                            self.graph.call(self.from, to);
+                            self.cx.graph.call(self.from, to);
                             self.calls.insert(to);
                         }
                     }
@@ -141,20 +131,19 @@ impl SCCCollector {
         self.index.contains_key(&symbol)
     }
 
-    pub fn enter(&mut self, symbol: SymbolId) -> Frame<'_> {
+    pub fn is_on_stack(&self, symbol: SymbolId) -> bool {
+        self.on_stack.contains(&symbol)
+    }
+
+    pub fn enter(&mut self, symbol: SymbolId) {
         self.index.insert(symbol, self.next_index);
         self.lowlink.insert(symbol, self.next_index);
         self.next_index += 1;
         self.stack.push(symbol);
         self.on_stack.insert(symbol);
-        Frame {
-            sccc: self,
-            symbol,
-            finished: false,
-        }
     }
 
-    fn exit(&mut self, symbol: SymbolId) -> Option<Vec<SymbolId>> {
+    pub fn exit(&mut self, symbol: SymbolId) -> Option<Vec<SymbolId>> {
         if self.lowlink[&symbol] != self.index[&symbol] {
             return None;
         }
@@ -173,53 +162,18 @@ impl SCCCollector {
         self.sccs.push(component.clone());
         Some(component)
     }
-}
 
-#[must_use]
-pub struct Frame<'a> {
-    sccc: &'a mut SCCCollector,
-    symbol: SymbolId,
-    finished: bool,
-}
-
-impl<'a> Frame<'a> {
-    pub fn edge(
-        &mut self,
-        to: SymbolId,
-        check: impl FnOnce(&mut SCCCollector) -> Option<Vec<SymbolId>>,
-    ) -> Option<Vec<SymbolId>> {
-        if !self.sccc.is_visited(to) {
-            let completed = check(self.sccc);
-            if self.sccc.is_visited(to) {
-                let pulled = self.sccc.lowlink[&to];
-                let mine = self.sccc.lowlink.get_mut(&self.symbol).unwrap();
-                *mine = (*mine).min(pulled);
-            }
-            completed
-        } else {
-            if self.sccc.on_stack.contains(&to) {
-                let idx = self.sccc.index[&to];
-                let mine = self.sccc.lowlink.get_mut(&self.symbol).unwrap();
-                *mine = (*mine).min(idx);
-            }
-            None
-        }
+    pub fn pull_lowlink(&mut self, from: SymbolId, to: SymbolId) {
+        let pulled = self.lowlink[&to];
+        let mine = self.lowlink.get_mut(&from).unwrap();
+        *mine = (*mine).min(pulled);
     }
 
-    pub fn finish(mut self) -> Option<Vec<SymbolId>> {
-        self.finished = true;
-        self.sccc.exit(self.symbol)
-    }
-}
-
-impl Drop for Frame<'_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            panic!(
-                "SCC frame for {:?} was dropped without calling `finish()`; \
-                 the Tarjan stack is now inconsistent",
-                self.symbol
-            );
+    pub fn note_back_edge(&mut self, from: SymbolId, to: SymbolId) {
+        if self.on_stack.contains(&to) {
+            let idx = self.index[&to];
+            let mine = self.lowlink.get_mut(&from).unwrap();
+            *mine = (*mine).min(idx);
         }
     }
 }

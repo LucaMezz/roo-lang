@@ -22,7 +22,7 @@ pub(crate) fn pat_display_name(pat: &Pat) -> String {
     }
 }
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     // Produces a final completely resolved type from an intermediate
     // term. This is done once the entirety of the type checking
     // process is completed.

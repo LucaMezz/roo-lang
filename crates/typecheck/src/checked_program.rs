@@ -8,7 +8,7 @@ use crate::position_index::PositionIndex;
 use crate::types::{Type, resolve_type};
 use crate::{FnSymbol, SymbolId, SymbolKind, TypeCheckContext};
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     /// Constructs the final result of the type checking stage, which
     /// will be output to the client of this crate.
     ///

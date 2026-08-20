@@ -5,11 +5,9 @@ use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
 use unify::Term;
 
-use crate::call_graph::{
-    AdjacencyListGraph, CallGraph, CallGraphCollector, strongly_connected_components,
-};
+use crate::call_graph::{AdjacencyListGraph, CallGraphCollector};
 
-fn resolve(source: &str) -> TypeCheckContext {
+fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let items = parser::module()
         .parse(parser::input(tokens))
@@ -21,7 +19,7 @@ fn resolve(source: &str) -> TypeCheckContext {
     cx
 }
 
-fn resolve_and_lower(source: &str) -> TypeCheckContext {
+fn resolve_and_lower<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let items = parser::module()
         .parse(parser::input(tokens))
@@ -34,7 +32,7 @@ fn resolve_and_lower(source: &str) -> TypeCheckContext {
     cx
 }
 
-fn lookup(cx: &TypeCheckContext, scope: ScopeId, namespace: Namespace, name: &str) -> bool {
+fn lookup(cx: &TypeCheckContext<'_>, scope: ScopeId, namespace: Namespace, name: &str) -> bool {
     let Some(&name) = cx.names.ids.get(name) else {
         return false;
     };
@@ -103,7 +101,7 @@ fn local(source: &str) -> Local {
     *local
 }
 
-fn resolved_args(cx: &mut TypeCheckContext, term: TermId) -> Option<(TyCon, Vec<TermId>)> {
+fn resolved_args(cx: &mut TypeCheckContext<'_>, term: TermId) -> Option<(TyCon, Vec<TermId>)> {
     let resolved = cx.uni_cx.resolve(term);
     match cx.uni_cx.term(resolved) {
         Some(Term::App { constructor, args }) => Some((constructor.clone(), args.clone())),
@@ -111,12 +109,12 @@ fn resolved_args(cx: &mut TypeCheckContext, term: TermId) -> Option<(TyCon, Vec<
     }
 }
 
-fn resolved_con(cx: &mut TypeCheckContext, term: TermId) -> Option<TyCon> {
+fn resolved_con(cx: &mut TypeCheckContext<'_>, term: TermId) -> Option<TyCon> {
     resolved_args(cx, term).map(|(con, _)| con)
 }
 
 fn declared_symbol(
-    cx: &TypeCheckContext,
+    cx: &TypeCheckContext<'_>,
     scope: ScopeId,
     namespace: Namespace,
     name: &str,
@@ -894,21 +892,22 @@ fn lower_signatures_makes_the_declared_signature_authoritative() {
     assert_eq!(resolved_con(&mut cx, input_args[0]), Some(TyCon::Int));
 }
 
-fn check_all(source: &str) -> TypeCheckContext {
+fn check_all(source: &str) -> TypeCheckContext<'static> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let items = parser::module()
         .parse(parser::input(tokens))
         .into_result()
         .expect("should parse");
+    let items: &'static [Box<Item>] = Vec::leak(items);
 
     let mut cx = TypeCheckContext::new();
-    cx.resolve(&items);
-    cx.lower_signatures(&items);
-    cx.check(&items);
+    cx.resolve(items);
+    cx.lower_signatures(items);
+    cx.check(items);
     cx
 }
 
-fn fn_body_scope(cx: &TypeCheckContext, symbol: SymbolId) -> ScopeId {
+fn fn_body_scope(cx: &TypeCheckContext<'_>, symbol: SymbolId) -> ScopeId {
     match &cx.symbols[symbol].kind {
         SymbolKind::Fn(fn_data) => fn_data.scope,
         _ => panic!("expected a Fn symbol"),
@@ -938,7 +937,7 @@ struct Renderer<'a> {
     generic_names: &'a GenericNames,
 }
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     fn renderer(&mut self) -> Renderer<'_> {
         Renderer {
             uni_cx: &mut self.uni_cx,
@@ -1722,63 +1721,6 @@ fn main() {
     assert_eq!(&source[d.span().start..d.span().end], "3");
 }
 
-fn symbol_ids(n: usize) -> Vec<SymbolId> {
-    let mut map: SlotMap<SymbolId, ()> = SlotMap::with_key();
-    (0..n).map(|_| map.insert(())).collect()
-}
-
-#[test]
-fn scc_a_chain_with_no_cycles_is_all_singletons_in_dependency_order() {
-    let ids = symbol_ids(3);
-    let (a, b, c) = (ids[0], ids[1], ids[2]);
-
-    let mut graph = CallGraph::new();
-    graph.call(a, b);
-    graph.call(b, c);
-
-    let sccs = strongly_connected_components(&graph);
-
-    assert_eq!(sccs, vec![vec![c], vec![b], vec![a]]);
-}
-
-#[test]
-fn scc_a_two_cycle_is_one_component() {
-    let ids = symbol_ids(2);
-    let (a, b) = (ids[0], ids[1]);
-
-    let mut graph = CallGraph::new();
-    graph.call(a, b);
-    graph.call(b, a);
-
-    let sccs = strongly_connected_components(&graph);
-
-    assert_eq!(sccs.len(), 1, "{sccs:?}");
-    assert_eq!(sccs[0].len(), 2);
-    assert!(sccs[0].contains(&a));
-    assert!(sccs[0].contains(&b));
-}
-
-#[test]
-fn scc_three_way_cycle_is_one_component_that_pops_before_an_unrelated_caller() {
-    let ids = symbol_ids(4);
-    let (a, b, c, caller) = (ids[0], ids[1], ids[2], ids[3]);
-
-    let mut graph = CallGraph::new();
-    graph.call(a, b);
-    graph.call(b, c);
-    graph.call(c, a);
-    graph.call(caller, a);
-
-    let sccs = strongly_connected_components(&graph);
-
-    assert_eq!(sccs.len(), 2, "{sccs:?}");
-    assert_eq!(sccs[0].len(), 3);
-    for member in [a, b, c] {
-        assert!(sccs[0].contains(&member));
-    }
-    assert_eq!(sccs[1], vec![caller]);
-}
-
 #[test]
 fn check_all_mutually_recursive_siblings_generalize_together_and_stay_reusable() {
     let source = r#"
@@ -1923,14 +1865,13 @@ fn call_graph_collector_does_not_descend_into_a_nested_items_own_body() {
         }),
     );
 
-    let mut graph = CallGraph::new();
-    let mut collector = CallGraphCollector::new(outer, &mut graph, &mut cx);
+    let mut collector = CallGraphCollector::new(outer, &mut cx);
     collector.visit_block(&block);
 
     assert!(
-        graph.edges().is_empty(),
+        cx.graph.edges().is_empty(),
         "a nested item's own call shouldn't be attributed to its enclosing fn: {:?}",
-        graph.edges()
+        cx.graph.edges()
     );
 }
 

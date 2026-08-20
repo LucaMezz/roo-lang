@@ -24,7 +24,7 @@ mod polymorphism;
 mod position_index;
 mod types;
 
-use check::{Checker, collect_fn_items};
+use check::collect_fn_items;
 use errors::Diagnostics;
 use generic_names::GenericNames;
 use position_index::PositionIndex;
@@ -33,7 +33,7 @@ pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
-use crate::call_graph::{CallAnalysis, CallGraph, SCCCollector};
+use crate::call_graph::{CallGraph, SCCCollector};
 
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
@@ -300,7 +300,7 @@ impl NameInterner {
 /// Holds all state required to perform type checking on an
 /// entire program. Also provides methods used to complete
 /// the type checking and type inference.
-struct TypeCheckContext {
+struct TypeCheckContext<'ast> {
     /// Keeps track of what every inference variable
     /// throughout the entire program is bound to. Facilitates
     /// O(1) unification of two terms, performing the required
@@ -338,26 +338,31 @@ struct TypeCheckContext {
     /// A handle to the scope that is currently being checked.
     current_scope: ScopeId,
 
-    /// A stack for identifying and generalising free inference
-    /// variables across a chain of nested functions. Contains
-    /// a handle to the [`Symbol`]s of all enclosing functions.
-    checking_stack: Vec<SymbolId>,
-
     /// All the diagnostics that have been accumulated so far.
     diagnostics: Diagnostics,
 
     /// An index which allows you to query for symbols and types
     /// and other things, based on spans within the source code.
     positions: PositionIndex,
+
+    graph: CallGraph,
+
+    sccc: SCCCollector,
+
+    items_by_symbol: HashMap<SymbolId, &'ast Item>,
+
+    current_fn: Option<SymbolId>,
+
+    checking_stack: Vec<SymbolId>,
 }
 
-impl Default for TypeCheckContext {
+impl<'ast> Default for TypeCheckContext<'ast> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     /// Create a new blank [`TypeCheckContext`].
     fn new() -> Self {
         let mut scopes = SlotMap::with_key();
@@ -376,9 +381,13 @@ impl TypeCheckContext {
             generic_names: GenericNames::new(),
             symbols: SlotMap::with_key(),
             current_scope: root,
-            checking_stack: Vec::new(),
             diagnostics: Diagnostics::default(),
             positions: PositionIndex::default(),
+            graph: CallGraph::new(),
+            sccc: SCCCollector::new(),
+            items_by_symbol: HashMap::new(),
+            current_fn: None,
+            checking_stack: Vec::new(),
         }
     }
 
@@ -524,21 +533,12 @@ impl TypeCheckContext {
     /// At this point [`Self::generalize_group`] introduces
     /// a new type parameter `T` giving final inferred type
     /// `Fn<T>( Fn(int) -> T ) -> T`.
-    fn check(&mut self, items: &[Box<Item>]) {
+    fn check(&mut self, items: &'ast [Box<Item>]) {
         let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
 
-        let mut items_by_symbol = HashMap::new();
-        collect_fn_items(self, &items, &mut items_by_symbol);
+        collect_fn_items(self, &items);
 
-        let mut checker = Checker::new(self);
-        let mut graph = CallGraph::new();
-        let mut sccc = SCCCollector::new();
-        let mut analysis = CallAnalysis {
-            graph: &mut graph,
-            sccc: &mut sccc,
-        };
-        checker.check_functions(&items, &mut analysis, &items_by_symbol);
-        dbg!(sccc.sccs());
+        self.check_functions(&items);
     }
 
     /// Returns a handle to the [`Symbol`] which the given path
@@ -758,12 +758,12 @@ impl TypeCheckContext {
 /// The AST Visitor that performs the Resolution stage of the
 /// type checking. Walks the AST, creating new symbols in the
 /// symbol table for each item it finds.
-struct Resolver<'a> {
+struct Resolver<'a, 'ast> {
     /// Mutable reference to the underlying TypeCheckContext.
-    cx: &'a mut TypeCheckContext,
+    cx: &'a mut TypeCheckContext<'ast>,
 }
 
-impl Resolver<'_> {
+impl<'ast> Resolver<'_, 'ast> {
     /// Creates a new [`Scope`] in the underling
     /// [`TypeCheckContext`], and returns a handle to it.
     fn new_scope(&mut self) -> ScopeId {
@@ -790,7 +790,7 @@ impl Resolver<'_> {
     }
 }
 
-impl Visitor for Resolver<'_> {
+impl Visitor for Resolver<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
             ItemKind::Fn(f) => {
@@ -871,12 +871,12 @@ impl Visitor for Resolver<'_> {
 /// Performs the signature lowering stage of the type checking.
 /// Fills in the types of the symbols created by the [`Resolver`]
 /// where possible, for example for functions and type aliases.
-struct SignatureLowerer<'a> {
+struct SignatureLowerer<'a, 'ast> {
     /// A mutable reference to the underlying TypeCheckContext.
-    cx: &'a mut TypeCheckContext,
+    cx: &'a mut TypeCheckContext<'ast>,
 }
 
-impl SignatureLowerer<'_> {
+impl SignatureLowerer<'_, '_> {
     /// Enters the given scope, performs some function while
     /// inside that scope, and then exits the scope once the
     /// function is complete.
@@ -919,7 +919,7 @@ impl SignatureLowerer<'_> {
     }
 }
 
-impl Visitor for SignatureLowerer<'_> {
+impl Visitor for SignatureLowerer<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
             ItemKind::Fn(f) => {

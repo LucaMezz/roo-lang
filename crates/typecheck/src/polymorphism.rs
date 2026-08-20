@@ -14,7 +14,7 @@ use unify::{Term, TermId, VarId, term};
 use crate::errors::GenericArgumentCountMismatch;
 use crate::{GenericId, SymbolId, TyCon, TypeCheckContext};
 
-impl TypeCheckContext {
+impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
     /// within the given term.
     ///
@@ -41,23 +41,6 @@ impl TypeCheckContext {
         }
     }
 
-    /// Return all free inference variables `?a` which are still
-    /// free in all enclosing function bodies
-    ///
-    /// For each new function on the checking stack, it indicates
-    /// we are one function deeper in a chain of nested functions.
-    ///
-    /// More precisely, it gives the union of, for each enclosing
-    /// function `f` the set of all free variables which
-    ///
-    /// Helps to determine when an inference variable in a function
-    /// `f` is truly free and can be generalised, or if its type is
-    /// already bound
-    ///
-    /// FIXME With the revised SCC collection which already handles
-    /// nested functions, I think we no longer need to keep track of a
-    /// separate checking stack, and instead just check the free
-    /// variables across everything in the SCC.
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
         for i in 0..self.checking_stack.len() {
@@ -67,26 +50,6 @@ impl TypeCheckContext {
         out.into_iter().collect()
     }
 
-    /// Used to infer generic type parameters on functions where they
-    /// have not explicitly been specified, specifically where the
-    /// functions are nested. For example, the function
-    /// ```ignore
-    /// fn outer(x) {
-    ///     fn inner(y) {
-    ///         y
-    ///     }
-    ///     inner(x)
-    /// }
-    /// ```
-    /// will first check the nested `inner` function before even binding
-    /// the type of `x` in the scope of the body of `outer`, which is
-    /// before `x` even gets bound to a fresh inference variable.
-    /// In that case `y` gets bound to a fresh inference variable `?a`.
-    /// Since the inference variable `?a` does not appear in the
-    /// surrounding function at all, inner generalises it and introduces
-    /// a new generic type parameter `T`. Then the body of `outer`
-    /// gets checked, given the fact that `inner` is now generic.
-    ///
     pub(crate) fn generalize_group(&mut self, members: &[SymbolId]) {
         // Restart synthetic names for generic type parameters back to `T`.
         self.generic_names.reset_synthetic_counter();
