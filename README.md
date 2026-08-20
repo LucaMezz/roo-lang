@@ -58,6 +58,12 @@ are planned.
 - [ ] Bytecode VM
 - [ ] Embedding API
 
+I do plan on eventually re-writing the lexer and parser from scratch
+rather than using external crates, except I wanted to get to the
+typechecker and back-end of the pipeline quicker, since I have
+written lexers and parsers from scratch in the past, but have never
+dealt with type systems or writing a VM.
+
 ## Structure
 
 A Cargo workspace. Every stage of the pipeline has a crate. In addition
