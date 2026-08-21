@@ -1,9 +1,11 @@
+mod annotations_needed;
 mod argument_count_mismatch;
 mod cyclic_type;
 mod generic_argument_count_mismatch;
 mod not_callable;
 mod type_mismatch;
 
+pub(crate) use annotations_needed::AnnotationsNeeded;
 pub(crate) use argument_count_mismatch::ArgumentCountMismatch;
 pub(crate) use cyclic_type::CyclicType;
 pub(crate) use generic_argument_count_mismatch::GenericArgumentCountMismatch;
@@ -18,6 +20,7 @@ diagnostics::catalog! {
         ArgumentCountMismatch,
         GenericArgumentCountMismatch,
         NotCallable,
+        AnnotationsNeeded,
     }
 }
 

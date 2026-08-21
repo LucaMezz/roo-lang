@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use ast::visit::{Visitor, Walkable};
 use ast::{Fn, FnRetTy, FnTy, Item, ItemKind, ModKind, Path, Span, Ty, TyKind, VariantData};
 use slotmap::SlotMap;
-use unify::{TermId, UnificationContext, term};
+use unify::{TermId, UnificationContext, VarId, term};
 
 mod call_graph;
 mod check;
@@ -24,7 +24,7 @@ mod polymorphism;
 mod position_index;
 mod types;
 
-use check::collect_fn_items;
+use check::collect_fn_mod_items;
 use errors::Diagnostics;
 use generic_names::GenericNames;
 use position_index::PositionIndex;
@@ -34,6 +34,7 @@ pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
 use crate::call_graph::{CallGraph, SCCCollector};
+use crate::errors::AnnotationsNeeded;
 
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
@@ -354,6 +355,8 @@ struct TypeCheckContext<'ast> {
     current_fn: Option<SymbolId>,
 
     checking_stack: Vec<SymbolId>,
+
+    inference_vars: Vec<(VarId, Span)>,
 }
 
 impl<'ast> Default for TypeCheckContext<'ast> {
@@ -379,6 +382,7 @@ impl<'ast> TypeCheckContext<'ast> {
             scopes,
             generic_ids: SlotMap::with_key(),
             generic_names: GenericNames::new(),
+            inference_vars: Vec::new(),
             symbols: SlotMap::with_key(),
             current_scope: root,
             diagnostics: Diagnostics::default(),
@@ -423,6 +427,13 @@ impl<'ast> TypeCheckContext<'ast> {
     #[cfg(test)]
     pub(crate) fn type_name_at(&self, offset: usize) -> Option<&'static str> {
         self.positions.type_name_at(offset)
+    }
+
+    fn fresh_var(&mut self, span: Span) -> TermId {
+        let var = self.uni_cx.fresh_var();
+        let term = term!(self.uni_cx, var var);
+        self.inference_vars.push((var, span));
+        term
     }
 
     /// Performs the resolution stage of the type checking.
@@ -534,11 +545,43 @@ impl<'ast> TypeCheckContext<'ast> {
     /// a new type parameter `T` giving final inferred type
     /// `Fn<T>( Fn(int) -> T ) -> T`.
     fn check(&mut self, items: &'ast [Box<Item>]) {
-        let items: Vec<&Item> = items.iter().map(Box::as_ref).collect();
+        collect_fn_mod_items(self, items.iter().map(Box::as_ref));
 
-        collect_fn_items(self, &items);
+        self.check_items(items.iter().map(Box::as_ref));
 
-        self.check_functions(&items);
+        // self.free_variables();
+    }
+
+    fn check_items(&mut self, items: impl IntoIterator<Item = &'ast Item>) {
+        for item in items {
+            match &item.kind {
+                ItemKind::Fn(_) => self.check_function(item),
+                ItemKind::Mod(_, _) => self.check_module(item),
+                _ => {}
+            }
+        }
+    }
+
+    /// Iterates the recorded list of inference variables and the
+    /// span within the source code of what the variables were
+    /// created to represent the type of. Finds any inference
+    /// variables that are still unbound and raises an error
+    /// that type annotations are needed.
+    ///
+    /// NOTE Not sure if we actually need this function. If the
+    /// type of something cannot be inferred, we don't really care
+    /// at the moment. Types just ensure there are no type
+    /// mismatches at compile time, so if something cant have a
+    /// type inferred, it isn't really breaking anything.
+    /// Its probably likely that it is dead / unused code anway.
+    #[allow(unused)]
+    fn free_variables(&mut self) {
+        self.inference_vars
+            .iter()
+            .filter(|(v, _)| self.uni_cx.binding(*v).is_none())
+            .for_each(|(_, span)| {
+                self.diagnostics.push(AnnotationsNeeded::new(*span));
+            });
     }
 
     /// Returns a handle to the [`Symbol`] which the given path
@@ -621,8 +664,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn declare(&mut self, name: &str, span: Span, kind: SymbolKind) -> SymbolId {
         let namespace = kind.namespace();
         let name = self.names.id(name);
-        let var = self.uni_cx.fresh_var();
-        let ty = term!(self.uni_cx, var var);
+        let ty = self.fresh_var(span);
         let symbol = self.symbols.insert(Symbol {
             name,
             kind,
@@ -693,10 +735,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     // When a function doesn't annotate a return type,
                     // inroduce a fresh inference variable `?a` to
                     // represent its type.
-                    FnRetTy::Default(_) => {
-                        let var = self.uni_cx.fresh_var();
-                        term!(self.uni_cx, var var)
-                    }
+                    FnRetTy::Default(_) => self.fresh_var(ty.span),
                     FnRetTy::Ty(ty) => self.lower_ty(ty),
                 };
                 term!(self.uni_cx, TyCon::Fn => [inputs_term, output_term])
@@ -746,10 +785,7 @@ impl<'ast> TypeCheckContext<'ast> {
             // the type should be inferred. Hence, introduce
             // a fresh inference variable `?a` to represent
             // this type.
-            TyKind::Infer => {
-                let var = self.uni_cx.fresh_var();
-                term!(self.uni_cx, var var)
-            }
+            TyKind::Infer => self.fresh_var(ty.span),
             TyKind::Err => term!(self.uni_cx, TyCon::Err),
         }
     }

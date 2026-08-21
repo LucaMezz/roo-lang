@@ -27,3 +27,5 @@ generic-argument-count-mismatch =
     }, found {$found}
 
 not-callable = expected a function, found `{$found}`
+
+annotations-needed = type annotations needed.

@@ -1,6 +1,6 @@
 use ast::{
-    Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, Pat, PatKind, Span,
-    Stmt, StmtKind,
+    Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, ModKind, Pat,
+    PatKind, Span, Stmt, StmtKind,
 };
 use diagnostics::Related;
 use unify::{Term, UnifyError, term};
@@ -595,26 +595,46 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl<'ast> TypeCheckContext<'ast> {
-    fn resolve_fns<'b>(&mut self, items: &[&'b Item]) -> Vec<(SymbolId, &'b Item)> {
-        let mut fns = Vec::new();
-        for &item in items {
-            if let ItemKind::Fn(f) = &item.kind {
-                let name = self.names.id(&f.ident.name);
-                if let Some(symbol) =
-                    self.lookup_in_scope(self.current_scope, name, Namespace::Value)
-                {
-                    fns.push((symbol, item));
-                }
+    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(SymbolId, &'b Item)> {
+        if let ItemKind::Fn(f) = &item.kind {
+            let name = self.names.id(&f.ident.name);
+            if let Some(symbol) = self.lookup_in_scope(self.current_scope, name, Namespace::Value) {
+                Some((symbol, item))
+            } else {
+                None
             }
+        } else {
+            None
         }
-        fns
     }
 
-    pub(crate) fn check_functions(&mut self, items: &[&Item]) {
-        for (symbol, item) in self.resolve_fns(items) {
+    pub(crate) fn check_function(&mut self, item: &'ast Item) {
+        if let Some((symbol, item)) = self.resolve_fn(item) {
             if let Some(scc) = self.check_fn_body(symbol, item) {
                 self.generalize_group(&scc);
             }
+        }
+    }
+
+    pub(crate) fn check_module(&mut self, item: &'ast Item) {
+        let ItemKind::Mod(ident, kind) = &item.kind else {
+            return;
+        };
+        let name = self.names.id(&ident.name);
+        let Some(symbol) = self.lookup_in_scope(self.current_scope, name, Namespace::Type) else {
+            return;
+        };
+        let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
+            return;
+        };
+
+        match kind {
+            ModKind::Loaded(items) => {
+                self.with_scope(scope, |this| {
+                    this.check_items(items.iter().map(Box::as_ref))
+                });
+            }
+            ModKind::Unloaded => unimplemented!(),
         }
     }
 
@@ -636,8 +656,15 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_nested_functions(&mut self, items: &[&Item], from: SymbolId) {
-        for (symbol, item) in self.resolve_fns(items) {
+    fn check_nested_functions(
+        &mut self,
+        items: impl IntoIterator<Item = &'ast Item>,
+        from: SymbolId,
+    ) {
+        for item in items {
+            let Some((symbol, item)) = self.resolve_fn(item) else {
+                continue;
+            };
             let scc = self.record_edge(from, symbol, |this| this.check_fn_body(symbol, item));
             if let Some(scc) = scc {
                 self.generalize_group(&scc);
@@ -664,7 +691,7 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_fn_body(&mut self, symbol: SymbolId, item: &Item) -> Option<Vec<SymbolId>> {
+    fn check_fn_body(&mut self, symbol: SymbolId, item: &'ast Item) -> Option<Vec<SymbolId>> {
         if self.sccc.is_visited(symbol) {
             return None;
         }
@@ -713,15 +740,7 @@ impl<'ast> TypeCheckContext<'ast> {
             };
             this.check_block_expecting(body, Some(output_term), Some(output_span));
 
-            let nested: Vec<&Item> = body
-                .stmts
-                .iter()
-                .filter_map(|stmt| match &stmt.kind {
-                    StmtKind::Item(nested) => Some(nested.as_ref()),
-                    _ => None,
-                })
-                .collect();
-            this.check_nested_functions(&nested, symbol);
+            this.check_nested_functions(nested_items(body), symbol);
         });
 
         self.checking_stack.pop();
@@ -730,33 +749,59 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 }
 
-pub(crate) fn collect_fn_items<'ast>(cx: &mut TypeCheckContext<'ast>, items: &[&'ast Item]) {
-    for &item in items {
-        let ItemKind::Fn(f) = &item.kind else {
-            continue;
-        };
-        let name = cx.names.id(&f.ident.name);
-        let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Value) else {
-            continue;
-        };
-        cx.items_by_symbol.insert(symbol, item);
+fn nested_items(body: &Block) -> impl Iterator<Item = &Item> {
+    body.stmts.iter().filter_map(|stmt| match &stmt.kind {
+        StmtKind::Item(item) => Some(item.as_ref()),
+        _ => None,
+    })
+}
 
-        let Some(body) = f.body.as_ref() else {
-            continue;
-        };
-        let scope = match &cx.symbols[symbol].kind {
-            SymbolKind::Fn(fn_data) => fn_data.scope,
-            _ => continue,
-        };
-        let nested: Vec<&Item> = body
-            .stmts
-            .iter()
-            .filter_map(|stmt| match &stmt.kind {
-                StmtKind::Item(nested) => Some(nested.as_ref()),
-                _ => None,
-            })
-            .collect();
+pub(crate) fn collect_fn_mod_items<'ast>(
+    cx: &mut TypeCheckContext<'ast>,
+    items: impl IntoIterator<Item = &'ast Item>,
+) {
+    for item in items {
+        match &item.kind {
+            ItemKind::Fn(f) => {
+                let name = cx.names.id(&f.ident.name);
+                let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Value)
+                else {
+                    continue;
+                };
+                cx.items_by_symbol.insert(symbol, item);
 
-        cx.with_scope(scope, |cx| collect_fn_items(cx, &nested));
+                let Some(body) = f.body.as_ref() else {
+                    continue;
+                };
+                let scope = match &cx.symbols[symbol].kind {
+                    SymbolKind::Fn(fn_data) => fn_data.scope,
+                    _ => continue,
+                };
+
+                cx.with_scope(scope, |cx| collect_fn_mod_items(cx, nested_items(body)));
+            }
+            ItemKind::Mod(ident, kind) => {
+                let name = cx.names.id(&ident.name);
+                let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Type)
+                else {
+                    continue;
+                };
+                cx.items_by_symbol.insert(symbol, item);
+                let scope = match cx.symbols[symbol].kind {
+                    SymbolKind::Mod(scope) => scope,
+                    _ => continue,
+                };
+
+                match kind {
+                    ModKind::Loaded(items) => {
+                        cx.with_scope(scope, |cx| {
+                            collect_fn_mod_items(cx, items.iter().map(Box::as_ref))
+                        });
+                    }
+                    ModKind::Unloaded => unimplemented!(),
+                }
+            }
+            _ => {}
+        }
     }
 }

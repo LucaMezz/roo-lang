@@ -1,11 +1,34 @@
-fn identity(x) {
-    identity2(x)
+
+mod utilities {
+    type Pair<T, U> = (T, U);
+
+    fn pair(a, b) {
+        (a, b)
+    }
+
+    mod special {
+        type Double<H, J> = (J, H);
+    }
 }
 
-fn identity2(x) {
-    identity3(x)
+
+fn main() -> () {
+    let something = apply(id); 
 }
 
-fn identity3(x) {
+fn apply(f) {
+    fn to(x) {
+        f(x)
+    }
+    to
+}
+
+fn id(x) {
     x
+}
+
+use utilities;
+
+fn build() -> utilities::Pair<int, bool> {
+    let combo: utilities::special::Double = utilities::pair::<int, bool>(10, true);
 }
