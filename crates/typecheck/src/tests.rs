@@ -300,7 +300,7 @@ fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
         span: ast::Span { start: 0, end: 0 },
     };
     let err_term = cx.lower_ty(&err_ty);
-    let int_term = term!(cx.uni_cx, TyCon::Int);
+    let int_term = cx.term(TyCon::Int);
     assert!(cx.uni_cx.unify(err_term, int_term).is_ok());
 }
 
@@ -412,7 +412,7 @@ fn check_expr_err_is_a_wildcard() {
         kind: ExprKind::Err,
         span: ast::Span { start: 0, end: 0 },
     };
-    let bool_term = term!(cx.uni_cx, TyCon::Bool);
+    let bool_term = cx.term(TyCon::Bool);
     let t = cx.check_expr(&err_expr, Some(bool_term));
     assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Err));
 }
@@ -425,7 +425,7 @@ fn check_expr_unifies_the_result_against_the_expected_type() {
         .expect("foo should resolve");
     let symbol_ty = cx.symbols[symbol].ty;
 
-    let never_term = term!(cx.uni_cx, TyCon::Never);
+    let never_term = cx.term(TyCon::Never);
     cx.check_expr(&expr("foo"), Some(never_term));
 
     assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
@@ -453,8 +453,8 @@ fn check_expr_array_elements_are_unified_with_each_other() {
 #[test]
 fn check_expr_empty_array_uses_the_expected_element_type() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
-    let array_of_never = term!(cx.uni_cx, TyCon::Array => [never_term]);
+    let never_term = cx.term(TyCon::Never);
+    let array_of_never = cx.term_app(TyCon::Array, vec![never_term]);
 
     let t = cx.check_expr(&expr("[]"), Some(array_of_never));
     let (_, args) = resolved_args(&mut cx, t).expect("should be an App term");
@@ -605,8 +605,8 @@ fn check_expr_ret_with_a_value_is_still_never_not_the_values_type() {
 #[test]
 fn never_is_a_wildcard_that_unifies_with_anything() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
-    let int_term = term!(cx.uni_cx, TyCon::Int);
+    let never_term = cx.term(TyCon::Never);
+    let int_term = cx.term(TyCon::Int);
     assert!(cx.uni_cx.unify(never_term, int_term).is_ok());
 }
 
@@ -697,7 +697,7 @@ fn check_block_a_non_trailing_lets_ascription_propagates_to_a_later_reference() 
 #[test]
 fn check_pat_ident_declares_a_local_symbol() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
+    let never_term = cx.term(TyCon::Never);
     cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
 
     assert!(lookup(&cx, cx.current_scope, Namespace::Value, "x"));
@@ -706,7 +706,7 @@ fn check_pat_ident_declares_a_local_symbol() {
 #[test]
 fn check_pat_ident_binds_the_locals_type_to_expected() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
+    let never_term = cx.term(TyCon::Never);
     cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
@@ -718,7 +718,7 @@ fn check_pat_ident_binds_the_locals_type_to_expected() {
 #[test]
 fn check_pat_wild_matches_anything_and_binds_nothing() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
+    let never_term = cx.term(TyCon::Never);
     let t = cx.check_pat(&pat("_"), never_term, PatDeclKind::Let);
     assert_eq!(t, never_term);
     assert!(cx.symbols.is_empty());
@@ -727,9 +727,9 @@ fn check_pat_wild_matches_anything_and_binds_nothing() {
 #[test]
 fn check_pat_tuple_declares_one_local_per_position() {
     let mut cx = TypeCheckContext::new();
-    let never_term = term!(cx.uni_cx, TyCon::Never);
-    let int_term = term!(cx.uni_cx, TyCon::Int);
-    let expected = term!(cx.uni_cx, TyCon::Tuple => [never_term, int_term]);
+    let never_term = cx.term(TyCon::Never);
+    let int_term = cx.term(TyCon::Int);
+    let expected = cx.term_app(TyCon::Tuple, vec![never_term, int_term]);
 
     cx.check_pat(&pat("(a, b)"), expected, PatDeclKind::Let);
 
@@ -746,7 +746,7 @@ fn check_pat_tuple_declares_one_local_per_position() {
 #[test]
 fn check_pat_tuple_with_no_matching_expected_shape_uses_fresh_vars_per_position() {
     let mut cx = TypeCheckContext::new();
-    let int_term = term!(cx.uni_cx, TyCon::Int);
+    let int_term = cx.term(TyCon::Int);
     let t = cx.check_pat(&pat("(a, b)"), int_term, PatDeclKind::Let);
     let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
     assert_eq!(con, TyCon::Tuple);

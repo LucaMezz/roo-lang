@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ast::{GenericArg, Path, Span};
-use unify::{Term, TermId, VarId, term};
+use unify::{Term, TermId, VarId};
 
 use crate::errors::GenericArgumentCountMismatch;
 use crate::{GenericId, SymbolId, TyCon, TypeCheckContext};
@@ -102,7 +102,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     let id = self.generic_ids.insert(());
                     let name = self.generic_names.fresh_synthetic(&mut taken);
                     self.generic_names.declare(id, name);
-                    let generic_term = term!(self.uni_cx, TyCon::Generic(id));
+                    let generic_term = self.term(TyCon::Generic(id));
                     self.uni_cx.bind(var, generic_term);
                     entry.insert(id);
                 }
@@ -144,7 +144,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let mut subst = HashMap::new();
         for (&id, &(term, span)) in generics.iter().zip(explicit) {
             let var = self.uni_cx.fresh_var();
-            let var_term = term!(self.uni_cx, var var);
+            let var_term = self.term_var(var);
             let _ = self.uni_cx.unify_because(var_term, term, span);
             subst.insert(id, var_term);
         }
@@ -194,7 +194,7 @@ impl<'ast> TypeCheckContext<'ast> {
                 ..
             }) => *subst.entry(id).or_insert_with(|| {
                 let var = self.uni_cx.fresh_var();
-                term!(self.uni_cx, var var)
+                self.term_var(var)
             }),
             // The term is some arbitrary constructor applied to some arbitrary
             // arguments. So recursively check the arguments for generic
@@ -204,7 +204,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     .iter()
                     .map(|&arg| self.instantiate_term(arg, subst))
                     .collect();
-                term!(self.uni_cx, constructor => new_args)
+                self.term_app(constructor, new_args)
             }
             None => resolved,
         }

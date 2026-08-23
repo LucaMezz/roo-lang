@@ -3,7 +3,7 @@ use diagnostics::Note;
 use diagnostics_derive::Diagnose;
 
 #[derive(Diagnose)]
-#[diagnose(code = 2, level = "error")]
+#[diagnose(code = 6, level = "error")]
 pub struct AnnotationsNeeded {
     #[diagnose(span)]
     pub span: Span,

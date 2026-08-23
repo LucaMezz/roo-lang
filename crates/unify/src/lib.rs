@@ -17,11 +17,15 @@ slotmap::new_key_type! {
 ///
 /// A Term `t` is defined recursively as
 ///
-///     t = v
+/// ```text
+/// t = v
+/// ```
 ///
 /// where `v` is an inference variable `?a`, or
 ///
-///     t = f(t_1, t_2, ..., t_n)
+/// ```text
+/// t = f(t_1, t_2, ..., t_n)
+/// ```
 ///
 /// where `f` is the 'constructor', and t_1, ..., t_n are terms.
 /// We say that `t_1, t_2, ..., t_n` are the 'arguments'.
@@ -49,25 +53,27 @@ pub enum Term<C> {
 ///
 /// This macro has the following forms:
 ///
-///     1. term!(cx, var v)
-///     
-///        Constructs a new term containing just the inference
-///        variable with id `v`.
+/// ```text
+/// 1. term!(cx, var v)
 ///
-///     2. term!(cx, f => [t_1, t_2, ..., t_n])
+///    Constructs a new term containing just the inference
+///    variable with id `v`.
 ///
-///        Constructs a new term by applying the constructor 'f'
-///        to the list of terms with ids `t_1, t_2, ..., t_n`.
+/// 2. term!(cx, f => [t_1, t_2, ..., t_n])
 ///
-///     3. term!(cx, f => vec![t_1, t_2, ..., t_n])
+///    Constructs a new term by applying the constructor 'f'
+///    to the list of terms with ids `t_1, t_2, ..., t_n`.
 ///
-///         Constructs a new term by applying the constructor 'f'
-///         to the Vec of terms with ids `t_1, t_2, ..., t_n`.
+/// 3. term!(cx, f => vec![t_1, t_2, ..., t_n])
 ///
-///     4. term!(cx, f)
+///     Constructs a new term by applying the constructor 'f'
+///     to the Vec of terms with ids `t_1, t_2, ..., t_n`.
 ///
-///         Constructs a new term by applying the constructor 'f'
-///         to an empty argument list.
+/// 4. term!(cx, f)
+///
+///     Constructs a new term by applying the constructor 'f'
+///     to an empty argument list.
+/// ```
 ///
 #[macro_export]
 macro_rules! term {
@@ -449,7 +455,9 @@ pub enum UnifyError<C> {
     /// terms `t_1` and `t_2`, there are two constructors
     /// which differ. e.g.
     ///
-    ///     ...f(...)... != ...g(...)...
+    /// ```text
+    /// ...f(...)... != ...g(...)...
+    /// ```
     ///
     #[error("constructor mismatch: {c1:?} != {c2:?}")]
     ConstructorMismatch {
@@ -469,7 +477,9 @@ pub enum UnifyError<C> {
     /// terms `t_1` and `t_2`, there are two constructors
     /// which have a differing number of arguments. e.g.
     ///
-    ///     ...f(t_1, t_2, ..., t_n)... != ...g(t_1, t2, ..., t_m)...
+    /// ```text
+    /// ...f(t_1, t_2, ..., t_n)... != ...g(t_1, t2, ..., t_m)...
+    /// ```
     //
     /// where n != m
     ///
@@ -495,7 +505,9 @@ pub enum UnifyError<C> {
     /// only an infinite cyclical type can work, which
     /// is not possible in practice. e.g.
     ///
-    ///     ...f(t_1, ..., ?a, ..., t_n)... != ...?a...
+    /// ```text
+    /// ...f(t_1, ..., ?a, ..., t_n)... != ...?a...
+    /// ```
     ///
     #[error("occurs check failed for {0:?}")]
     OccursCheck(VarId),

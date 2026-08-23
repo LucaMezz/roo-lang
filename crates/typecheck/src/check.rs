@@ -3,7 +3,7 @@ use ast::{
     PatKind, Span, Stmt, StmtKind,
 };
 use diagnostics::Related;
-use unify::{Term, UnifyError, term};
+use unify::{Term, UnifyError};
 
 use crate::errors::{
     ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
@@ -183,7 +183,7 @@ impl<'ast> TypeCheckContext<'ast> {
                         });
                     }
                 }
-                return term!(self.uni_cx, TyCon::Err);
+                return self.term(TyCon::Err);
             }
         }
         actual
@@ -191,78 +191,16 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn check_expr_kind(&mut self, kind: &ExprKind, expected: Option<TermId>) -> TermId {
         match kind {
-            ExprKind::Err => term!(self.uni_cx, TyCon::Err),
+            ExprKind::Err => self.term(TyCon::Err),
             ExprKind::Lit(lit) => match lit.kind {
-                LitKind::Bool(_) => term!(self.uni_cx, TyCon::Bool),
-                LitKind::Char(_) => term!(self.uni_cx, TyCon::Char),
-                LitKind::Int(_) => term!(self.uni_cx, TyCon::Int),
-                LitKind::Float(_) => term!(self.uni_cx, TyCon::Float),
-                LitKind::Str(_) => term!(self.uni_cx, TyCon::Str),
+                LitKind::Bool(_) => self.term(TyCon::Bool),
+                LitKind::Char(_) => self.term(TyCon::Char),
+                LitKind::Int(_) => self.term(TyCon::Int),
+                LitKind::Float(_) => self.term(TyCon::Float),
+                LitKind::Str(_) => self.term(TyCon::Str),
             },
             ExprKind::Paren(expr) => self.check_expr(expr, expected),
-            ExprKind::If(cond, body, els) => {
-                let bool_term = term!(self.uni_cx, TyCon::Bool);
-                self.check_expr(cond, Some(bool_term));
-
-                let body_ty = self.check_block(body, expected);
-
-                let unit_term = term!(self.uni_cx, TyCon::Tuple);
-                let els_ty = els
-                    .as_ref()
-                    .map(|els| self.check_expr(els, expected))
-                    .unwrap_or(unit_term);
-
-                let body_span = Self::block_value_span(body);
-                let els_span = match els.as_deref() {
-                    Some(Expr {
-                        kind: ExprKind::Block(block, _),
-                        ..
-                    }) => Self::block_value_span(block),
-                    Some(els) => els.span,
-                    None => body_span,
-                };
-
-                if let Err(err) = self.uni_cx.unify_because(body_ty, els_ty, body_span) {
-                    let body_type = self.resolved(body_ty);
-                    let els_type = self.resolved(els_ty);
-                    match err {
-                        UnifyError::OccursCheck(_) => {
-                            self.diagnostics
-                                .push(CyclicType::new(els_span, body_type, els_type));
-                        }
-                        UnifyError::ConstructorMismatch { t1, t2, .. }
-                        | UnifyError::ArityMismatch { t1, t2, .. } => {
-                            let expected_highlight = self.resolved(t1);
-                            let found_highlight = self.resolved(t2);
-
-                            let expected_provenance = self.first_provenance(&[
-                                (t1, "expected", &expected_highlight),
-                                (body_ty, "expected", &body_type),
-                            ]);
-                            let found_provenance = self.first_provenance(&[
-                                (t2, "found", &found_highlight),
-                                (els_ty, "found", &els_type),
-                            ]);
-
-                            self.diagnostics.push(TypeMismatch {
-                                span: els_span,
-                                expected: body_type,
-                                found: els_type,
-                                expected_highlight,
-                                found_highlight,
-                                expected_due_to: els
-                                    .is_some()
-                                    .then(|| expected_because_of(body_span)),
-                                generic_note: None,
-                                expected_provenance,
-                                found_provenance,
-                            });
-                        }
-                    }
-                }
-
-                self.prefer_non_never(body_ty, els_ty)
-            }
+            ExprKind::If(cond, body, els) => self.check_if_expr(cond, body, els, expected),
             ExprKind::Block(block, _) => self.check_block(block, expected),
             ExprKind::Tup(exprs) => {
                 let expected_args = expected.and_then(|expected| {
@@ -285,13 +223,13 @@ impl<'ast> TypeCheckContext<'ast> {
                     })
                     .collect();
 
-                term!(self.uni_cx, TyCon::Tuple => args)
+                self.term_app(TyCon::Tuple, args)
             }
             ExprKind::Ret(expr) => {
                 if let Some(expr) = expr {
                     self.check_expr(expr, None);
                 }
-                term!(self.uni_cx, TyCon::Never)
+                self.term(TyCon::Never)
             }
             ExprKind::Path(qself, path) => {
                 if qself.is_some() {
@@ -304,110 +242,10 @@ impl<'ast> TypeCheckContext<'ast> {
                         self.check_referenced_fn(symbol);
                         self.instantiate_path(symbol, path)
                     }
-                    None => term!(self.uni_cx, TyCon::Err),
+                    None => self.term(TyCon::Err),
                 }
             }
-            ExprKind::Call(callee, args) => {
-                let callee_ty = self.check_expr(callee, None);
-
-                let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
-                    ExprKind::Path(None, path) => self
-                        .resolve_path(path, Namespace::Value)
-                        .map(|symbol| match &self.symbols[symbol].kind {
-                            SymbolKind::Fn(fn_data) => fn_data.param_spans.clone(),
-                            _ => Vec::new(),
-                        })
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                };
-
-                let resolved_callee = self.uni_cx.resolve(callee_ty);
-                let fn_shape = match self.uni_cx.term(resolved_callee) {
-                    Some(Term::App {
-                        constructor: TyCon::Fn,
-                        args: fn_args,
-                    }) => Some((fn_args[0], fn_args[1])),
-                    _ => None,
-                };
-                let known_inputs = if let Some((inputs_term, output_term)) = fn_shape {
-                    let resolved_inputs = self.uni_cx.resolve(inputs_term);
-                    match self.uni_cx.term(resolved_inputs) {
-                        Some(Term::App {
-                            constructor: TyCon::Tuple,
-                            args: input_tys,
-                        }) => Some((input_tys.clone(), output_term)),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                if let Some((input_tys, output_term)) = known_inputs {
-                    let expected = input_tys.len();
-                    let actual = args.len();
-                    if expected != actual {
-                        let span = if actual < expected {
-                            let end = args
-                                .last()
-                                .map(|arg| arg.span.end)
-                                .unwrap_or(callee.span.end);
-                            Span {
-                                start: callee.span.start,
-                                end,
-                            }
-                        } else {
-                            Span {
-                                start: args[expected].span.start,
-                                end: args
-                                    .last()
-                                    .expect("actual > expected implies at least one arg")
-                                    .span
-                                    .end,
-                            }
-                        };
-                        self.diagnostics.push(ArgumentCountMismatch {
-                            span,
-                            expected,
-                            found: actual,
-                        });
-                    }
-
-                    for (i, arg) in args.iter().enumerate() {
-                        let expected_ty = input_tys.get(i).copied();
-                        let expected_span = callee_param_spans.get(i).copied().flatten();
-                        self.check_expr_expecting(arg, expected_ty, expected_span);
-                    }
-
-                    output_term
-                } else if matches!(self.uni_cx.term(resolved_callee), None | Some(Term::Var(_))) {
-                    let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
-                    let inputs_term = term!(self.uni_cx, TyCon::Tuple => arg_tys);
-                    let ret_var = self.uni_cx.fresh_var();
-                    let ret_term = term!(self.uni_cx, var ret_var);
-                    let fn_term = term!(self.uni_cx, TyCon::Fn => [inputs_term, ret_term]);
-                    if let Err(UnifyError::OccursCheck(_)) =
-                        self.uni_cx.unify_because(callee_ty, fn_term, callee.span)
-                    {
-                        let expected_ty = self.resolved(fn_term);
-                        let found_ty = self.resolved(callee_ty);
-                        self.diagnostics
-                            .push(CyclicType::new(callee.span, expected_ty, found_ty));
-                    }
-                    ret_term
-                } else {
-                    let found = self.resolved(callee_ty);
-                    self.diagnostics.push(NotCallable {
-                        span: callee.span,
-                        found,
-                    });
-
-                    for arg in args {
-                        self.check_expr(arg, None);
-                    }
-
-                    term!(self.uni_cx, TyCon::Err)
-                }
-            }
+            ExprKind::Call(callee, args) => self.check_call_expr(callee, args),
             ExprKind::Cast(_expr, ty) => self.lower_ty(ty),
             ExprKind::Array(exprs) => {
                 let expected_ty = expected.and_then(|expected| {
@@ -433,20 +271,197 @@ impl<'ast> TypeCheckContext<'ast> {
                     }
                     None => expected_ty.unwrap_or_else(|| {
                         let var = self.uni_cx.fresh_var();
-                        term!(self.uni_cx, var var)
+                        self.term_var(var)
                     }),
                 };
 
-                term!(self.uni_cx, TyCon::Array => [elem_ty])
+                self.term_app(TyCon::Array, vec![elem_ty])
             }
             ExprKind::Assign(lhs, rhs, _) => {
                 let lhs = self.check_expr(lhs, None);
 
                 self.check_expr(rhs, Some(lhs));
 
-                term!(self.uni_cx, TyCon::Tuple)
+                self.term(TyCon::Tuple)
             }
             _ => unimplemented!(),
+        }
+    }
+
+    fn check_if_expr(
+        &mut self,
+        cond: &Expr,
+        body: &Block,
+        els: &Option<Box<Expr>>,
+        expected: Option<TermId>,
+    ) -> TermId {
+        let bool_term = self.term(TyCon::Bool);
+        self.check_expr(cond, Some(bool_term));
+
+        let body_ty = self.check_block(body, expected);
+
+        let unit_term = self.term(TyCon::Tuple);
+        let els_ty = els
+            .as_ref()
+            .map(|els| self.check_expr(els, expected))
+            .unwrap_or(unit_term);
+
+        let body_span = Self::block_value_span(body);
+        let els_span = match els.as_deref() {
+            Some(Expr {
+                kind: ExprKind::Block(block, _),
+                ..
+            }) => Self::block_value_span(block),
+            Some(els) => els.span,
+            None => body_span,
+        };
+
+        self.check_if_branches_agree(body_ty, els_ty, body_span, els_span, els.is_some());
+
+        self.prefer_non_never(body_ty, els_ty)
+    }
+
+    fn check_if_branches_agree(
+        &mut self,
+        body_ty: TermId,
+        els_ty: TermId,
+        body_span: Span,
+        els_span: Span,
+        has_els: bool,
+    ) {
+        let Err(err) = self.uni_cx.unify_because(body_ty, els_ty, body_span) else {
+            return;
+        };
+
+        let body_type = self.resolved(body_ty);
+        let els_type = self.resolved(els_ty);
+        match err {
+            UnifyError::OccursCheck(_) => {
+                self.diagnostics
+                    .push(CyclicType::new(els_span, body_type, els_type));
+            }
+            UnifyError::ConstructorMismatch { t1, t2, .. }
+            | UnifyError::ArityMismatch { t1, t2, .. } => {
+                let expected_highlight = self.resolved(t1);
+                let found_highlight = self.resolved(t2);
+
+                let expected_provenance = self.first_provenance(&[
+                    (t1, "expected", &expected_highlight),
+                    (body_ty, "expected", &body_type),
+                ]);
+                let found_provenance = self.first_provenance(&[
+                    (t2, "found", &found_highlight),
+                    (els_ty, "found", &els_type),
+                ]);
+
+                self.diagnostics.push(TypeMismatch {
+                    span: els_span,
+                    expected: body_type,
+                    found: els_type,
+                    expected_highlight,
+                    found_highlight,
+                    expected_due_to: has_els.then(|| expected_because_of(body_span)),
+                    generic_note: None,
+                    expected_provenance,
+                    found_provenance,
+                });
+            }
+        }
+    }
+
+    fn resolved_app(&mut self, term: TermId, con: TyCon) -> Option<Vec<TermId>> {
+        let resolved = self.uni_cx.resolve(term);
+        match self.uni_cx.term(resolved) {
+            Some(Term::App { constructor, args }) if *constructor == con => Some(args.clone()),
+            _ => None,
+        }
+    }
+
+    fn check_call_expr(&mut self, callee: &Expr, args: &[Box<Expr>]) -> TermId {
+        let callee_ty = self.check_expr(callee, None);
+
+        let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
+            ExprKind::Path(None, path) => self
+                .resolve_path(path, Namespace::Value)
+                .map(|symbol| match &self.symbols[symbol].kind {
+                    SymbolKind::Fn(fn_data) => fn_data.param_spans.clone(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        let resolved_callee = self.uni_cx.resolve(callee_ty);
+        let known_inputs = self.resolved_app(callee_ty, TyCon::Fn).and_then(|fn_args| {
+            let output_term = fn_args[1];
+            self.resolved_app(fn_args[0], TyCon::Tuple)
+                .map(|input_tys| (input_tys, output_term))
+        });
+
+        if let Some((input_tys, output_term)) = known_inputs {
+            let expected = input_tys.len();
+            let actual = args.len();
+            if expected != actual {
+                let span = if actual < expected {
+                    let end = args
+                        .last()
+                        .map(|arg| arg.span.end)
+                        .unwrap_or(callee.span.end);
+                    Span {
+                        start: callee.span.start,
+                        end,
+                    }
+                } else {
+                    Span {
+                        start: args[expected].span.start,
+                        end: args
+                            .last()
+                            .expect("actual > expected implies at least one arg")
+                            .span
+                            .end,
+                    }
+                };
+                self.diagnostics.push(ArgumentCountMismatch {
+                    span,
+                    expected,
+                    found: actual,
+                });
+            }
+
+            for (i, arg) in args.iter().enumerate() {
+                let expected_ty = input_tys.get(i).copied();
+                let expected_span = callee_param_spans.get(i).copied().flatten();
+                self.check_expr_expecting(arg, expected_ty, expected_span);
+            }
+
+            output_term
+        } else if matches!(self.uni_cx.term(resolved_callee), None | Some(Term::Var(_))) {
+            let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
+            let inputs_term = self.term_app(TyCon::Tuple, arg_tys);
+            let ret_var = self.uni_cx.fresh_var();
+            let ret_term = self.term_var(ret_var);
+            let fn_term = self.term_app(TyCon::Fn, vec![inputs_term, ret_term]);
+            if let Err(UnifyError::OccursCheck(_)) =
+                self.uni_cx.unify_because(callee_ty, fn_term, callee.span)
+            {
+                let expected_ty = self.resolved(fn_term);
+                let found_ty = self.resolved(callee_ty);
+                self.diagnostics
+                    .push(CyclicType::new(callee.span, expected_ty, found_ty));
+            }
+            ret_term
+        } else {
+            let found = self.resolved(callee_ty);
+            self.diagnostics.push(NotCallable {
+                span: callee.span,
+                found,
+            });
+
+            for arg in args {
+                self.check_expr(arg, None);
+            }
+
+            self.term(TyCon::Err)
         }
     }
 
@@ -460,7 +475,7 @@ impl<'ast> TypeCheckContext<'ast> {
         expected: Option<TermId>,
         expected_span: Option<Span>,
     ) -> TermId {
-        let mut ty = term!(self.uni_cx, TyCon::Tuple);
+        let mut ty = self.term(TyCon::Tuple);
         let mut diverges = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
             let is_last = i == block.stmts.len() - 1;
@@ -482,7 +497,7 @@ impl<'ast> TypeCheckContext<'ast> {
             }
         }
         if diverges {
-            term!(self.uni_cx, TyCon::Never)
+            self.term(TyCon::Never)
         } else {
             ty
         }
@@ -520,7 +535,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
         let expected = expected.unwrap_or_else(|| {
             let var = self.uni_cx.fresh_var();
-            term!(self.uni_cx, var var)
+            self.term_var(var)
         });
 
         self.check_pat(&local.pat, expected, PatDeclKind::Let);
@@ -581,13 +596,13 @@ impl<'ast> TypeCheckContext<'ast> {
                                 .map(|args| args[i])
                                 .unwrap_or_else(|| {
                                     let var = self.uni_cx.fresh_var();
-                                    term!(self.uni_cx, var var)
+                                    self.term_var(var)
                                 });
                             self.check_pat(pat, expected, decl_kind)
                         })
                         .collect();
 
-                term!(self.uni_cx, TyCon::Tuple => args)
+                self.term_app(TyCon::Tuple, args)
             }
             _ => unimplemented!(),
         }

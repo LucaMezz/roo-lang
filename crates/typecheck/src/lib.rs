@@ -50,7 +50,7 @@ use crate::errors::AnnotationsNeeded;
 /// `arguments`.
 ///
 /// For example, the `Term` which represents the `Int` type would
-/// be the [`TyCon::Any`] constructor, applied to zero arguments.
+/// be the [`TyCon::Int`] constructor, applied to zero arguments.
 #[derive(Debug, Clone, PartialEq)]
 enum TyCon {
     // ===============
@@ -431,9 +431,21 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn fresh_var(&mut self, span: Span) -> TermId {
         let var = self.uni_cx.fresh_var();
-        let term = term!(self.uni_cx, var var);
+        let term = self.term_var(var);
         self.inference_vars.push((var, span));
         term
+    }
+
+    fn term(&mut self, con: TyCon) -> TermId {
+        term!(self.uni_cx, con)
+    }
+
+    fn term_app(&mut self, con: TyCon, args: Vec<TermId>) -> TermId {
+        term!(self.uni_cx, con => args)
+    }
+
+    fn term_var(&mut self, id: VarId) -> TermId {
+        term!(self.uni_cx, var id)
     }
 
     /// Performs the resolution stage of the type checking.
@@ -458,9 +470,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// variable to represent its type.
     fn resolve(&mut self, items: &[Box<Item>]) {
         let mut resolver = Resolver { cx: self };
-        for item in items {
-            resolver.visit_item(item);
-        }
+        items.iter().for_each(|item| resolver.visit_item(item));
     }
 
     /// Performs lowering of signatures. It does this for
@@ -493,9 +503,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// inference of function bodies has been performed yet.
     fn lower_signatures(&mut self, items: &[Box<Item>]) {
         let mut lowerer = SignatureLowerer { cx: self };
-        for item in items {
-            lowerer.visit_item(item);
-        }
+        items.iter().for_each(|item| lowerer.visit_item(item));
     }
 
     /// Performs type checking of function bodies.
@@ -593,32 +601,23 @@ impl<'ast> TypeCheckContext<'ast> {
     /// recursively resolving the shortened path until
     /// it potentially arrives at a symbol.
     fn resolve_path(&mut self, path: &Path, namespace: Namespace) -> Option<SymbolId> {
-        let mut segments = path.segments.iter().peekable();
+        let last = path.segments.len() - 1;
 
-        let first = segments.next()?;
+        let mut segments = path.segments.iter().enumerate();
+        let (i, first) = segments.next()?;
         let name = self.names.id(&first.ident.name);
+        let mut symbol = self.lookup_up_scope_chain(
+            self.current_scope,
+            name,
+            segment_namespace(i, last, namespace),
+        )?;
 
-        let ns = if segments.peek().is_some() {
-            Namespace::Type
-        } else {
-            namespace
-        };
-
-        let mut symbol = self.lookup_up_scope_chain(self.current_scope, name, ns)?;
-
-        while let Some(segment) = segments.next() {
-            let scope = match &self.symbols[symbol].kind {
-                SymbolKind::Mod(scope) => *scope,
-                _ => return None,
+        for (i, segment) in segments {
+            let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
+                return None;
             };
             let name = self.names.id(&segment.ident.name);
-
-            let ns = if segments.peek().is_some() {
-                Namespace::Type
-            } else {
-                namespace
-            };
-            symbol = self.lookup_in_scope(scope, name, ns)?;
+            symbol = self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))?;
         }
 
         Some(symbol)
@@ -692,7 +691,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let name = self.names.id(param_name);
         let id = self.generic_ids.insert(());
         self.generic_names.declare(id, param_name.to_owned());
-        let ty = term!(self.uni_cx, TyCon::Generic(id));
+        let ty = self.term(TyCon::Generic(id));
         let symbol = self.symbols.insert(Symbol {
             name,
             kind: SymbolKind::GenericParam,
@@ -720,17 +719,20 @@ impl<'ast> TypeCheckContext<'ast> {
     /// checker to perform checking and inference.
     fn lower_ty(&mut self, ty: &Ty) -> TermId {
         match &ty.kind {
-            TyKind::Never => term!(self.uni_cx, TyCon::Never),
+            TyKind::Never => self.term(TyCon::Never),
             TyKind::Paren(inner) => self.lower_ty(inner),
-            TyKind::Array(inner) => term!(self.uni_cx, TyCon::Array => [ self.lower_ty(inner) ]),
+            TyKind::Array(inner) => {
+                let elem = self.lower_ty(inner);
+                self.term_app(TyCon::Array, vec![elem])
+            }
             TyKind::Tup(inner) => {
                 let args = inner.iter().map(|x| self.lower_ty(x)).collect();
-                term!(self.uni_cx, TyCon::Tuple => args)
+                self.term_app(TyCon::Tuple, args)
             }
             TyKind::Fn(fn_ty) => {
                 let FnTy { inputs, output } = fn_ty.as_ref();
                 let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
-                let inputs_term = term!(self.uni_cx, TyCon::Tuple => input_args);
+                let inputs_term = self.term_app(TyCon::Tuple, input_args);
                 let output_term = match output {
                     // When a function doesn't annotate a return type,
                     // inroduce a fresh inference variable `?a` to
@@ -738,58 +740,52 @@ impl<'ast> TypeCheckContext<'ast> {
                     FnRetTy::Default(_) => self.fresh_var(ty.span),
                     FnRetTy::Ty(ty) => self.lower_ty(ty),
                 };
-                term!(self.uni_cx, TyCon::Fn => [inputs_term, output_term])
+                self.term_app(TyCon::Fn, vec![inputs_term, output_term])
             }
-            TyKind::Path(path) => match path.segments.as_slice() {
-                // The primitive / builtin types in the language are
-                // just represented by hardcoded paths.
-                [segment] if segment.ident.name == "bool" => {
-                    self.positions.record_primitive(segment.ident.span, "bool");
-                    term!(self.uni_cx, TyCon::Bool)
-                }
-                [segment] if segment.ident.name == "int" => {
-                    self.positions.record_primitive(segment.ident.span, "int");
-                    term!(self.uni_cx, TyCon::Int)
-                }
-                [segment] if segment.ident.name == "float" => {
-                    self.positions.record_primitive(segment.ident.span, "float");
-                    term!(self.uni_cx, TyCon::Float)
-                }
-                [segment] if segment.ident.name == "char" => {
-                    self.positions.record_primitive(segment.ident.span, "char");
-                    term!(self.uni_cx, TyCon::Char)
-                }
-                [segment] if segment.ident.name == "String" => {
-                    self.positions
-                        .record_primitive(segment.ident.span, "String");
-                    term!(self.uni_cx, TyCon::Str)
-                }
-                [segment] if segment.ident.name == "any" => {
-                    self.positions.record_primitive(segment.ident.span, "any");
-                    term!(self.uni_cx, TyCon::Any)
-                }
-                _ => match self.resolve_path(path, Namespace::Type) {
-                    Some(symbol) => {
-                        self.record_path_reference(path, symbol);
-                        match &self.symbols[symbol].kind {
-                            SymbolKind::Struct => term!(self.uni_cx, TyCon::Struct(symbol)),
-                            SymbolKind::Enum => term!(self.uni_cx, TyCon::Enum(symbol)),
-                            _ => self.instantiate_path(symbol, path),
-                        }
-                    }
-                    None => term!(self.uni_cx, TyCon::Err),
-                },
-            },
+            TyKind::Path(path) => self.lower_path_ty(path),
             TyKind::ImplicitSelf => unimplemented!(),
             // When `_` is used as a type annotation, it means
             // the type should be inferred. Hence, introduce
             // a fresh inference variable `?a` to represent
             // this type.
             TyKind::Infer => self.fresh_var(ty.span),
-            TyKind::Err => term!(self.uni_cx, TyCon::Err),
+            TyKind::Err => self.term(TyCon::Err),
+        }
+    }
+
+    fn lower_path_ty(&mut self, path: &Path) -> TermId {
+        if let [segment] = path.segments.as_slice() {
+            let found = PRIMITIVE_TYPES
+                .iter()
+                .find(|(name, _)| segment.ident.name == *name);
+            if let Some((name, con)) = found {
+                self.positions.record_primitive(segment.ident.span, name);
+                return self.term(con.clone());
+            }
+        }
+
+        match self.resolve_path(path, Namespace::Type) {
+            Some(symbol) => {
+                self.record_path_reference(path, symbol);
+                match &self.symbols[symbol].kind {
+                    SymbolKind::Struct => self.term(TyCon::Struct(symbol)),
+                    SymbolKind::Enum => self.term(TyCon::Enum(symbol)),
+                    _ => self.instantiate_path(symbol, path),
+                }
+            }
+            None => self.term(TyCon::Err),
         }
     }
 }
+
+const PRIMITIVE_TYPES: &[(&str, TyCon)] = &[
+    ("bool", TyCon::Bool),
+    ("int", TyCon::Int),
+    ("float", TyCon::Float),
+    ("char", TyCon::Char),
+    ("String", TyCon::Str),
+    ("any", TyCon::Any),
+];
 
 /// The AST Visitor that performs the Resolution stage of the
 /// type checking. Walks the AST, creating new symbols in the
@@ -937,65 +933,68 @@ impl SignatureLowerer<'_, '_> {
                 Some(ty) => self.cx.lower_ty(ty),
                 None => {
                     let var = self.cx.uni_cx.fresh_var();
-                    term!(self.cx.uni_cx, var var)
+                    self.cx.term_var(var)
                 }
             })
             .collect();
-        let inputs_term = term!(self.cx.uni_cx, TyCon::Tuple => inputs);
+        let inputs_term = self.cx.term_app(TyCon::Tuple, inputs);
         let output_term = match &f.sig.output {
             FnRetTy::Default(_) => {
                 let var = self.cx.uni_cx.fresh_var();
-                term!(self.cx.uni_cx, var var)
+                self.cx.term_var(var)
             }
             FnRetTy::Ty(ty) => self.cx.lower_ty(ty),
         };
-        term!(self.cx.uni_cx, TyCon::Fn => [inputs_term, output_term])
+        self.cx.term_app(TyCon::Fn, vec![inputs_term, output_term])
+    }
+}
+
+impl SignatureLowerer<'_, '_> {
+    fn lower_fn_item(&mut self, item: &Item, f: &Fn) {
+        let name = self.cx.names.id(&f.ident.name);
+        let Some(symbol) = self
+            .cx
+            .lookup_in_scope(self.cx.current_scope, name, Namespace::Value)
+        else {
+            return;
+        };
+        let SymbolKind::Fn(fn_data) = &self.cx.symbols[symbol].kind else {
+            return;
+        };
+        let scope = fn_data.scope;
+
+        self.with_scope(scope, |this| {
+            let fn_term = this.lower_fn_sig(f);
+            let symbol_ty = this.cx.symbols[symbol].ty;
+            // Unifies the fresh placeholder inference variable which
+            // was created during the previous Resolution stage with the
+            // term created by lowering the function signature.
+            let _ = this.cx.uni_cx.unify(symbol_ty, fn_term);
+
+            // Collect information about parameter names and spans.
+            if let SymbolKind::Fn(fn_data) = &mut this.cx.symbols[symbol].kind {
+                fn_data.param_spans = f
+                    .sig
+                    .inputs
+                    .iter()
+                    .map(|p| p.ty.as_ref().map(|ty| ty.span))
+                    .collect();
+                fn_data.param_names = f
+                    .sig
+                    .inputs
+                    .iter()
+                    .map(|p| types::pat_display_name(&p.pat))
+                    .collect();
+            }
+            item.walk(this);
+        });
     }
 }
 
 impl Visitor for SignatureLowerer<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
-            ItemKind::Fn(f) => {
-                let name = self.cx.names.id(&f.ident.name);
-                let symbol = self
-                    .cx
-                    .lookup_in_scope(self.cx.current_scope, name, Namespace::Value);
-
-                let scope = symbol.and_then(|symbol| match &self.cx.symbols[symbol].kind {
-                    SymbolKind::Fn(fn_data) => Some(fn_data.scope),
-                    _ => None,
-                });
-                if let Some(scope) = scope {
-                    self.with_scope(scope, |this| {
-                        if let Some(symbol) = symbol {
-                            let fn_term = this.lower_fn_sig(f);
-                            let symbol_ty = this.cx.symbols[symbol].ty;
-                            // Unifies the fresh placeholder inference variable which
-                            // was created during the previous Resolution stage with the
-                            // term created by lowering the function signature.
-                            let _ = this.cx.uni_cx.unify(symbol_ty, fn_term);
-
-                            // Collect information about parameter names and spans.
-                            if let SymbolKind::Fn(fn_data) = &mut this.cx.symbols[symbol].kind {
-                                fn_data.param_spans = f
-                                    .sig
-                                    .inputs
-                                    .iter()
-                                    .map(|p| p.ty.as_ref().map(|ty| ty.span))
-                                    .collect();
-                                fn_data.param_names = f
-                                    .sig
-                                    .inputs
-                                    .iter()
-                                    .map(|p| types::pat_display_name(&p.pat))
-                                    .collect();
-                            }
-                        }
-                        item.walk(this);
-                    });
-                }
-            }
+            ItemKind::Fn(f) => self.lower_fn_item(item, f),
             ItemKind::TyAlias(alias) => {
                 let name = self.cx.names.id(&alias.ident.name);
                 let symbol = self
@@ -1033,6 +1032,14 @@ impl Visitor for SignatureLowerer<'_, '_> {
             }
             _ => {}
         }
+    }
+}
+
+fn segment_namespace(i: usize, last: usize, namespace: Namespace) -> Namespace {
+    if i == last {
+        namespace
+    } else {
+        Namespace::Type
     }
 }
 
