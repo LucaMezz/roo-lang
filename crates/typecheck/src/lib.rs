@@ -852,7 +852,6 @@ impl Visitor for Resolver<'_, '_> {
                     item.walk(this);
                 });
                 self.cx.symbols[fn_symbol].generics = generics;
-                return;
             }
             ItemKind::TyAlias(alias) => {
                 let scope = self.new_scope();
@@ -897,7 +896,6 @@ impl Visitor for Resolver<'_, '_> {
                 self.cx
                     .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
                 self.with_scope(scope, |this| item.walk(this));
-                return;
             }
             ItemKind::Use(_) | ItemKind::Impl(_) => {}
         }

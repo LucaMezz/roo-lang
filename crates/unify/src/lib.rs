@@ -6,17 +6,69 @@ use slotmap::SlotMap;
 use union_find::{QuickUnionUf, Union, UnionFind, UnionResult};
 
 slotmap::new_key_type! {
+    /// A handle to a Term
     pub struct TermId;
 
+    /// A handle to an inference variable.
     pub struct VarId;
 }
 
+/// A term with constructor of type `C`.
+///
+/// A Term `t` is defined recursively as
+///
+///     t = v
+///
+/// where `v` is an inference variable `?a`, or
+///
+///     t = f(t_1, t_2, ..., t_n)
+///
+/// where `f` is the 'constructor', and t_1, ..., t_n are terms.
+/// We say that `t_1, t_2, ..., t_n` are the 'arguments'.
+///
+/// Here we store terms and variables in a generational arena,
+/// and refer to them via handles.
+///
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term<C> {
+    /// An inference variable `?a` with the given id.
     Var(VarId),
-    App { constructor: C, args: Vec<TermId> },
+    /// An application of a constructor to zero or more argument
+    /// terms.
+    App {
+        /// The constructor being applied
+        constructor: C,
+        /// The argument terms the constructor is being applied
+        /// to.
+        args: Vec<TermId>,
+    },
 }
 
+/// Allows for easy construction of new inference variables, and
+/// of new terms by combining existing terms.
+///
+/// This macro has the following forms:
+///
+///     1. term!(cx, var v)
+///     
+///        Constructs a new term containing just the inference
+///        variable with id `v`.
+///
+///     2. term!(cx, f => [t_1, t_2, ..., t_n])
+///
+///        Constructs a new term by applying the constructor 'f'
+///        to the list of terms with ids `t_1, t_2, ..., t_n`.
+///
+///     3. term!(cx, f => vec![t_1, t_2, ..., t_n])
+///
+///         Constructs a new term by applying the constructor 'f'
+///         to the Vec of terms with ids `t_1, t_2, ..., t_n`.
+///
+///     4. term!(cx, f)
+///
+///         Constructs a new term by applying the constructor 'f'
+///         to an empty argument list.
+///
 #[macro_export]
 macro_rules! term {
     ($cx:expr, var $id:expr) => {
@@ -43,6 +95,13 @@ macro_rules! term {
     };
 }
 
+/// Represents the binding of an inference variable `?a`.
+///
+/// An inference variable `?a` can either be bound to Some
+/// term `t`, in which case the [`Binding`] contains the
+/// id of the term that it is bound to. Otherwise, if the
+/// inference variable is free, then this binding will
+/// contain `None`.
 #[derive(Clone, Copy, Default)]
 struct Binding(Option<TermId>);
 
@@ -55,21 +114,59 @@ impl Union for Binding {
     }
 }
 
+/// Documents a reason for why a variable was bound to
+/// a specific term.
 struct ProvenanceEntry<R> {
+    /// The id of the inference variable that this entry
+    /// corresponds to.
     var: VarId,
+
+    /// The reason for why the variable was bound.
     reason: R,
 }
 
+/// Stores everything needed to keep track of all inference
+/// variables and terms in some context, and perform
+/// unifications on them.
+///
+/// `C` is the constructor type, which specifies the type of
+/// the constructors that can be applied to arguments in
+/// terms.
+///
+/// `R` is the type of the reason that may be provided for
+/// why two variables were bound, used in provinance
+/// entries.
 pub struct UnificationContext<C, R = ()> {
+    /// A generational arena containing all of the terms in
+    /// this context.
     terms: SlotMap<TermId, Term<C>>,
+
+    /// A generational arena containing all of the inference
+    /// variables within this context.
     var_slots: SlotMap<VarId, usize>,
+
+    /// A mapping from union_find key to variable id
     uf_key_to_var: Vec<VarId>,
+
+    /// A UnionFind data structure containing all of the
+    /// bindings of inference variables. Facilitates
+    /// efficient unification.
     bindings: QuickUnionUf<Binding>,
+
+    /// Stores the constructors that should be treated as
+    /// wildcards within the current context.
+    ///
+    /// Any term with any wildcard constructor will
+    /// always successfully unify with any other constructor
+    /// even if there is an arity mismatch.
     wildcards: Vec<C>,
+
+    /// Stores all provinence entries recorded.
     provenance: Vec<ProvenanceEntry<R>>,
 }
 
 impl<C, R> UnificationContext<C, R> {
+    /// Creates a new empty [`UnificationContext`].
     pub fn new() -> Self {
         Self {
             terms: SlotMap::with_key(),
@@ -81,10 +178,14 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
+    /// Creates a new [`UnificationContext`] with a
+    /// given wildcard constructor.
     pub fn with_wildcard(wildcard: C) -> Self {
         Self::with_wildcards(vec![wildcard])
     }
 
+    /// Creates a new [`UnificationContext`] with a
+    /// list if wildcard constructors.
     pub fn with_wildcards(wildcards: Vec<C>) -> Self {
         Self {
             terms: SlotMap::with_key(),
@@ -96,14 +197,19 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
+    /// Inserts a new term into this [`UnificationContext`]
     pub fn insert_term(&mut self, term: Term<C>) -> TermId {
         self.terms.insert(term)
     }
 
+    /// Gets a reference to the term with the given id,
+    /// if it exists.
     pub fn term(&self, id: TermId) -> Option<&Term<C>> {
         self.terms.get(id)
     }
 
+    /// Creates a new free inference variable, and returns
+    /// its id.
     pub fn fresh_var(&mut self) -> VarId {
         let uf_key = self.bindings.insert(Binding(None));
         let var = self.var_slots.insert(uf_key);
@@ -112,28 +218,47 @@ impl<C, R> UnificationContext<C, R> {
         var
     }
 
+    /// Gets the id of the representative of the equivalence
+    /// class of the variable with the given id.
+    ///
+    /// If many inference variables are bound to the same
+    /// term, this method will consistently return the
+    /// same inference variable among that group, for a
+    /// certain state.
+    ///
+    /// This corresponds to the representative / root node
+    /// within the underlying union-find data structure.
     pub fn find(&mut self, var: VarId) -> VarId {
         let uf_key = self.var_slots[var];
         let root_key = self.bindings.find(uf_key);
         self.uf_key_to_var[root_key]
     }
 
+    /// Returns the id of the term that a given inference
+    /// variable is bound to, if it is not unbound.
     pub fn binding(&mut self, var: VarId) -> Option<TermId> {
         let uf_key = self.var_slots[var];
         self.bindings.get(uf_key).0
     }
 
+    /// Binds an inference variable to a term. Gives back
+    /// the term that it was bound to.
     pub fn bind(&mut self, var: VarId, term: TermId) -> Option<TermId> {
         let uf_key = self.var_slots[var];
         mem::replace(self.bindings.get_mut(uf_key), Binding(Some(term))).0
     }
 
+    /// Unions two variables.
     pub fn union_vars(&mut self, a: VarId, b: VarId) -> bool {
         let ka = self.var_slots[a];
         let kb = self.var_slots[b];
         self.bindings.union(ka, kb)
     }
 
+    /// Resolves a term. Recursively resolve terms which are
+    /// just inference variables with no constructor, until
+    /// it arrives at the term which is actually represented
+    /// by the given term.
     pub fn resolve(&mut self, id: TermId) -> TermId {
         match self.term(id).expect("valid TermId") {
             Term::Var(v) => {
@@ -147,6 +272,10 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
+    /// Performs the 'occurs check' for the inference
+    /// variable `v` in the given term. Recursively checks if
+    /// the given term contains the inference variable `v`
+    /// anywhere within it.
     fn occurs(&mut self, v: VarId, id: TermId) -> bool {
         let id = self.resolve(id);
         match self.term(id).expect("valid TermId") {
@@ -161,6 +290,21 @@ impl<C, R> UnificationContext<C, R> {
         }
     }
 
+    /// Unify two terms.
+    ///
+    /// This forces the two terms to be equal to one another.
+    /// If this is not possible, or if doing so would require
+    /// an infinite cyclic type, then an error is raised.
+    ///
+    /// Unification of two terms `t_1` and `t_2` essentially
+    /// produces a set of substitions `S` which replace
+    /// inference variables within the terms `t_1` and `t_2`
+    /// with terms, such that applying all substitutions
+    /// results in both terms being equal.
+    ///
+    /// If S contains the substitution `?a |-> t`, then the
+    /// inference variable `?a` will be bound to the term
+    /// `t`.
     pub fn unify(&mut self, t1: TermId, t2: TermId) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
@@ -169,6 +313,10 @@ impl<C, R> UnificationContext<C, R> {
         self.unify_impl(t1, t2, None)
     }
 
+    /// Performs unification given a reason.
+    ///
+    /// See [`Self::unify`] for more information about the
+    /// unify operation.
     pub fn unify_because(&mut self, t1: TermId, t2: TermId, reason: R) -> Result<(), UnifyError<C>>
     where
         C: Clone + fmt::Debug + PartialEq,
@@ -290,22 +438,65 @@ impl<C, R> Default for UnificationContext<C, R> {
     }
 }
 
+/// An error that is produced when the unification of two
+/// terms fails. This means there is no set `S` of
+/// substitutions of inference variables with terms that
+/// can be made in order to make two terms `t_1` and `t_2`
+/// equal.
 #[derive(Debug, thiserror::Error)]
 pub enum UnifyError<C> {
+    /// Somewhere at corresponding points within the two
+    /// terms `t_1` and `t_2`, there are two constructors
+    /// which differ. e.g.
+    ///
+    ///     ...f(...)... != ...g(...)...
+    ///
     #[error("constructor mismatch: {c1:?} != {c2:?}")]
     ConstructorMismatch {
+        /// Term ID of the first term
         t1: TermId,
+
+        /// Constructur being applied in the first term
         c1: C,
+
+        /// Term ID of the second term
         t2: TermId,
+
+        /// Constructor being applied in the second term
         c2: C,
     },
+    /// Somewhere at corresponding points within the two
+    /// terms `t_1` and `t_2`, there are two constructors
+    /// which have a differing number of arguments. e.g.
+    ///
+    ///     ...f(t_1, t_2, ..., t_n)... != ...g(t_1, t2, ..., t_m)...
+    //
+    /// where n != m
+    ///
     #[error("arity mismatch: {arity1} args vs {arity2} args")]
     ArityMismatch {
+        /// Term ID of the first term
         t1: TermId,
+
+        /// The arity of the first term
         arity1: usize,
+
+        /// Term ID of the second term
         t2: TermId,
+
+        /// The arity of the second term
         arity2: usize,
     },
+    /// At some point within the term, if there is just
+    /// an inference variable `?a` on one side and an
+    /// application of a constructor on the other, then
+    /// if anywhere in the arguments of that application,
+    /// the same inference variable `?a` appears, then
+    /// only an infinite cyclical type can work, which
+    /// is not possible in practice. e.g.
+    ///
+    ///     ...f(t_1, ..., ?a, ..., t_n)... != ...?a...
+    ///
     #[error("occurs check failed for {0:?}")]
     OccursCheck(VarId),
 }
