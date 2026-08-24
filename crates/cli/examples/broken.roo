@@ -25,6 +25,7 @@ fn apply(f) {
     to
 }
 
+#[builtin]
 fn id(x) {
     x
 }

@@ -570,6 +570,7 @@ impl<'ast> TypeCheckContext<'ast> {
     ) -> TermId {
         match kind {
             PatKind::Wild => expected,
+            PatKind::Rest => expected,
             PatKind::Ident(ident, sub) => {
                 let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
                 let _ = self

@@ -1181,9 +1181,11 @@ impl Visitor for SignatureLowerer<'_, '_> {
                         {
                             let expected_ty = this.cx.resolved(symbol_ty);
                             let found_ty = this.cx.resolved(aliased);
-                            this.cx
-                                .diagnostics
-                                .push(CyclicType::new(ty.span, expected_ty, found_ty));
+                            this.cx.diagnostics.push(CyclicType::new(
+                                ty.span,
+                                expected_ty,
+                                found_ty,
+                            ));
                         }
                     });
                 }
