@@ -6,11 +6,13 @@ use diagnostics::Related;
 use unify::{Term, UnifyError};
 
 use crate::errors::{
-    ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, expected_because_of,
-    expected_due_to, generic_note, provenance,
+    ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, UnresolvedValue,
+    expected_because_of, expected_due_to, generic_note, provenance,
 };
 use crate::types::Type;
-use crate::{Namespace, PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext};
+use crate::{
+    Namespace, PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext, display_path,
+};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns the span of the final expression in the block which
@@ -242,7 +244,11 @@ impl<'ast> TypeCheckContext<'ast> {
                         self.check_referenced_fn(symbol);
                         self.instantiate_path(symbol, path)
                     }
-                    None => self.term(TyCon::Err),
+                    None => {
+                        self.diagnostics
+                            .push(UnresolvedValue::new(path.span, display_path(path)));
+                        self.term(TyCon::Err)
+                    }
                 }
             }
             ExprKind::Call(callee, args) => self.check_call_expr(callee, args),

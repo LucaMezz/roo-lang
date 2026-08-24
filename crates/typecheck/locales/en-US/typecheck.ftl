@@ -28,8 +28,15 @@ generic-argument-count-mismatch =
 
 not-callable = expected a function, found `{$found}`
 
-annotations-needed = type annotations needed.
+annotations-needed = type annotations needed
 
 unresolved-import = unresolved import `{$path}`
 
 invalid-glob-target = cannot glob-import `{$path}`: expected a module, found {$found}
+
+unresolved-type = cannot find type `{$path}` in this scope
+
+unresolved-value = cannot find value `{$path}` in this scope
+
+already-defined = the name `{$name}` is defined multiple times
+already-defined-original = previously defined here

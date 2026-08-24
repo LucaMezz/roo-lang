@@ -16,7 +16,7 @@ use ast::{
     VariantData,
 };
 use slotmap::SlotMap;
-use unify::{TermId, UnificationContext, VarId, term};
+use unify::{TermId, UnificationContext, UnifyError, VarId, term};
 
 mod call_graph;
 mod check;
@@ -37,7 +37,10 @@ pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
 use crate::call_graph::{CallGraph, SCCCollector};
-use crate::errors::{AnnotationsNeeded, InvalidGlobTarget, UnresolvedImport};
+use crate::errors::{
+    AlreadyDefined, AnnotationsNeeded, CyclicType, InvalidGlobTarget, UnresolvedImport,
+    UnresolvedType,
+};
 
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
@@ -710,6 +713,17 @@ impl<'ast> TypeCheckContext<'ast> {
     fn declare(&mut self, name: &str, span: Span, kind: SymbolKind) -> SymbolId {
         let namespace = kind.namespace();
         let name = self.names.id(name);
+
+        // `let` bindings (and, transitively through them, their
+        // shadowing sub-patterns) are always allowed to shadow
+        // whatever previously held the same name in this scope.
+        // Everything else -- functions, modules, structs, enums,
+        // traits, type aliases, and parameters -- must be uniquely
+        // named within a scope.
+        if !matches!(kind, SymbolKind::Local) {
+            self.check_redeclaration(namespace, name, span);
+        }
+
         let ty = self.fresh_var(span);
         let symbol = self.symbols.insert(Symbol {
             name,
@@ -721,6 +735,23 @@ impl<'ast> TypeCheckContext<'ast> {
         self.insert_in_scope(name, symbol, namespace);
         self.positions.record_symbol(span, symbol);
         symbol
+    }
+
+    /// If a symbol already exists with the given name in the given
+    /// namespace of the current scope, emits an [`AlreadyDefined`]
+    /// diagnostic pointing back at its original declaration.
+    fn check_redeclaration(&mut self, namespace: Namespace, name: NameId, span: Span) {
+        let Some(existing) = self.lookup_in_scope(self.current_scope, name, namespace) else {
+            return;
+        };
+        let original = self.symbols[existing].declared_at;
+        let name = self
+            .names
+            .name(name)
+            .cloned()
+            .unwrap_or_else(|| "_".to_owned());
+        self.diagnostics
+            .push(AlreadyDefined::new(span, name, original));
     }
 
     /// Declares a new generic parameter within the current
@@ -820,7 +851,11 @@ impl<'ast> TypeCheckContext<'ast> {
                     _ => self.instantiate_path(symbol, path),
                 }
             }
-            None => self.term(TyCon::Err),
+            None => {
+                self.diagnostics
+                    .push(UnresolvedType::new(path.span, display_path(path)));
+                self.term(TyCon::Err)
+            }
         }
     }
 }
@@ -922,6 +957,8 @@ impl Visitor for Resolver<'_, '_> {
                 let symbol = self.cx.declare(&ident.name, ident.span, SymbolKind::Struct);
                 if !matches!(data, VariantData::Struct(_)) {
                     let name = self.cx.names.id(&ident.name);
+                    self.cx
+                        .check_redeclaration(Namespace::Value, name, ident.span);
                     self.cx.insert_in_scope(name, symbol, Namespace::Value);
                 }
             }
@@ -1136,8 +1173,18 @@ impl Visitor for SignatureLowerer<'_, '_> {
                         // Unifies the fresh placeholder inference variable which
                         // was created during the previous Resolution stage with the
                         // term created by lowering the type of the expression being
-                        // aliased.
-                        let _ = this.cx.uni_cx.unify(symbol_ty, aliased);
+                        // aliased. A type alias can never refer to itself, directly
+                        // or indirectly (e.g. `type Foo = (Foo, int);`), since that
+                        // would make it an infinitely-sized type.
+                        if let Err(UnifyError::OccursCheck(_)) =
+                            this.cx.uni_cx.unify_because(symbol_ty, aliased, ty.span)
+                        {
+                            let expected_ty = this.cx.resolved(symbol_ty);
+                            let found_ty = this.cx.resolved(aliased);
+                            this.cx
+                                .diagnostics
+                                .push(CyclicType::new(ty.span, expected_ty, found_ty));
+                        }
                     });
                 }
             }

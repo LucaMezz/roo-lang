@@ -1,4 +1,6 @@
 
+pub type List<T> = [T];
+
 mod utilities {
     pub type Pair<T, U> = (T, U);
 

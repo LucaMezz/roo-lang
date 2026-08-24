@@ -547,6 +547,92 @@ fn use_it() {
 }
 
 #[test]
+fn check_all_referencing_an_undefined_value_is_an_error() {
+    let source = r#"
+fn use_it() {
+    let x = totally_undefined_name;
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+    let d = &diagnostics[0];
+    assert_eq!(
+        d.message(),
+        "cannot find value `totally_undefined_name` in this scope"
+    );
+    assert_eq!(
+        &source[d.span().start..d.span().end],
+        "totally_undefined_name"
+    );
+}
+
+#[test]
+fn check_all_redeclaring_a_function_in_the_same_scope_is_an_error() {
+    let source = "fn foo() -> int { 1 } fn foo() -> bool { true }";
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+    let d = &diagnostics[0];
+    assert_eq!(d.message(), "the name `foo` is defined multiple times");
+    assert_eq!(&source[d.span().start..d.span().end], "foo");
+    assert_eq!(d.related().len(), 1);
+    let (related_span, related_message) = &d.related()[0];
+    assert_eq!(&source[related_span.start..related_span.end], "foo");
+    assert_eq!(related_message, "previously defined here");
+}
+
+#[test]
+fn check_all_redeclaring_a_module_in_the_same_scope_is_an_error() {
+    let source = "mod m {} mod m {}";
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "the name `m` is defined multiple times"
+    );
+}
+
+#[test]
+fn check_all_duplicate_parameter_names_are_an_error() {
+    let source = "fn use_it(x: int, x: bool) {}";
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "the name `x` is defined multiple times"
+    );
+}
+
+#[test]
+fn check_all_let_bindings_can_shadow_each_other_freely() {
+    let source = r#"
+fn use_it() {
+    let x = 1;
+    let x = "now a string";
+    let x = true;
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_a_let_binding_can_shadow_a_parameter_of_the_same_name() {
+    let source = r#"
+fn use_it(x: int) {
+    let x = "shadow the param";
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
 fn check_all_calling_an_unannotated_parameter_infers_its_fn_shape_with_no_error() {
     let source = r#"
 fn apply(f, x) {
@@ -578,6 +664,39 @@ fn cyclic(x) {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(diagnostics[0].level(), Level::Error);
     assert_eq!(diagnostics[0].message(), "cyclic type of infinite size");
+}
+
+#[test]
+fn check_all_a_directly_self_referential_ty_alias_is_a_cyclic_type_error() {
+    let source = "type Foo = (Foo, int);";
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].level(), Level::Error);
+    assert_eq!(diagnostics[0].message(), "cyclic type of infinite size");
+    assert_eq!(
+        &source[diagnostics[0].span().start..diagnostics[0].span().end],
+        "(Foo, int)"
+    );
+}
+
+#[test]
+fn check_all_a_mutually_recursive_ty_alias_pair_is_a_cyclic_type_error() {
+    let source = r#"
+type A = (B, int);
+type B = (A, int);
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "cyclic type of infinite size");
+}
+
+#[test]
+fn check_all_a_generic_ty_alias_referencing_only_its_own_params_is_not_cyclic() {
+    let source = "type Pair<T, U> = (T, U);";
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 }
 
 #[test]

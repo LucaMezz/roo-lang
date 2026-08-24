@@ -165,6 +165,58 @@ impl InvalidGlobTarget {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 9, level = "error")]
+pub struct UnresolvedType {
+    #[diagnose(span)]
+    pub span: Span,
+    pub path: String,
+}
+
+impl UnresolvedType {
+    pub fn new(span: Span, path: String) -> Self {
+        Self { span, path }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 10, level = "error")]
+pub struct UnresolvedValue {
+    #[diagnose(span)]
+    pub span: Span,
+    pub path: String,
+}
+
+impl UnresolvedValue {
+    pub fn new(span: Span, path: String) -> Self {
+        Self { span, path }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 11, level = "error")]
+pub struct AlreadyDefined {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    #[diagnose(related)]
+    pub original: Option<Related>,
+}
+
+impl AlreadyDefined {
+    pub fn new(span: Span, name: String, original_span: Span) -> Self {
+        Self {
+            span,
+            name,
+            original: Some(Related {
+                span: original_span,
+                message_id: "already-defined-original",
+                args: Vec::new(),
+            }),
+        }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -175,14 +227,14 @@ diagnostics::catalog! {
         AnnotationsNeeded,
         UnresolvedImport,
         InvalidGlobTarget,
+        UnresolvedType,
+        UnresolvedValue,
+        AlreadyDefined,
     }
 }
 
 static EN_US: std::sync::LazyLock<diagnostics::Catalog> = std::sync::LazyLock::new(|| {
-    diagnostics::Catalog::new(
-        "en-US",
-        &[include_str!("../locales/en-US/typecheck.ftl")],
-    )
+    diagnostics::Catalog::new("en-US", &[include_str!("../locales/en-US/typecheck.ftl")])
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
