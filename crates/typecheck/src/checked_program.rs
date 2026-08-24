@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ast::{Item, Span};
+use ast::Item;
 use diagnostics::Diagnostic;
 
 use crate::errors::{Locale, TypeCheckDiagnostic};
@@ -55,11 +55,11 @@ impl<'ast> TypeCheckContext<'ast> {
                 SymbolKind::Param => FrozenSymbolKind::Param,
                 SymbolKind::Local => FrozenSymbolKind::Local,
                 SymbolKind::TyAlias(_) => FrozenSymbolKind::TyAlias,
+                SymbolKind::Mod(_) => FrozenSymbolKind::Mod,
                 SymbolKind::Struct
                 | SymbolKind::Enum
                 | SymbolKind::Variant
                 | SymbolKind::Trait
-                | SymbolKind::Mod(_)
                 | SymbolKind::GenericParam => FrozenSymbolKind::Other,
             };
             symbols.insert(
@@ -69,7 +69,6 @@ impl<'ast> TypeCheckContext<'ast> {
                     kind,
                     ty,
                     generics,
-                    declared_at: symbol.declared_at,
                 },
             );
         }
@@ -87,7 +86,6 @@ struct FrozenSymbol {
     kind: FrozenSymbolKind,
     ty: Type,
     generics: Vec<String>,
-    declared_at: Span,
 }
 
 enum FrozenSymbolKind {
@@ -95,6 +93,7 @@ enum FrozenSymbolKind {
     Param,
     Local,
     TyAlias,
+    Mod,
     Other,
 }
 
@@ -157,20 +156,16 @@ impl CheckedProgram {
     }
 
     /// Returns a string representation of a symbol.
-    pub fn describe_symbol(&self, symbol: SymbolId, at: usize) -> String {
+    pub fn describe_symbol(&self, symbol: SymbolId) -> String {
         let sym = &self.symbols[&symbol];
         match &sym.kind {
             FrozenSymbolKind::Fn { param_names } => describe_fn_item(sym, param_names),
             FrozenSymbolKind::Param => format!("{}: {}", sym.name, sym.ty.render()),
             FrozenSymbolKind::Local => format!("let {}: {}", sym.name, sym.ty.render()),
             FrozenSymbolKind::TyAlias => {
-                let rendered = alias_name_with_generics(sym);
-                if sym.declared_at.start <= at && at < sym.declared_at.end {
-                    format!("type {rendered}")
-                } else {
-                    rendered
-                }
+                format!("type {}", alias_name_with_generics(sym))
             }
+            FrozenSymbolKind::Mod => format!("mod {}", sym.name),
             FrozenSymbolKind::Other => self.render_symbol_type(symbol),
         }
     }

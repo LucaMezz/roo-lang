@@ -29,3 +29,7 @@ generic-argument-count-mismatch =
 not-callable = expected a function, found `{$found}`
 
 annotations-needed = type annotations needed.
+
+unresolved-import = unresolved import `{$path}`
+
+invalid-glob-target = cannot glob-import `{$path}`: expected a module, found {$found}

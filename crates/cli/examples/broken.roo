@@ -1,6 +1,6 @@
 
 mod utilities {
-    type Pair<T, U> = (T, U);
+    pub type Pair<T, U> = (T, U);
 
     fn pair(a, b) {
         (a, b)
@@ -27,8 +27,8 @@ fn id(x) {
     x
 }
 
-use utilities;
+use utilities::{Pair, pair, special::*};
 
-fn build() -> utilities::Pair<int, bool> {
-    let combo: utilities::special::Double = utilities::pair::<int, bool>(10, true);
+fn build() -> Pair<int, bool> {
+    let combo: Double = pair::<int, bool>(10, true);
 }

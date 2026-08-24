@@ -876,6 +876,64 @@ fn lower_signatures_recurses_into_a_mod() {
 }
 
 #[test]
+fn lower_use_tree_simple_imports_a_value_into_the_current_scope() {
+    let mut cx = resolve_and_lower("mod m { fn baz() {} } use m::baz;");
+
+    let original = cx
+        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .expect("m::baz should resolve");
+    let imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz")
+        .expect("baz should have been imported into the current scope");
+
+    assert_eq!(imported, original);
+}
+
+#[test]
+fn lower_use_tree_glob_imports_every_item_from_a_module() {
+    let mut cx = resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::*;");
+
+    let foo_original = cx
+        .resolve_path(&path(&["m", "Foo"]), Namespace::Type)
+        .expect("m::Foo should resolve");
+    let baz_original = cx
+        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .expect("m::baz should resolve");
+
+    let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
+        .expect("Foo should have been imported into the current scope");
+    let baz_imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz")
+        .expect("baz should have been imported into the current scope");
+
+    assert_eq!(foo_imported, foo_original);
+    assert_eq!(baz_imported, baz_original);
+}
+
+#[test]
+fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_renames() {
+    let mut cx =
+        resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::{Foo, baz as make_baz};");
+
+    let foo_original = cx
+        .resolve_path(&path(&["m", "Foo"]), Namespace::Type)
+        .expect("m::Foo should resolve");
+    let baz_original = cx
+        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .expect("m::baz should resolve");
+
+    let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
+        .expect("Foo should have been imported into the current scope");
+    let make_baz_imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "make_baz")
+        .expect("baz should have been imported as make_baz");
+
+    assert_eq!(foo_imported, foo_original);
+    assert_eq!(make_baz_imported, baz_original);
+    assert!(
+        declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz").is_none(),
+        "baz should not also be imported under its original name"
+    );
+}
+
+#[test]
 fn lower_signatures_makes_the_declared_signature_authoritative() {
     let mut cx = resolve_and_lower("fn foo(x: int) {}");
     let symbol = cx
@@ -949,8 +1007,8 @@ impl<'ast> TypeCheckContext<'ast> {
         self.renderer().render_symbol_type(symbol)
     }
 
-    fn describe_symbol(&mut self, symbol: SymbolId, at: usize) -> String {
-        self.renderer().describe_symbol(symbol, at)
+    fn describe_symbol(&mut self, symbol: SymbolId) -> String {
+        self.renderer().describe_symbol(symbol)
     }
 }
 
@@ -1081,7 +1139,7 @@ impl Renderer<'_> {
         }
     }
 
-    fn describe_symbol(&mut self, symbol: SymbolId, at: usize) -> String {
+    fn describe_symbol(&mut self, symbol: SymbolId) -> String {
         match &self.symbols[symbol].kind {
             SymbolKind::Fn(_) => self.describe_fn_item(symbol),
             SymbolKind::Param => {
@@ -1095,19 +1153,13 @@ impl Renderer<'_> {
                 format!("let {name}: {ty}")
             }
             SymbolKind::TyAlias(_) => {
-                let declared_at = self.symbols[symbol].declared_at;
-                let rendered = self.alias_name_with_generics(symbol);
-                if declared_at.start <= at && at < declared_at.end {
-                    format!("type {rendered}")
-                } else {
-                    rendered
-                }
+                format!("type {}", self.alias_name_with_generics(symbol))
             }
+            SymbolKind::Mod(_) => format!("mod {}", self.symbol_display_name(symbol)),
             SymbolKind::Struct
             | SymbolKind::Enum
             | SymbolKind::Variant
             | SymbolKind::Trait
-            | SymbolKind::Mod(_)
             | SymbolKind::GenericParam => self.render_symbol_type(symbol),
         }
     }
@@ -1535,7 +1587,7 @@ fn describe_symbol_a_fn_item_uses_source_declaration_syntax_with_param_names() {
         .symbol_at(offset)
         .expect("should resolve at the fn's own name");
     assert_eq!(
-        cx.describe_symbol(symbol, offset),
+        cx.describe_symbol(symbol),
         "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
     );
 }
@@ -1548,7 +1600,7 @@ fn describe_symbol_a_parameter_is_prefixed_with_its_own_name() {
     let symbol = cx
         .symbol_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(cx.describe_symbol(symbol, offset), "x: int");
+    assert_eq!(cx.describe_symbol(symbol), "x: int");
 }
 
 #[test]
@@ -1563,7 +1615,7 @@ fn use_it() {
     let symbol = cx
         .symbol_at(offset)
         .expect("should resolve at the let binding");
-    assert_eq!(cx.describe_symbol(symbol, offset), "let n: int");
+    assert_eq!(cx.describe_symbol(symbol), "let n: int");
 }
 
 #[test]
@@ -1574,7 +1626,7 @@ fn describe_symbol_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
     let symbol = cx
         .symbol_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(cx.describe_symbol(symbol, offset), "f: Fn(T) -> U");
+    assert_eq!(cx.describe_symbol(symbol), "f: Fn(T) -> U");
 }
 
 #[test]
@@ -1585,11 +1637,11 @@ fn describe_symbol_a_ty_alias_declaration_shows_the_type_keyword() {
     let symbol = cx
         .symbol_at(offset)
         .expect("should resolve at the alias's own name");
-    assert_eq!(cx.describe_symbol(symbol, offset), "type Pair<T, U>");
+    assert_eq!(cx.describe_symbol(symbol), "type Pair<T, U>");
 }
 
 #[test]
-fn describe_symbol_a_ty_alias_reference_omits_the_type_keyword_and_the_expansion() {
+fn describe_symbol_a_ty_alias_reference_also_shows_the_type_keyword() {
     let source = r#"
 type Pair<T, U> = (T, U);
 fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
@@ -1601,7 +1653,36 @@ fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
     let symbol = cx
         .symbol_at(offset)
         .expect("should resolve at the return-type reference");
-    assert_eq!(cx.describe_symbol(symbol, offset), "Pair<T, U>");
+    assert_eq!(cx.describe_symbol(symbol), "type Pair<T, U>");
+}
+
+#[test]
+fn describe_symbol_a_mod_declaration_shows_the_mod_keyword() {
+    let source = "mod example { fn foo() {} }";
+    let mut cx = check_all(source);
+    let offset = source.find("example").unwrap();
+    let symbol = cx
+        .symbol_at(offset)
+        .expect("should resolve at the module's own name");
+    assert_eq!(cx.describe_symbol(symbol), "mod example");
+}
+
+#[test]
+fn describe_symbol_a_mod_reference_also_shows_the_mod_keyword() {
+    let source = r#"
+mod outer {
+    mod inner {
+        fn foo() {}
+    }
+}
+use outer::inner;
+"#;
+    let mut cx = check_all(source);
+    let offset = source.rfind("inner").unwrap();
+    let symbol = cx
+        .symbol_at(offset)
+        .expect("should resolve at the use path's reference to the module");
+    assert_eq!(cx.describe_symbol(symbol), "mod inner");
 }
 
 #[test]
@@ -2183,7 +2264,7 @@ fn freeze_describe_symbol_a_fn_item_uses_source_declaration_syntax_with_param_na
         .symbol_at(offset)
         .expect("should resolve at the fn's own name");
     assert_eq!(
-        frozen.describe_symbol(symbol, offset),
+        frozen.describe_symbol(symbol),
         "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
     );
 }
@@ -2196,7 +2277,7 @@ fn freeze_describe_symbol_a_parameter_is_prefixed_with_its_own_name() {
     let symbol = frozen
         .symbol_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(frozen.describe_symbol(symbol, offset), "x: int");
+    assert_eq!(frozen.describe_symbol(symbol), "x: int");
 }
 
 #[test]
@@ -2211,7 +2292,7 @@ fn use_it() {
     let symbol = frozen
         .symbol_at(offset)
         .expect("should resolve at the let binding");
-    assert_eq!(frozen.describe_symbol(symbol, offset), "let n: int");
+    assert_eq!(frozen.describe_symbol(symbol), "let n: int");
 }
 
 #[test]
@@ -2222,7 +2303,7 @@ fn freeze_describe_symbol_a_higher_order_parameter_keeps_the_bare_fn_type_syntax
     let symbol = frozen
         .symbol_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(frozen.describe_symbol(symbol, offset), "f: Fn(T) -> U");
+    assert_eq!(frozen.describe_symbol(symbol), "f: Fn(T) -> U");
 }
 
 #[test]
@@ -2233,11 +2314,11 @@ fn freeze_describe_symbol_a_ty_alias_declaration_shows_the_type_keyword() {
     let symbol = frozen
         .symbol_at(offset)
         .expect("should resolve at the alias's own name");
-    assert_eq!(frozen.describe_symbol(symbol, offset), "type Pair<T, U>");
+    assert_eq!(frozen.describe_symbol(symbol), "type Pair<T, U>");
 }
 
 #[test]
-fn freeze_describe_symbol_a_ty_alias_reference_omits_the_type_keyword_and_the_expansion() {
+fn freeze_describe_symbol_a_ty_alias_reference_also_shows_the_type_keyword() {
     let source = r#"
 type Pair<T, U> = (T, U);
 fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
@@ -2249,7 +2330,36 @@ fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
     let symbol = frozen
         .symbol_at(offset)
         .expect("should resolve at the return-type reference");
-    assert_eq!(frozen.describe_symbol(symbol, offset), "Pair<T, U>");
+    assert_eq!(frozen.describe_symbol(symbol), "type Pair<T, U>");
+}
+
+#[test]
+fn freeze_describe_symbol_a_mod_declaration_shows_the_mod_keyword() {
+    let source = "mod example { fn foo() {} }";
+    let frozen = check_all_frozen(source);
+    let offset = source.find("example").unwrap();
+    let symbol = frozen
+        .symbol_at(offset)
+        .expect("should resolve at the module's own name");
+    assert_eq!(frozen.describe_symbol(symbol), "mod example");
+}
+
+#[test]
+fn freeze_describe_symbol_a_mod_reference_also_shows_the_mod_keyword() {
+    let source = r#"
+mod outer {
+    mod inner {
+        fn foo() {}
+    }
+}
+use outer::inner;
+"#;
+    let frozen = check_all_frozen(source);
+    let offset = source.rfind("inner").unwrap();
+    let symbol = frozen
+        .symbol_at(offset)
+        .expect("should resolve at the use path's reference to the module");
+    assert_eq!(frozen.describe_symbol(symbol), "mod inner");
 }
 
 #[test]

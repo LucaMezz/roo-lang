@@ -11,7 +11,10 @@
 use std::collections::HashMap;
 
 use ast::visit::{Visitor, Walkable};
-use ast::{Fn, FnRetTy, FnTy, Item, ItemKind, ModKind, Path, Span, Ty, TyKind, VariantData};
+use ast::{
+    Fn, FnRetTy, FnTy, Item, ItemKind, ModKind, Path, Span, Ty, TyKind, UseTree, UseTreeKind,
+    VariantData,
+};
 use slotmap::SlotMap;
 use unify::{TermId, UnificationContext, VarId, term};
 
@@ -34,7 +37,7 @@ pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
 use crate::call_graph::{CallGraph, SCCCollector};
-use crate::errors::AnnotationsNeeded;
+use crate::errors::{AnnotationsNeeded, InvalidGlobTarget, UnresolvedImport};
 
 /// The enum containing all the possible constructors which can
 /// appear within terms. Specifically, a `Term` represents a type
@@ -139,7 +142,7 @@ slotmap::new_key_type! {
 /// A handle to a name. Use the NameInterner to transition
 /// between a NameId, and the actual string which it is
 /// associated with.
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct NameId(usize);
 
 /// A kind of namespace within each scope.
@@ -161,6 +164,7 @@ enum Namespace {
 ///
 /// Scopes are created for things such as function bodies,
 /// blocks, etc.
+#[derive(Debug)]
 struct Scope {
     /// A handle to the enclosing scope.
     parent: Option<ScopeId>,
@@ -176,6 +180,7 @@ struct Scope {
 }
 
 /// A symbol within a symbol table.
+#[derive(Debug)]
 struct Symbol {
     /// An interned string which is the name of the symbol.
     name: NameId,
@@ -196,6 +201,7 @@ struct Symbol {
 }
 
 /// Extra information about a function symbol.
+#[derive(Debug)]
 struct FnSymbol {
     /// A handle to the scope of the function body.
     scope: ScopeId,
@@ -210,6 +216,7 @@ struct FnSymbol {
 }
 
 /// The specific kind of [`Symbol`].
+#[derive(Debug)]
 enum SymbolKind {
     Struct,
     Enum,
@@ -227,6 +234,26 @@ enum SymbolKind {
     Local,
     Param,
     GenericParam,
+}
+
+impl SymbolKind {
+    /// A human-readable description of this kind of symbol,
+    /// e.g. for use in diagnostics like "expected a module,
+    /// found a function".
+    fn describe(&self) -> &'static str {
+        match self {
+            SymbolKind::Struct => "a struct",
+            SymbolKind::Enum => "an enum",
+            SymbolKind::Variant => "an enum variant",
+            SymbolKind::Trait => "a trait",
+            SymbolKind::TyAlias(_) => "a type alias",
+            SymbolKind::Mod(_) => "a module",
+            SymbolKind::Fn(_) => "a function",
+            SymbolKind::Local => "a local variable",
+            SymbolKind::Param => "a parameter",
+            SymbolKind::GenericParam => "a generic parameter",
+        }
+    }
 }
 
 /// Differentiates between a variable introduced to the scope
@@ -623,6 +650,26 @@ impl<'ast> TypeCheckContext<'ast> {
         Some(symbol)
     }
 
+    fn resolve_path_from(
+        &mut self,
+        root: SymbolId,
+        path: &Path,
+        namespace: Namespace,
+    ) -> Option<SymbolId> {
+        let last = path.segments.len() - 1;
+        let segments = path.segments.iter().enumerate();
+        let mut symbol = root;
+        for (i, segment) in segments {
+            let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
+                return None;
+            };
+            let name = self.names.id(&segment.ident.name);
+            symbol = self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))?;
+        }
+
+        Some(symbol)
+    }
+
     /// Directly checks if the given scope contains a symbol
     /// with a given name, which belongs to a certain namespace.
     fn lookup_in_scope(
@@ -893,7 +940,8 @@ impl Visitor for Resolver<'_, '_> {
                     .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
                 self.with_scope(scope, |this| item.walk(this));
             }
-            ItemKind::Use(_) | ItemKind::Impl(_) => {}
+            ItemKind::Use(tree) => {}
+            ItemKind::Impl(_) => {}
         }
     }
 }
@@ -989,6 +1037,82 @@ impl SignatureLowerer<'_, '_> {
             item.walk(this);
         });
     }
+
+    /// Resolves a `use` path, optionally rooted at an already
+    /// resolved parent module (for paths nested inside a
+    /// `use foo::{ ... }` group).
+    fn resolve_use_path(
+        &mut self,
+        prefix: Option<SymbolId>,
+        path: &Path,
+        namespace: Namespace,
+    ) -> Option<SymbolId> {
+        match prefix {
+            Some(pid) => self.cx.resolve_path_from(pid, path, namespace),
+            None => self.cx.resolve_path(path, namespace),
+        }
+    }
+
+    fn lower_use_tree(&mut self, tree: &UseTree, prefix: Option<SymbolId>) {
+        let mut sid = self.resolve_use_path(prefix, &tree.prefix, Namespace::Type);
+        if sid.is_none() && matches!(tree.kind, UseTreeKind::Simple(_)) {
+            sid = self.resolve_use_path(prefix, &tree.prefix, Namespace::Value);
+        }
+        let Some(sid) = sid else {
+            self.cx.diagnostics.push(UnresolvedImport::new(
+                tree.prefix.span,
+                display_path(&tree.prefix),
+            ));
+            return;
+        };
+
+        self.cx.record_path_reference(&tree.prefix, sid);
+
+        let symbol = &self.cx.symbols[sid];
+
+        match &tree.kind {
+            UseTreeKind::Simple(ident) => {
+                let Some(ident) =
+                    ident
+                        .as_ref()
+                        .or(tree.prefix.segments.last().map(|seg| &seg.ident))
+                else {
+                    unreachable!("A path should always have a valid name");
+                };
+                let name = self.cx.names.id(&ident.name);
+                self.cx.insert_in_scope(name, sid, symbol.kind.namespace());
+            }
+            UseTreeKind::Glob(span) => {
+                let SymbolKind::Mod(scope) = symbol.kind else {
+                    self.cx.diagnostics.push(InvalidGlobTarget::new(
+                        *span,
+                        display_path(&tree.prefix),
+                        symbol.kind.describe().to_string(),
+                    ));
+                    return;
+                };
+                for (name, sid) in self.cx.scopes[scope].types.clone() {
+                    self.cx.insert_in_scope(name, sid, Namespace::Type)
+                }
+                for (name, sid) in self.cx.scopes[scope].values.clone() {
+                    self.cx.insert_in_scope(name, sid, Namespace::Value)
+                }
+            }
+            UseTreeKind::Nested { items, span } => {
+                items
+                    .iter()
+                    .for_each(|item| self.lower_use_tree(item, Some(sid)));
+            }
+        }
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.name.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 impl Visitor for SignatureLowerer<'_, '_> {
@@ -1030,6 +1154,7 @@ impl Visitor for SignatureLowerer<'_, '_> {
                     self.with_scope(scope, |this| item.walk(this));
                 }
             }
+            ItemKind::Use(tree) => self.lower_use_tree(tree, None),
             _ => {}
         }
     }

@@ -114,10 +114,20 @@ fn handle_notification(
         DidChangeTextDocument::METHOD => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
             let uri = params.text_document.uri;
-            if let Some(change) = params.content_changes.into_iter().next_back() {
-                publish(connection, &uri, &change.text)?;
-                documents.insert(uri, change.text);
+            let mut text = documents.remove(&uri).unwrap_or_default();
+            for change in params.content_changes {
+                match change.range {
+                    Some(range) => {
+                        let index = LineIndex::new(&text);
+                        let start = index.offset(&text, range.start);
+                        let end = index.offset(&text, range.end);
+                        text.replace_range(start..end, &change.text);
+                    }
+                    None => text = change.text,
+                }
             }
+            publish(connection, &uri, &text)?;
+            documents.insert(uri, text);
         }
         DidCloseTextDocument::METHOD => {
             let params: DidCloseTextDocumentParams = serde_json::from_value(not.params)?;
@@ -202,7 +212,7 @@ fn hover_at(text: &str, position: Position) -> Option<Hover> {
     let offset = index.offset(text, position);
 
     let ty = match cx.symbol_at(offset) {
-        Some(symbol) => cx.describe_symbol(symbol, offset),
+        Some(symbol) => cx.describe_symbol(symbol),
         None => cx.type_name_at(offset)?.to_owned(),
     };
 
