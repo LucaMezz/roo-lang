@@ -12,11 +12,11 @@ use std::collections::HashMap;
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
-    Fn, FnRetTy, FnTy, Item, ItemKind, ModKind, Path, Span, Ty, TyKind, UseTree, UseTreeKind,
-    VariantData,
+    Fn, FnRetTy, FnTy, GenericParam, Ident, Item, ItemKind, ModKind, Path, Span, Trait, Ty,
+    TyAlias, TyKind, UseTree, UseTreeKind, VariantData,
 };
 use slotmap::SlotMap;
-use unify::{TermId, UnificationContext, UnifyError, VarId, term};
+use unify::{TermId, UnificationContext, VarId, term};
 
 mod call_graph;
 mod check;
@@ -38,8 +38,7 @@ pub use errors::Locale;
 
 use crate::call_graph::{CallGraph, SCCCollector};
 use crate::errors::{
-    AlreadyDefined, AnnotationsNeeded, CyclicType, InvalidGlobTarget, UnresolvedImport,
-    UnresolvedType,
+    AlreadyDefined, AnnotationsNeeded, InvalidGlobTarget, UnresolvedImport, UnresolvedType,
 };
 
 /// The enum containing all the possible constructors which can
@@ -425,11 +424,16 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn with_scope(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self)) {
+    fn with_scope<T>(&mut self, scope: ScopeId, f: impl FnOnce(&mut Self) -> T) -> T {
         let parent = self.current_scope;
         self.current_scope = scope;
-        f(self);
+        let result = f(self);
         self.current_scope = parent;
+        result
+    }
+
+    fn symbol(&self, symbol: SymbolId) -> &Symbol {
+        &self.symbols[symbol]
     }
 
     #[cfg(test)]
@@ -459,11 +463,21 @@ impl<'ast> TypeCheckContext<'ast> {
         self.positions.type_name_at(offset)
     }
 
-    fn fresh_var(&mut self, span: Span) -> TermId {
+    fn fresh_var_at(&mut self, span: Option<Span>) -> TermId {
         let var = self.uni_cx.fresh_var();
         let term = self.term_var(var);
-        self.inference_vars.push((var, span));
+        if let Some(span) = span {
+            self.inference_vars.push((var, span));
+        }
         term
+    }
+
+    fn fresh_var(&mut self) -> TermId {
+        self.fresh_var_at(None)
+    }
+
+    fn or_fresh_var(&mut self, term: Option<TermId>) -> TermId {
+        term.unwrap_or_else(|| self.fresh_var())
     }
 
     fn term(&mut self, con: TyCon) -> TermId {
@@ -591,13 +605,11 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_items(&mut self, items: impl IntoIterator<Item = &'ast Item>) {
-        for item in items {
-            match &item.kind {
-                ItemKind::Fn(_) => self.check_function(item),
-                ItemKind::Mod(_, _) => self.check_module(item),
-                _ => {}
-            }
-        }
+        items.into_iter().for_each(|item| match &item.kind {
+            ItemKind::Fn(f) => self.check_function(f),
+            ItemKind::Mod(ident, kind) => self.check_module(ident, kind),
+            _ => {}
+        });
     }
 
     /// Iterates the recorded list of inference variables and the
@@ -636,21 +648,25 @@ impl<'ast> TypeCheckContext<'ast> {
         let mut segments = path.segments.iter().enumerate();
         let (i, first) = segments.next()?;
         let name = self.names.id(&first.ident.name);
-        let mut symbol = self.lookup_up_scope_chain(
+        let first_symbol = self.lookup_up_scope_chain(
             self.current_scope,
             name,
             segment_namespace(i, last, namespace),
         )?;
 
-        for (i, segment) in segments {
-            let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
-                return None;
-            };
+        segments.try_fold(first_symbol, |symbol, (i, segment)| {
+            let scope = self.mod_symbol_scope(symbol)?;
             let name = self.names.id(&segment.ident.name);
-            symbol = self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))?;
-        }
+            self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))
+        })
+    }
 
-        Some(symbol)
+    fn resolve_path_to_type(&mut self, path: &Path) -> Option<SymbolId> {
+        self.resolve_path(path, Namespace::Type)
+    }
+
+    fn resolve_path_to_value(&mut self, path: &Path) -> Option<SymbolId> {
+        self.resolve_path(path, Namespace::Value)
     }
 
     fn resolve_path_from(
@@ -660,17 +676,14 @@ impl<'ast> TypeCheckContext<'ast> {
         namespace: Namespace,
     ) -> Option<SymbolId> {
         let last = path.segments.len() - 1;
-        let segments = path.segments.iter().enumerate();
-        let mut symbol = root;
-        for (i, segment) in segments {
-            let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
-                return None;
-            };
-            let name = self.names.id(&segment.ident.name);
-            symbol = self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))?;
-        }
-
-        Some(symbol)
+        path.segments
+            .iter()
+            .enumerate()
+            .try_fold(root, |symbol, (i, segment)| {
+                let scope = self.mod_symbol_scope(symbol)?;
+                let name = self.names.id(&segment.ident.name);
+                self.lookup_in_scope(scope, name, segment_namespace(i, last, namespace))
+            })
     }
 
     /// Directly checks if the given scope contains a symbol
@@ -688,21 +701,131 @@ impl<'ast> TypeCheckContext<'ast> {
         map.get(&name).copied()
     }
 
+    fn with_symbol_in_scope<T>(
+        &mut self,
+        name: NameId,
+        namespace: Namespace,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.lookup_in_scope(self.current_scope, name, namespace)
+            .map(|symbol| f(self, symbol))
+    }
+
+    fn with_type_symbol<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.with_symbol_in_scope(name, Namespace::Type, f)
+    }
+
+    fn with_value_symbol<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.with_symbol_in_scope(name, Namespace::Value, f)
+    }
+
+    fn fn_symbol_scope(&self, symbol: SymbolId) -> Option<ScopeId> {
+        let SymbolKind::Fn(fn_data) = &self.symbol(symbol).kind else {
+            return None;
+        };
+        Some(fn_data.scope)
+    }
+
+    fn mod_symbol_scope(&self, symbol: SymbolId) -> Option<ScopeId> {
+        let SymbolKind::Mod(scope) = self.symbol(symbol).kind else {
+            return None;
+        };
+        Some(scope)
+    }
+
+    fn ty_alias_symbol_scope(&self, symbol: SymbolId) -> Option<ScopeId> {
+        let SymbolKind::TyAlias(scope) = &self.symbol(symbol).kind else {
+            return None;
+        };
+        Some(*scope)
+    }
+
+    fn with_fn_symbol<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId, ScopeId) -> T,
+    ) -> Option<T> {
+        self.with_value_symbol(name, |this, symbol| {
+            this.fn_symbol_scope(symbol)
+                .map(|scope| f(this, symbol, scope))
+        })
+        .flatten()
+    }
+
+    fn with_fn_scope<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.with_fn_symbol(name, |this, symbol, scope| {
+            this.with_scope(scope, |this| f(this, symbol))
+        })
+    }
+
+    fn with_mod_symbol<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId, ScopeId) -> T,
+    ) -> Option<T> {
+        self.with_type_symbol(name, |this, symbol| {
+            this.mod_symbol_scope(symbol)
+                .map(|scope| f(this, symbol, scope))
+        })
+        .flatten()
+    }
+
+    fn with_mod_scope<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.with_mod_symbol(name, |this, symbol, scope| {
+            this.with_scope(scope, |this| f(this, symbol))
+        })
+    }
+
+    fn with_ty_alias_symbol<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId, ScopeId) -> T,
+    ) -> Option<T> {
+        self.with_type_symbol(name, |this, symbol| {
+            this.ty_alias_symbol_scope(symbol)
+                .map(|scope| f(this, symbol, scope))
+        })
+        .flatten()
+    }
+
+    #[allow(unused)]
+    fn with_ty_alias_scope<T>(
+        &mut self,
+        name: NameId,
+        f: impl FnOnce(&mut Self, SymbolId) -> T,
+    ) -> Option<T> {
+        self.with_ty_alias_symbol(name, |this, symbol, scope| {
+            this.with_scope(scope, |this| f(this, symbol))
+        })
+    }
+
     /// Recursively searches the current scope and enclosing
     /// scopes for a [`Symbol`] with a given name and which
     /// belongs to the specified namespace.
     fn lookup_up_scope_chain(
         &self,
-        mut scope: ScopeId,
+        scope: ScopeId,
         name: NameId,
         namespace: Namespace,
     ) -> Option<SymbolId> {
-        loop {
-            if let Some(symbol) = self.lookup_in_scope(scope, name, namespace) {
-                return Some(symbol);
-            }
-            scope = self.scopes[scope].parent?;
-        }
+        std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
+            .find_map(|scope| self.lookup_in_scope(scope, name, namespace))
     }
 
     /// Declares a new [`Symbol`] in a scope of a certain kind.
@@ -724,7 +847,7 @@ impl<'ast> TypeCheckContext<'ast> {
             self.check_redeclaration(namespace, name, span);
         }
 
-        let ty = self.fresh_var(span);
+        let ty = self.fresh_var_at(Some(span));
         let symbol = self.symbols.insert(Symbol {
             name,
             kind,
@@ -741,17 +864,18 @@ impl<'ast> TypeCheckContext<'ast> {
     /// namespace of the current scope, emits an [`AlreadyDefined`]
     /// diagnostic pointing back at its original declaration.
     fn check_redeclaration(&mut self, namespace: Namespace, name: NameId, span: Span) {
-        let Some(existing) = self.lookup_in_scope(self.current_scope, name, namespace) else {
-            return;
-        };
-        let original = self.symbols[existing].declared_at;
-        let name = self
-            .names
-            .name(name)
-            .cloned()
-            .unwrap_or_else(|| "_".to_owned());
-        self.diagnostics
-            .push(AlreadyDefined::new(span, name, original));
+        self.lookup_in_scope(self.current_scope, name, namespace)
+            .into_iter()
+            .for_each(|existing| {
+                let original = self.symbol(existing).declared_at;
+                let name = self
+                    .names
+                    .name(name)
+                    .cloned()
+                    .unwrap_or_else(|| "_".to_owned());
+                self.diagnostics
+                    .push(AlreadyDefined::new(span, name, original));
+            });
     }
 
     /// Declares a new generic parameter within the current
@@ -777,9 +901,19 @@ impl<'ast> TypeCheckContext<'ast> {
             generics: Vec::new(),
             declared_at: span,
         });
-        self.insert_in_scope(name, symbol, Namespace::Type);
+        self.insert_type_in_scope(name, symbol);
         self.positions.record_symbol(span, symbol);
         (symbol, id)
+    }
+
+    fn declare_generic_params(&mut self, params: &[GenericParam]) -> Vec<GenericId> {
+        params
+            .iter()
+            .map(|param| {
+                self.declare_generic_param(&param.ident.name, param.ident.span)
+                    .1
+            })
+            .collect()
     }
 
     /// Inserts a symbol into the current [`Scope`] via its
@@ -792,6 +926,14 @@ impl<'ast> TypeCheckContext<'ast> {
         };
     }
 
+    fn insert_type_in_scope(&mut self, name: NameId, symbol: SymbolId) {
+        self.insert_in_scope(name, symbol, Namespace::Type);
+    }
+
+    fn insert_value_in_scope(&mut self, name: NameId, symbol: SymbolId) {
+        self.insert_in_scope(name, symbol, Namespace::Value);
+    }
+
     /// Convert a [`Ty`] AST node into a Term which represents
     /// that type and which can actually be used by the type
     /// checker to perform checking and inference.
@@ -799,36 +941,47 @@ impl<'ast> TypeCheckContext<'ast> {
         match &ty.kind {
             TyKind::Never => self.term(TyCon::Never),
             TyKind::Paren(inner) => self.lower_ty(inner),
-            TyKind::Array(inner) => {
-                let elem = self.lower_ty(inner);
-                self.term_app(TyCon::Array, vec![elem])
-            }
-            TyKind::Tup(inner) => {
-                let args = inner.iter().map(|x| self.lower_ty(x)).collect();
-                self.term_app(TyCon::Tuple, args)
-            }
-            TyKind::Fn(fn_ty) => {
-                let FnTy { inputs, output } = fn_ty.as_ref();
-                let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
-                let inputs_term = self.term_app(TyCon::Tuple, input_args);
-                let output_term = match output {
-                    // When a function doesn't annotate a return type,
-                    // inroduce a fresh inference variable `?a` to
-                    // represent its type.
-                    FnRetTy::Default(_) => self.fresh_var(ty.span),
-                    FnRetTy::Ty(ty) => self.lower_ty(ty),
-                };
-                self.term_app(TyCon::Fn, vec![inputs_term, output_term])
-            }
+            TyKind::Array(inner) => self.lower_array_ty(inner),
+            TyKind::Tup(inner) => self.lower_tup_ty(inner),
+            TyKind::Fn(fn_ty) => self.lower_fn_ty(fn_ty, ty.span),
             TyKind::Path(path) => self.lower_path_ty(path),
-            TyKind::ImplicitSelf => unimplemented!(),
+            TyKind::ImplicitSelf => self.lower_implicit_self_ty(),
             // When `_` is used as a type annotation, it means
             // the type should be inferred. Hence, introduce
             // a fresh inference variable `?a` to represent
             // this type.
-            TyKind::Infer => self.fresh_var(ty.span),
+            TyKind::Infer => self.fresh_var_at(Some(ty.span)),
             TyKind::Err => self.term(TyCon::Err),
         }
+    }
+
+    fn lower_array_ty(&mut self, inner: &Ty) -> TermId {
+        let elem = self.lower_ty(inner);
+        self.term_app(TyCon::Array, vec![elem])
+    }
+
+    fn lower_tup_ty(&mut self, inner: &[Box<Ty>]) -> TermId {
+        let args = inner.iter().map(|x| self.lower_ty(x)).collect();
+        self.term_app(TyCon::Tuple, args)
+    }
+
+    fn lower_fn_ty(&mut self, fn_ty: &FnTy, span: Span) -> TermId {
+        let FnTy { inputs, output } = fn_ty;
+        let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
+        let inputs_term = self.term_app(TyCon::Tuple, input_args);
+        let output_term = self.lower_ret_ty(output, Some(span));
+        self.term_app(TyCon::Fn, vec![inputs_term, output_term])
+    }
+
+    fn lower_ret_ty(&mut self, output: &FnRetTy, default_span: Option<Span>) -> TermId {
+        match output {
+            FnRetTy::Default(_) => self.fresh_var_at(default_span),
+            FnRetTy::Ty(ty) => self.lower_ty(ty),
+        }
+    }
+
+    fn lower_implicit_self_ty(&mut self) -> TermId {
+        unimplemented!()
     }
 
     fn lower_path_ty(&mut self, path: &Path) -> TermId {
@@ -842,21 +995,20 @@ impl<'ast> TypeCheckContext<'ast> {
             }
         }
 
-        match self.resolve_path(path, Namespace::Type) {
-            Some(symbol) => {
+        self.resolve_path_to_type(path)
+            .map(|symbol| {
                 self.record_path_reference(path, symbol);
-                match &self.symbols[symbol].kind {
+                match &self.symbol(symbol).kind {
                     SymbolKind::Struct => self.term(TyCon::Struct(symbol)),
                     SymbolKind::Enum => self.term(TyCon::Enum(symbol)),
                     _ => self.instantiate_path(symbol, path),
                 }
-            }
-            None => {
+            })
+            .unwrap_or_else(|| {
                 self.diagnostics
                     .push(UnresolvedType::new(path.span, display_path(path)));
                 self.term(TyCon::Err)
-            }
-        }
+            })
     }
 }
 
@@ -907,80 +1059,90 @@ impl<'ast> Resolver<'_, 'ast> {
 impl Visitor for Resolver<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
-            ItemKind::Fn(f) => {
-                let scope = self.new_scope();
-                let fn_symbol = self.cx.declare(
-                    &f.ident.name,
-                    f.ident.span,
-                    SymbolKind::Fn(FnSymbol {
-                        scope,
-                        param_spans: Vec::new(),
-                        param_names: Vec::new(),
-                    }),
-                );
-
-                let mut generics = Vec::new();
-                self.with_scope(scope, |this| {
-                    for param in &f.generics.params {
-                        let (_, id) = this
-                            .cx
-                            .declare_generic_param(&param.ident.name, param.ident.span);
-                        generics.push(id);
-                    }
-                    item.walk(this);
-                });
-                self.cx.symbols[fn_symbol].generics = generics;
-            }
-            ItemKind::TyAlias(alias) => {
-                let scope = self.new_scope();
-                let alias_symbol = self.cx.declare(
-                    &alias.ident.name,
-                    alias.ident.span,
-                    SymbolKind::TyAlias(scope),
-                );
-
-                let mut generics = Vec::new();
-                self.with_scope(scope, |this| {
-                    for param in &alias.generics.params {
-                        let (_, id) = this
-                            .cx
-                            .declare_generic_param(&param.ident.name, param.ident.span);
-                        generics.push(id);
-                    }
-                });
-                self.cx.symbols[alias_symbol].generics = generics;
-            }
-            ItemKind::Enum(ident, _generics, _def) => {
-                self.cx.declare(&ident.name, ident.span, SymbolKind::Enum);
-            }
-            ItemKind::Struct(ident, _generics, data) => {
-                let symbol = self.cx.declare(&ident.name, ident.span, SymbolKind::Struct);
-                if !matches!(data, VariantData::Struct(_)) {
-                    let name = self.cx.names.id(&ident.name);
-                    self.cx
-                        .check_redeclaration(Namespace::Value, name, ident.span);
-                    self.cx.insert_in_scope(name, symbol, Namespace::Value);
-                }
-            }
-            ItemKind::Trait(t) => {
-                self.cx
-                    .declare(&t.ident.name, t.ident.span, SymbolKind::Trait);
-            }
-            ItemKind::Mod(ident, ModKind::Unloaded) => {
-                let scope = self.new_scope();
-                self.cx
-                    .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
-            }
-            ItemKind::Mod(ident, ModKind::Loaded(_)) => {
-                let scope = self.new_scope();
-                self.cx
-                    .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
-                self.with_scope(scope, |this| item.walk(this));
-            }
-            ItemKind::Use(tree) => {}
-            ItemKind::Impl(_) => {}
+            ItemKind::Fn(f) => self.resolve_fn_item(item, f),
+            ItemKind::TyAlias(alias) => self.resolve_ty_alias_item(alias),
+            ItemKind::Enum(ident, _generics, _def) => self.resolve_enum_item(ident),
+            ItemKind::Struct(ident, _generics, data) => self.resolve_struct_item(ident, data),
+            ItemKind::Trait(t) => self.resolve_trait_item(t),
+            ItemKind::Mod(ident, ModKind::Unloaded) => self.resolve_mod_unloaded_item(ident),
+            ItemKind::Mod(ident, ModKind::Loaded(_)) => self.resolve_mod_loaded_item(ident, item),
+            ItemKind::Use(_) => self.resolve_use_item(),
+            ItemKind::Impl(_) => self.resolve_impl_item(),
         }
     }
+}
+
+impl Resolver<'_, '_> {
+    fn resolve_fn_item(&mut self, item: &Item, f: &Fn) {
+        let scope = self.new_scope();
+        let fn_symbol = self.cx.declare(
+            &f.ident.name,
+            f.ident.span,
+            SymbolKind::Fn(FnSymbol {
+                scope,
+                param_spans: Vec::new(),
+                param_names: Vec::new(),
+            }),
+        );
+
+        let mut generics = Vec::new();
+        self.with_scope(scope, |this| {
+            generics = this.cx.declare_generic_params(&f.generics.params);
+            item.walk(this);
+        });
+        self.cx.symbols[fn_symbol].generics = generics;
+    }
+
+    fn resolve_ty_alias_item(&mut self, alias: &TyAlias) {
+        let scope = self.new_scope();
+        let alias_symbol = self.cx.declare(
+            &alias.ident.name,
+            alias.ident.span,
+            SymbolKind::TyAlias(scope),
+        );
+
+        let mut generics = Vec::new();
+        self.with_scope(scope, |this| {
+            generics = this.cx.declare_generic_params(&alias.generics.params);
+        });
+        self.cx.symbols[alias_symbol].generics = generics;
+    }
+
+    fn resolve_enum_item(&mut self, ident: &Ident) {
+        self.cx.declare(&ident.name, ident.span, SymbolKind::Enum);
+    }
+
+    fn resolve_struct_item(&mut self, ident: &Ident, data: &VariantData) {
+        let symbol = self.cx.declare(&ident.name, ident.span, SymbolKind::Struct);
+        if !matches!(data, VariantData::Struct(_)) {
+            let name = self.cx.names.id(&ident.name);
+            self.cx
+                .check_redeclaration(Namespace::Value, name, ident.span);
+            self.cx.insert_value_in_scope(name, symbol);
+        }
+    }
+
+    fn resolve_trait_item(&mut self, t: &Trait) {
+        self.cx
+            .declare(&t.ident.name, t.ident.span, SymbolKind::Trait);
+    }
+
+    fn resolve_mod_unloaded_item(&mut self, ident: &Ident) {
+        let scope = self.new_scope();
+        self.cx
+            .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
+    }
+
+    fn resolve_mod_loaded_item(&mut self, ident: &Ident, item: &Item) {
+        let scope = self.new_scope();
+        self.cx
+            .declare(&ident.name, ident.span, SymbolKind::Mod(scope));
+        self.with_scope(scope, |this| item.walk(this));
+    }
+
+    fn resolve_use_item(&mut self) {}
+
+    fn resolve_impl_item(&mut self) {}
 }
 
 /// Performs the signature lowering stage of the type checking.
@@ -1016,20 +1178,11 @@ impl SignatureLowerer<'_, '_> {
             .iter()
             .map(|param| match &param.ty {
                 Some(ty) => self.cx.lower_ty(ty),
-                None => {
-                    let var = self.cx.uni_cx.fresh_var();
-                    self.cx.term_var(var)
-                }
+                None => self.cx.fresh_var(),
             })
             .collect();
         let inputs_term = self.cx.term_app(TyCon::Tuple, inputs);
-        let output_term = match &f.sig.output {
-            FnRetTy::Default(_) => {
-                let var = self.cx.uni_cx.fresh_var();
-                self.cx.term_var(var)
-            }
-            FnRetTy::Ty(ty) => self.cx.lower_ty(ty),
-        };
+        let output_term = self.cx.lower_ret_ty(&f.sig.output, None);
         self.cx.term_app(TyCon::Fn, vec![inputs_term, output_term])
     }
 }
@@ -1037,20 +1190,16 @@ impl SignatureLowerer<'_, '_> {
 impl SignatureLowerer<'_, '_> {
     fn lower_fn_item(&mut self, item: &Item, f: &Fn) {
         let name = self.cx.names.id(&f.ident.name);
-        let Some(symbol) = self
+        let Some((symbol, scope)) = self
             .cx
-            .lookup_in_scope(self.cx.current_scope, name, Namespace::Value)
+            .with_fn_symbol(name, |_, symbol, scope| (symbol, scope))
         else {
             return;
         };
-        let SymbolKind::Fn(fn_data) = &self.cx.symbols[symbol].kind else {
-            return;
-        };
-        let scope = fn_data.scope;
 
         self.with_scope(scope, |this| {
             let fn_term = this.lower_fn_sig(f);
-            let symbol_ty = this.cx.symbols[symbol].ty;
+            let symbol_ty = this.cx.symbol(symbol).ty;
             // Unifies the fresh placeholder inference variable which
             // was created during the previous Resolution stage with the
             // term created by lowering the function signature.
@@ -1090,10 +1239,26 @@ impl SignatureLowerer<'_, '_> {
         }
     }
 
+    fn resolve_use_path_to_type(
+        &mut self,
+        prefix: Option<SymbolId>,
+        path: &Path,
+    ) -> Option<SymbolId> {
+        self.resolve_use_path(prefix, path, Namespace::Type)
+    }
+
+    fn resolve_use_path_to_value(
+        &mut self,
+        prefix: Option<SymbolId>,
+        path: &Path,
+    ) -> Option<SymbolId> {
+        self.resolve_use_path(prefix, path, Namespace::Value)
+    }
+
     fn lower_use_tree(&mut self, tree: &UseTree, prefix: Option<SymbolId>) {
-        let mut sid = self.resolve_use_path(prefix, &tree.prefix, Namespace::Type);
+        let mut sid = self.resolve_use_path_to_type(prefix, &tree.prefix);
         if sid.is_none() && matches!(tree.kind, UseTreeKind::Simple(_)) {
-            sid = self.resolve_use_path(prefix, &tree.prefix, Namespace::Value);
+            sid = self.resolve_use_path_to_value(prefix, &tree.prefix);
         }
         let Some(sid) = sid else {
             self.cx.diagnostics.push(UnresolvedImport::new(
@@ -1105,42 +1270,79 @@ impl SignatureLowerer<'_, '_> {
 
         self.cx.record_path_reference(&tree.prefix, sid);
 
-        let symbol = &self.cx.symbols[sid];
-
         match &tree.kind {
-            UseTreeKind::Simple(ident) => {
-                let Some(ident) =
-                    ident
-                        .as_ref()
-                        .or(tree.prefix.segments.last().map(|seg| &seg.ident))
-                else {
-                    unreachable!("A path should always have a valid name");
-                };
-                let name = self.cx.names.id(&ident.name);
-                self.cx.insert_in_scope(name, sid, symbol.kind.namespace());
-            }
-            UseTreeKind::Glob(span) => {
-                let SymbolKind::Mod(scope) = symbol.kind else {
-                    self.cx.diagnostics.push(InvalidGlobTarget::new(
-                        *span,
-                        display_path(&tree.prefix),
-                        symbol.kind.describe().to_string(),
-                    ));
-                    return;
-                };
-                for (name, sid) in self.cx.scopes[scope].types.clone() {
-                    self.cx.insert_in_scope(name, sid, Namespace::Type)
-                }
-                for (name, sid) in self.cx.scopes[scope].values.clone() {
-                    self.cx.insert_in_scope(name, sid, Namespace::Value)
-                }
-            }
-            UseTreeKind::Nested { items, span } => {
-                items
-                    .iter()
-                    .for_each(|item| self.lower_use_tree(item, Some(sid)));
-            }
+            UseTreeKind::Simple(ident) => self.lower_use_tree_simple(tree, sid, ident),
+            UseTreeKind::Glob(span) => self.lower_use_tree_glob(tree, sid, *span),
+            UseTreeKind::Nested { items, .. } => self.lower_use_tree_nested(items, sid),
         }
+    }
+
+    fn lower_use_tree_simple(&mut self, tree: &UseTree, sid: SymbolId, ident: &Option<Ident>) {
+        let Some(ident) = ident
+            .as_ref()
+            .or(tree.prefix.segments.last().map(|seg| &seg.ident))
+        else {
+            unreachable!("A path should always have a valid name");
+        };
+        let name = self.cx.names.id(&ident.name);
+        let namespace = self.cx.symbols[sid].kind.namespace();
+        self.cx.insert_in_scope(name, sid, namespace);
+    }
+
+    fn lower_use_tree_glob(&mut self, tree: &UseTree, sid: SymbolId, span: Span) {
+        let Some(scope) = self.cx.mod_symbol_scope(sid) else {
+            self.cx.diagnostics.push(InvalidGlobTarget::new(
+                span,
+                display_path(&tree.prefix),
+                self.cx.symbols[sid].kind.describe().to_string(),
+            ));
+            return;
+        };
+        self.cx.scopes[scope]
+            .types
+            .clone()
+            .into_iter()
+            .for_each(|(name, sid)| self.cx.insert_type_in_scope(name, sid));
+        self.cx.scopes[scope]
+            .values
+            .clone()
+            .into_iter()
+            .for_each(|(name, sid)| self.cx.insert_value_in_scope(name, sid));
+    }
+
+    fn lower_use_tree_nested(&mut self, items: &[UseTree], sid: SymbolId) {
+        items
+            .iter()
+            .for_each(|item| self.lower_use_tree(item, Some(sid)));
+    }
+
+    fn lower_ty_alias_item(&mut self, alias: &TyAlias) {
+        let name = self.cx.names.id(&alias.ident.name);
+        let resolved = self
+            .cx
+            .with_ty_alias_symbol(name, |_, symbol, scope| (symbol, scope));
+
+        if let (Some((symbol, scope)), Some(ty)) = (resolved, alias.ty.as_ref()) {
+            self.with_scope(scope, |this| {
+                let aliased = this.cx.lower_ty(ty);
+                let symbol_ty = this.cx.symbol(symbol).ty;
+                // Unifies the fresh placeholder inference variable which
+                // was created during the previous Resolution stage with the
+                // term created by lowering the type of the expression being
+                // aliased. A type alias can never refer to itself, directly
+                // or indirectly (e.g. `type Foo = (Foo, int);`), since that
+                // would make it an infinitely-sized type.
+                this.cx.unify_or_report_cycle(symbol_ty, aliased, ty.span);
+            });
+        }
+    }
+
+    fn lower_mod_item(&mut self, name: &Ident, _kind: &ModKind, item: &Item) {
+        let name = self.cx.names.id(&name.name);
+        let scope = self.cx.with_mod_symbol(name, |_, _, scope| scope);
+        scope
+            .into_iter()
+            .for_each(|scope| self.with_scope(scope, |this| item.walk(this)));
     }
 }
 
@@ -1156,53 +1358,8 @@ impl Visitor for SignatureLowerer<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
             ItemKind::Fn(f) => self.lower_fn_item(item, f),
-            ItemKind::TyAlias(alias) => {
-                let name = self.cx.names.id(&alias.ident.name);
-                let symbol = self
-                    .cx
-                    .lookup_in_scope(self.cx.current_scope, name, Namespace::Type);
-
-                let scope = symbol.and_then(|symbol| match &self.cx.symbols[symbol].kind {
-                    SymbolKind::TyAlias(scope) => Some(*scope),
-                    _ => None,
-                });
-                if let (Some(symbol), Some(scope), Some(ty)) = (symbol, scope, alias.ty.as_ref()) {
-                    self.with_scope(scope, |this| {
-                        let aliased = this.cx.lower_ty(ty);
-                        let symbol_ty = this.cx.symbols[symbol].ty;
-                        // Unifies the fresh placeholder inference variable which
-                        // was created during the previous Resolution stage with the
-                        // term created by lowering the type of the expression being
-                        // aliased. A type alias can never refer to itself, directly
-                        // or indirectly (e.g. `type Foo = (Foo, int);`), since that
-                        // would make it an infinitely-sized type.
-                        if let Err(UnifyError::OccursCheck(_)) =
-                            this.cx.uni_cx.unify_because(symbol_ty, aliased, ty.span)
-                        {
-                            let expected_ty = this.cx.resolved(symbol_ty);
-                            let found_ty = this.cx.resolved(aliased);
-                            this.cx.diagnostics.push(CyclicType::new(
-                                ty.span,
-                                expected_ty,
-                                found_ty,
-                            ));
-                        }
-                    });
-                }
-            }
-            ItemKind::Mod(ident, ModKind::Loaded(_)) => {
-                let name = self.cx.names.id(&ident.name);
-                let scope = self
-                    .cx
-                    .lookup_in_scope(self.cx.current_scope, name, Namespace::Type)
-                    .and_then(|symbol| match &self.cx.symbols[symbol].kind {
-                        SymbolKind::Mod(scope) => Some(*scope),
-                        _ => None,
-                    });
-                if let Some(scope) = scope {
-                    self.with_scope(scope, |this| item.walk(this));
-                }
-            }
+            ItemKind::TyAlias(alias) => self.lower_ty_alias_item(alias),
+            ItemKind::Mod(ident, kind) => self.lower_mod_item(ident, kind, item),
             ItemKind::Use(tree) => self.lower_use_tree(tree, None),
             _ => {}
         }

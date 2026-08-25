@@ -114,11 +114,8 @@ impl GenericNames {
     /// fn pair<T, U>(x: T, y: U) -> (T, U)
     /// ```
     pub(crate) fn fresh_synthetic(&mut self, taken: &mut HashSet<String>) -> String {
-        loop {
-            let name = self.next_synthetic();
-            if taken.insert(name.clone()) {
-                return name;
-            }
-        }
+        std::iter::from_fn(|| Some(self.next_synthetic()))
+            .find(|name| taken.insert(name.clone()))
+            .expect("infinitely many candidate names are generated")
     }
 }

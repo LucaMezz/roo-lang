@@ -49,15 +49,7 @@ impl CallGraph {
     pub fn call(&mut self, from: SymbolId, to: SymbolId) {
         self.nodes.insert(from);
         self.nodes.insert(to);
-        let edge_set = self.edges.get_mut(&from);
-        match edge_set {
-            Some(edges) => {
-                edges.insert(to);
-            }
-            None => {
-                self.edges.insert(from, IndexSet::from([to]));
-            }
-        }
+        self.edges.entry(from).or_default().insert(to);
     }
 
     #[allow(unused)]

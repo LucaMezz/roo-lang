@@ -1,6 +1,6 @@
 use ast::{
-    Block, Expr, ExprKind, FnRetTy, Item, ItemKind, LitKind, Local, LocalKind, ModKind, Pat,
-    PatKind, Span, Stmt, StmtKind,
+    Block, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind, ModKind,
+    Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind,
 };
 use diagnostics::Related;
 use unify::{Term, UnifyError};
@@ -10,9 +10,31 @@ use crate::errors::{
     expected_because_of, expected_due_to, generic_note, provenance,
 };
 use crate::types::Type;
-use crate::{
-    Namespace, PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext, display_path,
-};
+use crate::{PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext, display_path};
+
+#[derive(Default)]
+struct TypeMismatchExtras {
+    expected_due_to: Option<Related>,
+    generic_on_expected: Option<String>,
+    generic_on_found: Option<String>,
+}
+
+impl TypeMismatchExtras {
+    fn expected_due_to(mut self, related: Option<Related>) -> Self {
+        self.expected_due_to = related;
+        self
+    }
+
+    fn generic_on_expected(mut self, name: Option<String>) -> Self {
+        self.generic_on_expected = name;
+        self
+    }
+
+    fn generic_on_found(mut self, name: Option<String>) -> Self {
+        self.generic_on_found = name;
+        self
+    }
+}
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns the span of the final expression in the block which
@@ -67,54 +89,6 @@ impl<'ast> TypeCheckContext<'ast> {
         None
     }
 
-    /// Typechecks the given expression, and then attempts to unify
-    /// it with the expected term if one is given. If unification
-    /// fails, then one of two diagnostics is emitted:
-    ///
-    /// ```text
-    ///     1. CyclicType: indicates that the only way to unify the
-    ///         expected and actual terms is to create a cyclic
-    ///         term of infinite size. For example, unifying
-    ///             
-    ///             Array(?a) ~ ?a
-    ///         
-    ///         has a solution, but its size is
-    ///         infinite:
-    ///         
-    ///             Array(Array(...))
-    ///
-    ///         Which can't exist in practice, hence the error.
-    ///
-    ///     2. TypeMismatch: indicates that unification failed, and
-    ///         there does not exist any set of substitutions that
-    ///         would cause the two terms to become equal.
-    ///
-    ///         One reason is that somewhere in the term, two
-    ///         corresponding constructors are not equal to one
-    ///         another. For example:
-    ///
-    ///             ...Array(...)... != ...Fn(...)...
-    ///
-    ///         Then clearly these terms cannot be made the same
-    ///         by making inference variable substitutions, so this
-    ///         raises an error.
-    ///
-    ///         Another reason is that the 'arities' of two
-    ///         corresponding constructors are not equal, i.e. they
-    ///         have a differing number of constructors. For example:
-    ///
-    ///             ...Tuple(?a, ?b)... != ...Tuple(?a, ?b, ...)...
-    ///             
-    ///         They are clearly not equal, hence the error.
-    /// ```
-    ///
-    /// Specifically, this function calls [`Self::check_expr_kind`]
-    /// which is what handles the type checking of the expression
-    /// itself before we do the final unification which can result
-    /// in the above errors.
-    ///
-    /// Note that [`Self::check_expr_kind`] also may attempt to
-    /// perform unifications, and hence may emit its own error.
     fn check_expr_expecting(
         &mut self,
         expr: &Expr,
@@ -135,57 +109,25 @@ impl<'ast> TypeCheckContext<'ast> {
             self.positions.record_primitive(expr.span, name);
         }
         if let Some(expected) = expected {
+            // Whether either side is currently a bare generic type
+            // parameter is only meaningful *before* the unification
+            // attempt below, since a successful partial unification
+            // could otherwise bind it to something else first.
             let generic_on_expected = self.generic_name_of(expected);
-            let generic_on_actual = if generic_on_expected.is_none() {
+            let generic_on_found = if generic_on_expected.is_none() {
                 self.generic_name_of(actual)
             } else {
                 None
             };
             let reason = expected_span.unwrap_or(expr.span);
-
-            // Attempt to
-            if let Err(err) = self.uni_cx.unify_because(actual, expected, reason) {
-                let expected_ty = self.resolved(expected);
-                let found_ty = self.resolved(actual);
-                match err {
-                    UnifyError::OccursCheck(_) => {
-                        self.diagnostics
-                            .push(CyclicType::new(expr.span, expected_ty, found_ty));
-                    }
-                    UnifyError::ConstructorMismatch { t1, t2, .. }
-                    | UnifyError::ArityMismatch { t1, t2, .. } => {
-                        let expected_highlight = self.resolved(t2);
-                        let found_highlight = self.resolved(t1);
-
-                        let diagnostic_generic_note = generic_on_expected
-                            .map(|name| generic_note(name, &found_ty))
-                            .or_else(|| {
-                                generic_on_actual.map(|name| generic_note(name, &expected_ty))
-                            });
-
-                        let expected_provenance = self.first_provenance(&[
-                            (t2, "expected", &expected_highlight),
-                            (expected, "expected", &expected_ty),
-                        ]);
-                        let found_provenance = self.first_provenance(&[
-                            (t1, "found", &found_highlight),
-                            (actual, "found", &found_ty),
-                        ]);
-
-                        self.diagnostics.push(TypeMismatch {
-                            span: expr.span,
-                            expected: expected_ty,
-                            found: found_ty,
-                            expected_highlight,
-                            found_highlight,
-                            expected_due_to: expected_span.map(expected_due_to),
-                            generic_note: diagnostic_generic_note,
-                            expected_provenance,
-                            found_provenance,
-                        });
-                    }
-                }
-                return self.term(TyCon::Err);
+            let extras = TypeMismatchExtras::default()
+                .expected_due_to(expected_span.map(expected_due_to))
+                .generic_on_expected(generic_on_expected)
+                .generic_on_found(generic_on_found);
+            if let Err(err_term) =
+                self.unify_reporting_mismatch(expected, actual, expr.span, reason, extras)
+            {
+                return err_term;
             }
         }
         actual
@@ -194,104 +136,186 @@ impl<'ast> TypeCheckContext<'ast> {
     fn check_expr_kind(&mut self, kind: &ExprKind, expected: Option<TermId>) -> TermId {
         match kind {
             ExprKind::Err => self.term(TyCon::Err),
-            ExprKind::Lit(lit) => match lit.kind {
-                LitKind::Bool(_) => self.term(TyCon::Bool),
-                LitKind::Char(_) => self.term(TyCon::Char),
-                LitKind::Int(_) => self.term(TyCon::Int),
-                LitKind::Float(_) => self.term(TyCon::Float),
-                LitKind::Str(_) => self.term(TyCon::Str),
-            },
+            ExprKind::Lit(lit) => self.check_lit_expr(lit),
             ExprKind::Paren(expr) => self.check_expr(expr, expected),
             ExprKind::If(cond, body, els) => self.check_if_expr(cond, body, els, expected),
             ExprKind::Block(block, _) => self.check_block(block, expected),
-            ExprKind::Tup(exprs) => {
-                let expected_args = expected.and_then(|expected| {
-                    let resolved = self.uni_cx.resolve(expected);
-                    match self.uni_cx.term(resolved) {
-                        Some(Term::App {
-                            constructor: TyCon::Tuple,
-                            args,
-                        }) if args.len() == exprs.len() => Some(args.clone()),
-                        _ => None,
-                    }
-                });
-
-                let args = exprs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, expr)| {
-                        let expected = expected_args.as_ref().map(|args| args[i]);
-                        self.check_expr(expr, expected)
-                    })
-                    .collect();
-
-                self.term_app(TyCon::Tuple, args)
-            }
-            ExprKind::Ret(expr) => {
-                if let Some(expr) = expr {
-                    self.check_expr(expr, None);
-                }
-                self.term(TyCon::Never)
-            }
-            ExprKind::Path(qself, path) => {
-                if qself.is_some() {
-                    unimplemented!();
-                }
-
-                match self.resolve_path(path, Namespace::Value) {
-                    Some(symbol) => {
-                        self.record_path_reference(path, symbol);
-                        self.check_referenced_fn(symbol);
-                        self.instantiate_path(symbol, path)
-                    }
-                    None => {
-                        self.diagnostics
-                            .push(UnresolvedValue::new(path.span, display_path(path)));
-                        self.term(TyCon::Err)
-                    }
-                }
-            }
+            ExprKind::Tup(exprs) => self.check_tup_expr(exprs, expected),
+            ExprKind::Ret(expr) => self.check_ret_expr(expr),
+            ExprKind::Path(qself, path) => self.check_path_expr(qself, path),
             ExprKind::Call(callee, args) => self.check_call_expr(callee, args),
             ExprKind::Cast(_expr, ty) => self.lower_ty(ty),
-            ExprKind::Array(exprs) => {
-                let expected_ty = expected.and_then(|expected| {
-                    let resolved = self.uni_cx.resolve(expected);
-                    match self.uni_cx.term(resolved) {
-                        Some(Term::App {
-                            constructor: TyCon::Array,
-                            args,
-                        }) if args.len() == 1 => Some(args[0]),
-                        _ => None,
-                    }
-                });
-
-                let mut exprs = exprs.iter();
-                let elem_ty = match exprs.next() {
-                    Some(first) => {
-                        let first_ty = self.check_expr(first, expected_ty);
-
-                        for rest in exprs {
-                            self.check_expr(rest, Some(first_ty));
-                        }
-                        first_ty
-                    }
-                    None => expected_ty.unwrap_or_else(|| {
-                        let var = self.uni_cx.fresh_var();
-                        self.term_var(var)
-                    }),
-                };
-
-                self.term_app(TyCon::Array, vec![elem_ty])
-            }
-            ExprKind::Assign(lhs, rhs, _) => {
-                let lhs = self.check_expr(lhs, None);
-
-                self.check_expr(rhs, Some(lhs));
-
-                self.term(TyCon::Tuple)
-            }
-            _ => unimplemented!(),
+            ExprKind::Array(exprs) => self.check_array_expr(exprs, expected),
+            ExprKind::Assign(lhs, rhs, _) => self.check_assign_expr(lhs, rhs),
+            ExprKind::MethodCall(..) => self.check_method_call_expr(),
+            ExprKind::Binary(..) => self.check_binary_expr(),
+            ExprKind::Unary(..) => self.check_unary_expr(),
+            ExprKind::Let(..) => self.check_let_expr(),
+            ExprKind::While(..) => self.check_while_expr(),
+            ExprKind::ForLoop { .. } => self.check_for_loop_expr(),
+            ExprKind::Loop(..) => self.check_loop_expr(),
+            ExprKind::Match(..) => self.check_match_expr(),
+            ExprKind::Closure(..) => self.check_closure_expr(),
+            ExprKind::AssignOp(..) => self.check_assign_op_expr(),
+            ExprKind::Field(..) => self.check_field_expr(),
+            ExprKind::Index(..) => self.check_index_expr(),
+            ExprKind::Range(..) => self.check_range_expr(),
+            ExprKind::Underscore => self.check_underscore_expr(),
+            ExprKind::Break(..) => self.check_break_expr(),
+            ExprKind::Continue(..) => self.check_continue_expr(),
+            ExprKind::Struct(..) => self.check_struct_expr(),
+            ExprKind::Try(..) => self.check_try_expr(),
         }
+    }
+
+    fn check_method_call_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_binary_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_unary_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_let_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_while_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_for_loop_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_loop_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_match_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_closure_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_assign_op_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_field_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_index_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_range_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_underscore_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_break_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_continue_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_struct_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_try_expr(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_lit_expr(&mut self, lit: &Lit) -> TermId {
+        match lit.kind {
+            LitKind::Bool(_) => self.term(TyCon::Bool),
+            LitKind::Char(_) => self.term(TyCon::Char),
+            LitKind::Int(_) => self.term(TyCon::Int),
+            LitKind::Float(_) => self.term(TyCon::Float),
+            LitKind::Str(_) => self.term(TyCon::Str),
+        }
+    }
+
+    fn check_tup_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TermId>) -> TermId {
+        let expected_args = expected
+            .and_then(|expected| self.resolved_app_with_arity(expected, TyCon::Tuple, exprs.len()));
+
+        let args = exprs
+            .iter()
+            .enumerate()
+            .map(|(i, expr)| {
+                let expected = expected_args.as_ref().map(|args| args[i]);
+                self.check_expr(expr, expected)
+            })
+            .collect();
+
+        self.term_app(TyCon::Tuple, args)
+    }
+
+    fn check_ret_expr(&mut self, expr: &Option<Box<Expr>>) -> TermId {
+        if let Some(expr) = expr {
+            self.check_expr(expr, None);
+        }
+        self.term(TyCon::Never)
+    }
+
+    fn check_path_expr(&mut self, qself: &Option<Box<QSelf>>, path: &Path) -> TermId {
+        if qself.is_some() {
+            unimplemented!();
+        }
+
+        self.resolve_path_to_value(path)
+            .map(|symbol| {
+                self.record_path_reference(path, symbol);
+                self.check_referenced_fn(symbol);
+                self.instantiate_path(symbol, path)
+            })
+            .unwrap_or_else(|| {
+                self.diagnostics
+                    .push(UnresolvedValue::new(path.span, display_path(path)));
+                self.term(TyCon::Err)
+            })
+    }
+
+    fn check_array_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TermId>) -> TermId {
+        let expected_ty = expected
+            .and_then(|expected| self.resolved_app_with_arity(expected, TyCon::Array, 1))
+            .map(|args| args[0]);
+
+        let elem_ty = exprs
+            .split_first()
+            .map(|(first, rest)| {
+                let first_ty = self.check_expr(first, expected_ty);
+                rest.iter().for_each(|expr| {
+                    self.check_expr(expr, Some(first_ty));
+                });
+                first_ty
+            })
+            .unwrap_or_else(|| self.or_fresh_var(expected_ty));
+
+        self.term_app(TyCon::Array, vec![elem_ty])
+    }
+
+    fn check_assign_expr(&mut self, lhs: &Expr, rhs: &Expr) -> TermId {
+        let lhs = self.check_expr(lhs, None);
+
+        self.check_expr(rhs, Some(lhs));
+
+        self.term(TyCon::Tuple)
     }
 
     fn check_if_expr(
@@ -335,44 +359,9 @@ impl<'ast> TypeCheckContext<'ast> {
         els_span: Span,
         has_els: bool,
     ) {
-        let Err(err) = self.uni_cx.unify_because(body_ty, els_ty, body_span) else {
-            return;
-        };
-
-        let body_type = self.resolved(body_ty);
-        let els_type = self.resolved(els_ty);
-        match err {
-            UnifyError::OccursCheck(_) => {
-                self.diagnostics
-                    .push(CyclicType::new(els_span, body_type, els_type));
-            }
-            UnifyError::ConstructorMismatch { t1, t2, .. }
-            | UnifyError::ArityMismatch { t1, t2, .. } => {
-                let expected_highlight = self.resolved(t1);
-                let found_highlight = self.resolved(t2);
-
-                let expected_provenance = self.first_provenance(&[
-                    (t1, "expected", &expected_highlight),
-                    (body_ty, "expected", &body_type),
-                ]);
-                let found_provenance = self.first_provenance(&[
-                    (t2, "found", &found_highlight),
-                    (els_ty, "found", &els_type),
-                ]);
-
-                self.diagnostics.push(TypeMismatch {
-                    span: els_span,
-                    expected: body_type,
-                    found: els_type,
-                    expected_highlight,
-                    found_highlight,
-                    expected_due_to: has_els.then(|| expected_because_of(body_span)),
-                    generic_note: None,
-                    expected_provenance,
-                    found_provenance,
-                });
-            }
-        }
+        let extras = TypeMismatchExtras::default()
+            .expected_due_to(has_els.then(|| expected_because_of(body_span)));
+        let _ = self.unify_reporting_mismatch(body_ty, els_ty, els_span, body_span, extras);
     }
 
     fn resolved_app(&mut self, term: TermId, con: TyCon) -> Option<Vec<TermId>> {
@@ -383,13 +372,97 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
+    fn resolved_app_with_arity(
+        &mut self,
+        term: TermId,
+        con: TyCon,
+        arity: usize,
+    ) -> Option<Vec<TermId>> {
+        self.resolved_app(term, con)
+            .filter(|args| args.len() == arity)
+    }
+
+    fn resolved_fn_parts(&mut self, term: TermId) -> Option<(Vec<TermId>, TermId)> {
+        let fn_args = self.resolved_app(term, TyCon::Fn)?;
+        let output_term = fn_args[1];
+        let input_tys = self.resolved_app(fn_args[0], TyCon::Tuple)?;
+        Some((input_tys, output_term))
+    }
+
+    pub(crate) fn unify_or_report_cycle(&mut self, expected: TermId, found: TermId, span: Span) {
+        if let Err(UnifyError::OccursCheck(_)) = self.uni_cx.unify_because(expected, found, span) {
+            let expected_ty = self.resolved(expected);
+            let found_ty = self.resolved(found);
+            self.diagnostics
+                .push(CyclicType::new(span, expected_ty, found_ty));
+        }
+    }
+
+    fn unify_reporting_mismatch(
+        &mut self,
+        expected: TermId,
+        found: TermId,
+        span: Span,
+        reason: Span,
+        extras: TypeMismatchExtras,
+    ) -> Result<(), TermId> {
+        let Err(err) = self.uni_cx.unify_because(expected, found, reason) else {
+            return Ok(());
+        };
+
+        let expected_ty = self.resolved(expected);
+        let found_ty = self.resolved(found);
+        match err {
+            UnifyError::OccursCheck(_) => {
+                self.diagnostics
+                    .push(CyclicType::new(span, expected_ty, found_ty));
+            }
+            UnifyError::ConstructorMismatch { t1, t2, .. }
+            | UnifyError::ArityMismatch { t1, t2, .. } => {
+                let expected_highlight = self.resolved(t1);
+                let found_highlight = self.resolved(t2);
+
+                let diagnostic_generic_note = extras
+                    .generic_on_expected
+                    .map(|name| generic_note(name, &found_ty))
+                    .or_else(|| {
+                        extras
+                            .generic_on_found
+                            .map(|name| generic_note(name, &expected_ty))
+                    });
+
+                let expected_provenance = self.first_provenance(&[
+                    (t1, "expected", &expected_highlight),
+                    (expected, "expected", &expected_ty),
+                ]);
+                let found_provenance = self.first_provenance(&[
+                    (t2, "found", &found_highlight),
+                    (found, "found", &found_ty),
+                ]);
+
+                self.diagnostics.push(TypeMismatch {
+                    span,
+                    expected: expected_ty,
+                    found: found_ty,
+                    expected_highlight,
+                    found_highlight,
+                    expected_due_to: extras.expected_due_to,
+                    generic_note: diagnostic_generic_note,
+                    expected_provenance,
+                    found_provenance,
+                });
+            }
+        }
+        Err(self.term(TyCon::Err))
+    }
+
     fn check_call_expr(&mut self, callee: &Expr, args: &[Box<Expr>]) -> TermId {
         let callee_ty = self.check_expr(callee, None);
 
         let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
             ExprKind::Path(None, path) => self
-                .resolve_path(path, Namespace::Value)
-                .map(|symbol| match &self.symbols[symbol].kind {
+                .resolve_path_to_value(path)
+                .map(|symbol| match &self.symbol(symbol).kind {
                     SymbolKind::Fn(fn_data) => fn_data.param_spans.clone(),
                     _ => Vec::new(),
                 })
@@ -398,13 +471,7 @@ impl<'ast> TypeCheckContext<'ast> {
         };
 
         let resolved_callee = self.uni_cx.resolve(callee_ty);
-        let known_inputs = self.resolved_app(callee_ty, TyCon::Fn).and_then(|fn_args| {
-            let output_term = fn_args[1];
-            self.resolved_app(fn_args[0], TyCon::Tuple)
-                .map(|input_tys| (input_tys, output_term))
-        });
-
-        if let Some((input_tys, output_term)) = known_inputs {
+        if let Some((input_tys, output_term)) = self.resolved_fn_parts(callee_ty) {
             let expected = input_tys.len();
             let actual = args.len();
             if expected != actual {
@@ -434,27 +501,19 @@ impl<'ast> TypeCheckContext<'ast> {
                 });
             }
 
-            for (i, arg) in args.iter().enumerate() {
+            args.iter().enumerate().for_each(|(i, arg)| {
                 let expected_ty = input_tys.get(i).copied();
                 let expected_span = callee_param_spans.get(i).copied().flatten();
                 self.check_expr_expecting(arg, expected_ty, expected_span);
-            }
+            });
 
             output_term
         } else if matches!(self.uni_cx.term(resolved_callee), None | Some(Term::Var(_))) {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
             let inputs_term = self.term_app(TyCon::Tuple, arg_tys);
-            let ret_var = self.uni_cx.fresh_var();
-            let ret_term = self.term_var(ret_var);
+            let ret_term = self.fresh_var();
             let fn_term = self.term_app(TyCon::Fn, vec![inputs_term, ret_term]);
-            if let Err(UnifyError::OccursCheck(_)) =
-                self.uni_cx.unify_because(callee_ty, fn_term, callee.span)
-            {
-                let expected_ty = self.resolved(fn_term);
-                let found_ty = self.resolved(callee_ty);
-                self.diagnostics
-                    .push(CyclicType::new(callee.span, expected_ty, found_ty));
-            }
+            self.unify_or_report_cycle(fn_term, callee_ty, callee.span);
             ret_term
         } else {
             let found = self.resolved(callee_ty);
@@ -463,9 +522,9 @@ impl<'ast> TypeCheckContext<'ast> {
                 found,
             });
 
-            for arg in args {
+            args.iter().for_each(|arg| {
                 self.check_expr(arg, None);
-            }
+            });
 
             self.term(TyCon::Err)
         }
@@ -539,10 +598,7 @@ impl<'ast> TypeCheckContext<'ast> {
             }
         };
 
-        let expected = expected.unwrap_or_else(|| {
-            let var = self.uni_cx.fresh_var();
-            self.term_var(var)
-        });
+        let expected = self.or_fresh_var(expected);
 
         self.check_pat(&local.pat, expected, PatDeclKind::Let);
     }
@@ -571,93 +627,134 @@ impl<'ast> TypeCheckContext<'ast> {
         match kind {
             PatKind::Wild => expected,
             PatKind::Rest => expected,
-            PatKind::Ident(ident, sub) => {
-                let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
-                let _ = self
-                    .uni_cx
-                    .unify_because(self.symbols[symbol].ty, expected, ident.span);
-
-                if let Some(sub) = sub {
-                    self.check_pat(sub, expected, decl_kind);
-                }
-
-                expected
-            }
-            PatKind::Tuple(pats) => {
-                let resolved = self.uni_cx.resolve(expected);
-
-                let expected_args = match self.uni_cx.term(resolved) {
-                    Some(Term::App {
-                        constructor: TyCon::Tuple,
-                        args,
-                    }) if args.len() == pats.len() => Some(args.clone()),
-                    _ => None,
-                };
-
-                let args =
-                    pats.iter()
-                        .enumerate()
-                        .map(|(i, pat)| {
-                            let expected = expected_args
-                                .as_ref()
-                                .map(|args| args[i])
-                                .unwrap_or_else(|| {
-                                    let var = self.uni_cx.fresh_var();
-                                    self.term_var(var)
-                                });
-                            self.check_pat(pat, expected, decl_kind)
-                        })
-                        .collect();
-
-                self.term_app(TyCon::Tuple, args)
-            }
-            _ => unimplemented!(),
+            PatKind::Ident(ident, sub) => self.check_ident_pat(ident, sub, expected, decl_kind),
+            PatKind::Tuple(pats) => self.check_tuple_pat(pats, expected, decl_kind),
+            PatKind::Missing => self.check_missing_pat(),
+            PatKind::Struct(..) => self.check_struct_pat(),
+            PatKind::TupleStruct(..) => self.check_tuple_struct_pat(),
+            PatKind::Or(..) => self.check_or_pat(),
+            PatKind::Path(..) => self.check_path_pat(),
+            PatKind::Expr(..) => self.check_expr_pat(),
+            PatKind::Range(..) => self.check_range_pat(),
+            PatKind::Array(..) => self.check_array_pat(),
+            PatKind::Never => self.check_never_pat(),
+            PatKind::Paren(..) => self.check_paren_pat(),
+            PatKind::Err => self.check_err_pat(),
         }
+    }
+
+    fn check_ident_pat(
+        &mut self,
+        ident: &Ident,
+        sub: &Option<Box<Pat>>,
+        expected: TermId,
+        decl_kind: PatDeclKind,
+    ) -> TermId {
+        let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
+        let _ = self
+            .uni_cx
+            .unify_because(self.symbol(symbol).ty, expected, ident.span);
+
+        if let Some(sub) = sub {
+            self.check_pat(sub, expected, decl_kind);
+        }
+
+        expected
+    }
+
+    fn check_tuple_pat(
+        &mut self,
+        pats: &[Pat],
+        expected: TermId,
+        decl_kind: PatDeclKind,
+    ) -> TermId {
+        let expected_args = self.resolved_app_with_arity(expected, TyCon::Tuple, pats.len());
+
+        let args = pats
+            .iter()
+            .enumerate()
+            .map(|(i, pat)| {
+                let expected = self.or_fresh_var(expected_args.as_ref().map(|args| args[i]));
+                self.check_pat(pat, expected, decl_kind)
+            })
+            .collect();
+
+        self.term_app(TyCon::Tuple, args)
+    }
+
+    fn check_missing_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_struct_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_tuple_struct_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_or_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_path_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_expr_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_range_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_array_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_never_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_paren_pat(&mut self) -> TermId {
+        unimplemented!()
+    }
+
+    fn check_err_pat(&mut self) -> TermId {
+        unimplemented!()
     }
 }
 
 impl<'ast> TypeCheckContext<'ast> {
-    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(SymbolId, &'b Item)> {
-        if let ItemKind::Fn(f) = &item.kind {
-            let name = self.names.id(&f.ident.name);
-            if let Some(symbol) = self.lookup_in_scope(self.current_scope, name, Namespace::Value) {
-                Some((symbol, item))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+    fn resolve_fn_symbol(&mut self, f: &ast::Fn) -> Option<SymbolId> {
+        let name = self.names.id(&f.ident.name);
+        self.with_value_symbol(name, |_, symbol| symbol)
     }
 
-    pub(crate) fn check_function(&mut self, item: &'ast Item) {
-        if let Some((symbol, item)) = self.resolve_fn(item) {
-            if let Some(scc) = self.check_fn_body(symbol, item) {
-                self.generalize_group(&scc);
-            }
-        }
-    }
-
-    pub(crate) fn check_module(&mut self, item: &'ast Item) {
-        let ItemKind::Mod(ident, kind) = &item.kind else {
-            return;
+    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(SymbolId, &'b ast::Fn)> {
+        let ItemKind::Fn(f) = &item.kind else {
+            return None;
         };
+        self.resolve_fn_symbol(f).map(|symbol| (symbol, f.as_ref()))
+    }
+
+    pub(crate) fn check_function(&mut self, f: &'ast ast::Fn) {
+        self.resolve_fn_symbol(f)
+            .and_then(|symbol| self.check_fn_body(symbol, f))
+            .into_iter()
+            .for_each(|scc| self.generalize_group(&scc));
+    }
+
+    pub(crate) fn check_module(&mut self, ident: &Ident, kind: &'ast ModKind) {
         let name = self.names.id(&ident.name);
-        let Some(symbol) = self.lookup_in_scope(self.current_scope, name, Namespace::Type) else {
-            return;
-        };
-        let SymbolKind::Mod(scope) = self.symbols[symbol].kind else {
-            return;
-        };
-
-        match kind {
+        self.with_mod_scope(name, |this, _symbol| match kind {
             ModKind::Loaded(items) => {
-                self.with_scope(scope, |this| {
-                    this.check_items(items.iter().map(Box::as_ref))
-                });
+                this.check_items(items.iter().map(Box::as_ref));
             }
             ModKind::Unloaded => unimplemented!(),
-        }
+        });
     }
 
     fn record_edge(
@@ -683,68 +780,49 @@ impl<'ast> TypeCheckContext<'ast> {
         items: impl IntoIterator<Item = &'ast Item>,
         from: SymbolId,
     ) {
-        for item in items {
-            let Some((symbol, item)) = self.resolve_fn(item) else {
-                continue;
-            };
-            let scc = self.record_edge(from, symbol, |this| this.check_fn_body(symbol, item));
-            if let Some(scc) = scc {
-                self.generalize_group(&scc);
-            }
-        }
+        items
+            .into_iter()
+            .filter_map(|item| self.resolve_fn(item))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .for_each(|(symbol, f)| {
+                let scc = self.record_edge(from, symbol, |this| this.check_fn_body(symbol, f));
+                if let Some(scc) = scc {
+                    self.generalize_group(&scc);
+                }
+            });
     }
 
     fn check_referenced_fn(&mut self, symbol: SymbolId) {
         let Some(&item) = self.items_by_symbol.get(&symbol) else {
             return;
         };
+        let ItemKind::Fn(f) = &item.kind else {
+            return;
+        };
 
         let scc = match self.current_fn {
             Some(from) => {
                 self.graph.call(from, symbol);
-                self.record_edge(from, symbol, |this| this.check_fn_body(symbol, item))
+                self.record_edge(from, symbol, |this| this.check_fn_body(symbol, f))
             }
-            None if !self.sccc.is_visited(symbol) => self.check_fn_body(symbol, item),
+            None if !self.sccc.is_visited(symbol) => self.check_fn_body(symbol, f),
             None => None,
         };
 
-        if let Some(scc) = scc {
-            self.generalize_group(&scc);
-        }
+        scc.into_iter().for_each(|scc| self.generalize_group(&scc));
     }
 
-    fn check_fn_body(&mut self, symbol: SymbolId, item: &'ast Item) -> Option<Vec<SymbolId>> {
+    fn check_fn_body(&mut self, symbol: SymbolId, f: &'ast ast::Fn) -> Option<Vec<SymbolId>> {
         if self.sccc.is_visited(symbol) {
             return None;
         }
 
-        let ItemKind::Fn(f) = &item.kind else {
-            return None;
-        };
-        let scope = match &self.symbols[symbol].kind {
-            SymbolKind::Fn(fn_data) => fn_data.scope,
-            _ => return None,
-        };
+        let scope = self.fn_symbol_scope(symbol)?;
         let body = f.body.as_ref()?;
 
-        let symbol_ty = self.symbols[symbol].ty;
-        let resolved = self.uni_cx.resolve(symbol_ty);
-        let fn_args = match self.uni_cx.term(resolved) {
-            Some(Term::App {
-                constructor: TyCon::Fn,
-                args,
-            }) => Some((args[0], args[1])),
-            _ => None,
-        };
-        let (inputs_term, output_term) = fn_args?;
-        let resolved_inputs = self.uni_cx.resolve(inputs_term);
-        let input_tys = match self.uni_cx.term(resolved_inputs) {
-            Some(Term::App {
-                constructor: TyCon::Tuple,
-                args,
-            }) => args.clone(),
-            _ => return None,
-        };
+        let symbol_ty = self.symbol(symbol).ty;
+        let (input_tys, output_term) = self.resolved_fn_parts(symbol_ty)?;
 
         self.sccc.enter(symbol);
         let parent_fn = self.current_fn;
@@ -752,9 +830,13 @@ impl<'ast> TypeCheckContext<'ast> {
         self.checking_stack.push(symbol);
 
         self.with_scope(scope, |this| {
-            for (param, input_ty) in f.sig.inputs.iter().zip(&input_tys) {
-                this.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
-            }
+            f.sig
+                .inputs
+                .iter()
+                .zip(&input_tys)
+                .for_each(|(param, input_ty)| {
+                    this.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
+                });
 
             let output_span = match &f.sig.output {
                 FnRetTy::Default(span) => *span,
@@ -782,48 +864,32 @@ pub(crate) fn collect_fn_mod_items<'ast>(
     cx: &mut TypeCheckContext<'ast>,
     items: impl IntoIterator<Item = &'ast Item>,
 ) {
-    for item in items {
-        match &item.kind {
-            ItemKind::Fn(f) => {
-                let name = cx.names.id(&f.ident.name);
-                let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Value)
-                else {
-                    continue;
-                };
+    items.into_iter().for_each(|item| match &item.kind {
+        ItemKind::Fn(f) => {
+            let name = cx.names.id(&f.ident.name);
+            cx.with_fn_scope(name, |cx, symbol| {
                 cx.items_by_symbol.insert(symbol, item);
 
                 let Some(body) = f.body.as_ref() else {
-                    continue;
-                };
-                let scope = match &cx.symbols[symbol].kind {
-                    SymbolKind::Fn(fn_data) => fn_data.scope,
-                    _ => continue,
+                    return;
                 };
 
-                cx.with_scope(scope, |cx| collect_fn_mod_items(cx, nested_items(body)));
-            }
-            ItemKind::Mod(ident, kind) => {
-                let name = cx.names.id(&ident.name);
-                let Some(symbol) = cx.lookup_in_scope(cx.current_scope, name, Namespace::Type)
-                else {
-                    continue;
-                };
+                collect_fn_mod_items(cx, nested_items(body));
+            });
+        }
+        ItemKind::Mod(ident, kind) => {
+            let name = cx.names.id(&ident.name);
+            cx.with_mod_scope(name, |cx, symbol| {
                 cx.items_by_symbol.insert(symbol, item);
-                let scope = match cx.symbols[symbol].kind {
-                    SymbolKind::Mod(scope) => scope,
-                    _ => continue,
-                };
 
                 match kind {
                     ModKind::Loaded(items) => {
-                        cx.with_scope(scope, |cx| {
-                            collect_fn_mod_items(cx, items.iter().map(Box::as_ref))
-                        });
+                        collect_fn_mod_items(cx, items.iter().map(Box::as_ref));
                     }
                     ModKind::Unloaded => unimplemented!(),
                 }
-            }
-            _ => {}
+            });
         }
-    }
+        _ => {}
+    });
 }

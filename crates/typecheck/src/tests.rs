@@ -183,44 +183,38 @@ fn an_item_nested_inside_a_fn_body_is_hoisted_into_its_own_scope() {
 #[test]
 fn resolve_path_finds_a_single_segment_name() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path(&path(&["Foo"]), Namespace::Type).is_some());
+    assert!(cx.resolve_path_to_type(&path(&["Foo"])).is_some());
 }
 
 #[test]
 fn resolve_path_fails_on_an_undeclared_name() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path(&path(&["Bar"]), Namespace::Type).is_none());
+    assert!(cx.resolve_path_to_type(&path(&["Bar"])).is_none());
 }
 
 #[test]
 fn resolve_path_checks_the_requested_namespace() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path(&path(&["Foo"]), Namespace::Value).is_none());
+    assert!(cx.resolve_path_to_value(&path(&["Foo"])).is_none());
 }
 
 #[test]
 fn resolve_path_walks_through_a_module() {
     let mut cx = resolve("mod m { fn baz() {} }");
-    let resolved = cx.resolve_path(&path(&["m", "baz"]), Namespace::Value);
+    let resolved = cx.resolve_path_to_value(&path(&["m", "baz"]));
     assert!(resolved.is_some());
 }
 
 #[test]
 fn resolve_path_rejects_walking_through_a_non_module_segment() {
     let mut cx = resolve("struct Foo { x: int } fn bar() {}");
-    assert!(
-        cx.resolve_path(&path(&["Foo", "bar"]), Namespace::Value)
-            .is_none()
-    );
+    assert!(cx.resolve_path_to_value(&path(&["Foo", "bar"])).is_none());
 }
 
 #[test]
 fn resolve_path_module_segment_is_looked_up_by_namespace_not_by_name_alone() {
     let mut cx = resolve("mod m { fn baz() {} } fn m() {}");
-    assert!(
-        cx.resolve_path(&path(&["m", "baz"]), Namespace::Value)
-            .is_some()
-    );
+    assert!(cx.resolve_path_to_value(&path(&["m", "baz"])).is_some());
 }
 
 #[test]
@@ -324,7 +318,7 @@ fn lower_ty_path_resolves_primitive_names() {
 fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
     let mut cx = resolve("struct Foo { x: int }");
     let symbol = cx
-        .resolve_path(&path(&["Foo"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["Foo"]))
         .expect("Foo should resolve");
 
     let t = cx.lower_ty(&ty("Foo"));
@@ -335,7 +329,7 @@ fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
 fn lower_ty_path_resolves_a_declared_enum_by_nominal_identity() {
     let mut cx = resolve("enum Foo { Bar }");
     let symbol = cx
-        .resolve_path(&path(&["Foo"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["Foo"]))
         .expect("Foo should resolve");
 
     let t = cx.lower_ty(&ty("Foo"));
@@ -353,7 +347,7 @@ fn lower_ty_path_to_an_undeclared_name_is_err() {
 fn lower_ty_path_walks_through_a_module() {
     let mut cx = resolve("mod m { struct Foo; }");
     let symbol = cx
-        .resolve_path(&path(&["m", "Foo"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["m", "Foo"]))
         .expect("m::Foo should resolve");
 
     let t = cx.lower_ty(&ty("m::Foo"));
@@ -421,9 +415,9 @@ fn check_expr_err_is_a_wildcard() {
 fn check_expr_unifies_the_result_against_the_expected_type() {
     let mut cx = resolve("fn foo() {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let never_term = cx.term(TyCon::Never);
     cx.check_expr(&expr("foo"), Some(never_term));
@@ -465,9 +459,9 @@ fn check_expr_empty_array_uses_the_expected_element_type() {
 fn check_expr_path_resolves_to_the_symbols_type() {
     let mut cx = resolve("fn foo() {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let t = cx.check_expr(&expr("foo"), None);
     assert_eq!(t, symbol_ty);
@@ -491,9 +485,9 @@ fn check_expr_cast_lowers_the_target_type() {
 fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
     let mut cx = resolve("fn foo() {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     cx.check_expr(&expr("foo()"), None);
 
@@ -507,9 +501,9 @@ fn check_expr_call_checks_arguments_against_the_signature() {
     cx.check_expr(&expr("foo(5)"), None);
 
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let (_, fn_args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     let (_, input_args) = resolved_args(&mut cx, fn_args[0]).expect("should be a Tuple term");
@@ -643,10 +637,10 @@ fn apply(f, x) {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let apply = cx
-        .resolve_path(&path(&["apply"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["apply"]))
         .expect("apply should resolve");
     assert_eq!(
-        cx.symbols[apply].generics.len(),
+        cx.symbol(apply).generics.len(),
         2,
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
@@ -830,7 +824,7 @@ fn check_pat_ident_binds_the_locals_type_to_expected() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
 }
 
@@ -856,8 +850,8 @@ fn check_pat_tuple_declares_one_local_per_position() {
         .expect("a should be declared");
     let b = declared_symbol(&cx, cx.current_scope, Namespace::Value, "b")
         .expect("b should be declared");
-    let a_ty = cx.symbols[a].ty;
-    let b_ty = cx.symbols[b].ty;
+    let a_ty = cx.symbol(a).ty;
+    let b_ty = cx.symbol(b).ty;
     assert_eq!(resolved_con(&mut cx, a_ty), Some(TyCon::Never));
     assert_eq!(resolved_con(&mut cx, b_ty), Some(TyCon::Int));
 }
@@ -879,7 +873,7 @@ fn check_local_declares_the_pattern_with_the_initializers_type() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Int));
 }
 
@@ -890,7 +884,7 @@ fn check_local_with_no_initializer_uses_the_ascription() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
 }
 
@@ -898,12 +892,12 @@ fn check_local_with_no_initializer_uses_the_ascription() {
 fn check_local_ascription_constrains_the_initializer() {
     let mut cx = resolve("fn foo() {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
 
     cx.check_local(&local("let x: ! = foo();"));
 
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     let (_, fn_args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     assert_eq!(resolved_con(&mut cx, fn_args[1]), Some(TyCon::Never));
 }
@@ -912,9 +906,9 @@ fn check_local_ascription_constrains_the_initializer() {
 fn lower_signatures_fn_with_typed_params_and_return() {
     let mut cx = resolve_and_lower("fn add(a: int, b: int) -> float { a }");
     let symbol = cx
-        .resolve_path(&path(&["add"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["add"]))
         .expect("add should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let (con, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     assert_eq!(con, TyCon::Fn);
@@ -928,9 +922,9 @@ fn lower_signatures_fn_with_typed_params_and_return() {
 fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
     let mut cx = resolve_and_lower("fn foo() {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     let resolved = cx.uni_cx.resolve(args[1]);
@@ -941,9 +935,9 @@ fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
 fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
     let mut cx = resolve_and_lower("fn foo(x) {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     let (_, input_args) = resolved_args(&mut cx, args[0]).expect("should be a Tuple term");
@@ -955,9 +949,9 @@ fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
 fn lower_signatures_ty_alias() {
     let mut cx = resolve_and_lower("type MyInt = int;");
     let symbol = cx
-        .resolve_path(&path(&["MyInt"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["MyInt"]))
         .expect("MyInt should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Int));
 }
 
@@ -971,7 +965,7 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
         .expect("outer's body should have a child scope");
     let symbol = declared_symbol(&cx, body_scope, Namespace::Value, "inner")
         .expect("inner should be declared");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     let (con, _) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     assert_eq!(con, TyCon::Fn);
 }
@@ -980,16 +974,16 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
 fn lower_signatures_recurses_into_a_mod() {
     let mut cx = resolve_and_lower("mod m { fn baz(x: bool) {} }");
     let m_symbol = cx
-        .resolve_path(&path(&["m"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["m"]))
         .expect("m should resolve");
-    let SymbolKind::Mod(m_scope) = &cx.symbols[m_symbol].kind else {
+    let SymbolKind::Mod(m_scope) = &cx.symbol(m_symbol).kind else {
         panic!("m should be a Mod symbol");
     };
     let m_scope = *m_scope;
 
     let symbol =
         declared_symbol(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
     let (con, _) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
     assert_eq!(con, TyCon::Fn);
 }
@@ -999,7 +993,7 @@ fn lower_use_tree_simple_imports_a_value_into_the_current_scope() {
     let mut cx = resolve_and_lower("mod m { fn baz() {} } use m::baz;");
 
     let original = cx
-        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["m", "baz"]))
         .expect("m::baz should resolve");
     let imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz")
         .expect("baz should have been imported into the current scope");
@@ -1012,10 +1006,10 @@ fn lower_use_tree_glob_imports_every_item_from_a_module() {
     let mut cx = resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::*;");
 
     let foo_original = cx
-        .resolve_path(&path(&["m", "Foo"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["m", "Foo"]))
         .expect("m::Foo should resolve");
     let baz_original = cx
-        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["m", "baz"]))
         .expect("m::baz should resolve");
 
     let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
@@ -1033,10 +1027,10 @@ fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_renames() {
         resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::{Foo, baz as make_baz};");
 
     let foo_original = cx
-        .resolve_path(&path(&["m", "Foo"]), Namespace::Type)
+        .resolve_path_to_type(&path(&["m", "Foo"]))
         .expect("m::Foo should resolve");
     let baz_original = cx
-        .resolve_path(&path(&["m", "baz"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["m", "baz"]))
         .expect("m::baz should resolve");
 
     let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
@@ -1056,9 +1050,9 @@ fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_renames() {
 fn lower_signatures_makes_the_declared_signature_authoritative() {
     let mut cx = resolve_and_lower("fn foo(x: int) {}");
     let symbol = cx
-        .resolve_path(&path(&["foo"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbols[symbol].ty;
+    let symbol_ty = cx.symbol(symbol).ty;
 
     cx.check_expr(&expr("foo(\"wrong\")"), None);
 
@@ -1083,7 +1077,7 @@ fn check_all(source: &str) -> TypeCheckContext<'static> {
 }
 
 fn fn_body_scope(cx: &TypeCheckContext<'_>, symbol: SymbolId) -> ScopeId {
-    match &cx.symbols[symbol].kind {
+    match &cx.symbol(symbol).kind {
         SymbolKind::Fn(fn_data) => fn_data.scope,
         _ => panic!("expected a Fn symbol"),
     }
@@ -1358,13 +1352,13 @@ impl Renderer<'_> {
 fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type() {
     let mut cx = check_all("fn identity(x) -> int { x }");
     let fn_symbol = cx
-        .resolve_path(&path(&["identity"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["identity"]))
         .expect("identity should resolve");
     let body_scope = fn_body_scope(&cx, fn_symbol);
 
     let x_symbol = declared_symbol(&cx, body_scope, Namespace::Value, "x")
         .expect("x should be declared as a param");
-    let x_ty = cx.symbols[x_symbol].ty;
+    let x_ty = cx.symbol(x_symbol).ty;
     assert_eq!(resolved_con(&mut cx, x_ty), Some(TyCon::Int));
 }
 
@@ -1372,7 +1366,7 @@ fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type()
 fn check_all_recurses_into_a_nested_fns_body() {
     let mut cx = check_all("fn outer() { fn inner(x) -> int { x } }");
     let outer_symbol = cx
-        .resolve_path(&path(&["outer"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["outer"]))
         .expect("outer should resolve");
     let outer_scope = fn_body_scope(&cx, outer_symbol);
 
@@ -1382,7 +1376,7 @@ fn check_all_recurses_into_a_nested_fns_body() {
 
     let x_symbol = declared_symbol(&cx, inner_scope, Namespace::Value, "x")
         .expect("x should be declared as inner's param");
-    let x_ty = cx.symbols[x_symbol].ty;
+    let x_ty = cx.symbol(x_symbol).ty;
     assert_eq!(resolved_con(&mut cx, x_ty), Some(TyCon::Int));
 }
 
@@ -1937,14 +1931,14 @@ fn use_both() {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let ping = cx
-        .resolve_path(&path(&["ping"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["ping"]))
         .expect("ping should resolve");
     let pong = cx
-        .resolve_path(&path(&["pong"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["pong"]))
         .expect("pong should resolve");
-    assert_eq!(cx.symbols[ping].generics.len(), 1);
-    assert_eq!(cx.symbols[pong].generics.len(), 1);
-    assert_eq!(cx.symbols[ping].generics[0], cx.symbols[pong].generics[0]);
+    assert_eq!(cx.symbol(ping).generics.len(), 1);
+    assert_eq!(cx.symbol(pong).generics.len(), 1);
+    assert_eq!(cx.symbol(ping).generics[0], cx.symbol(pong).generics[0]);
 }
 
 #[test]
@@ -1965,13 +1959,13 @@ fn use_it() {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let helper = cx
-        .resolve_path(&path(&["helper"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["helper"]))
         .expect("helper should resolve");
     let caller = cx
-        .resolve_path(&path(&["caller"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["caller"]))
         .expect("caller should resolve");
-    assert_eq!(cx.symbols[helper].generics.len(), 1);
-    assert_eq!(cx.symbols[caller].generics.len(), 1);
+    assert_eq!(cx.symbol(helper).generics.len(), 1);
+    assert_eq!(cx.symbol(caller).generics.len(), 1);
 }
 
 #[test]
@@ -1987,7 +1981,7 @@ fn f(x) {
     let mut cx = check_all(source);
 
     let apply = cx
-        .resolve_path(&path(&["apply"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["apply"]))
         .expect("apply should resolve");
     assert_eq!(
         cx.render_symbol_type(apply),
@@ -2019,7 +2013,7 @@ fn f(x) {
     let mut cx = check_all(source);
 
     let apply = cx
-        .resolve_path(&path(&["apply"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["apply"]))
         .expect("apply should resolve");
     assert_eq!(
         cx.render_symbol_type(apply),
@@ -2052,9 +2046,9 @@ fn use_it() {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let identity_rec = cx
-        .resolve_path(&path(&["identity_rec"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["identity_rec"]))
         .expect("identity_rec should resolve");
-    assert_eq!(cx.symbols[identity_rec].generics.len(), 1);
+    assert_eq!(cx.symbol(identity_rec).generics.len(), 1);
 }
 
 #[test]
@@ -2079,9 +2073,9 @@ fn use_it() {
 
     for name in ["a", "b", "c"] {
         let symbol = cx
-            .resolve_path(&path(&[name]), Namespace::Value)
+            .resolve_path_to_value(&path(&[name]))
             .unwrap_or_else(|| panic!("{name} should resolve"));
-        assert_eq!(cx.symbols[symbol].generics.len(), 1, "{name}");
+        assert_eq!(cx.symbol(symbol).generics.len(), 1, "{name}");
     }
 }
 
@@ -2099,13 +2093,13 @@ fn pong2(y: int) -> int {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let ping2 = cx
-        .resolve_path(&path(&["ping2"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["ping2"]))
         .expect("ping2 should resolve");
     let pong2 = cx
-        .resolve_path(&path(&["pong2"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["pong2"]))
         .expect("pong2 should resolve");
-    assert_eq!(cx.symbols[ping2].generics.len(), 0);
-    assert_eq!(cx.symbols[pong2].generics.len(), 0);
+    assert_eq!(cx.symbol(ping2).generics.len(), 0);
+    assert_eq!(cx.symbol(pong2).generics.len(), 0);
 }
 
 #[test]
@@ -2119,9 +2113,9 @@ fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let compose = cx
-        .resolve_path(&path(&["compose"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["compose"]))
         .expect("compose should resolve");
-    let generics = cx.symbols[compose].generics.clone();
+    let generics = cx.symbol(compose).generics.clone();
     assert_eq!(generics.len(), 2, "{generics:?}");
 
     let explicit = generics[0];
@@ -2174,7 +2168,7 @@ fn outer() {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let outer = cx
-        .resolve_path(&path(&["outer"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["outer"]))
         .expect("outer should resolve");
     let outer_scope = fn_body_scope(&cx, outer);
 
@@ -2182,8 +2176,8 @@ fn outer() {
         .expect("ping should be declared inside outer's body");
     let pong = declared_symbol(&cx, outer_scope, Namespace::Value, "pong")
         .expect("pong should be declared inside outer's body");
-    assert_eq!(cx.symbols[ping].generics.len(), 1);
-    assert_eq!(cx.symbols[pong].generics.len(), 1);
+    assert_eq!(cx.symbol(ping).generics.len(), 1);
+    assert_eq!(cx.symbol(pong).generics.len(), 1);
 }
 
 #[test]
@@ -2209,10 +2203,10 @@ fn outer_2(x) {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let outer_1 = cx
-        .resolve_path(&path(&["outer_1"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["outer_1"]))
         .expect("outer_1 should resolve");
     let outer_2 = cx
-        .resolve_path(&path(&["outer_2"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["outer_2"]))
         .expect("outer_2 should resolve");
     let inner_1 = declared_symbol(
         &cx,
@@ -2253,7 +2247,7 @@ fn compose(f) {
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
     let compose = cx
-        .resolve_path(&path(&["compose"]), Namespace::Value)
+        .resolve_path_to_value(&path(&["compose"]))
         .expect("compose should resolve");
     let compose_scope = fn_body_scope(&cx, compose);
 
@@ -2264,10 +2258,10 @@ fn compose(f) {
         .expect("innermost should be declared inside inner's body");
 
     assert_eq!(
-        cx.symbols[compose].generics.len(),
+        cx.symbol(compose).generics.len(),
         3,
         "{:#?}",
-        cx.symbols[compose].generics
+        cx.symbol(compose).generics
     );
     // `inner` legitimately generalizes 1 variable of its own: the type shared
     // between `innermost`'s parameter `x` and `inner`'s own parameter `g`'s
@@ -2277,8 +2271,8 @@ fn compose(f) {
     // `compose`. The other 2 variables that stay free at this point (`f`'s
     // domain and codomain) are correctly excluded, and end up on `compose`
     // instead -- which is what this test is actually asserting.
-    assert_eq!(cx.symbols[inner].generics.len(), 1);
-    assert_eq!(cx.symbols[innermost].generics.len(), 0);
+    assert_eq!(cx.symbol(inner).generics.len(), 1);
+    assert_eq!(cx.symbol(innermost).generics.len(), 0);
 }
 
 #[test]

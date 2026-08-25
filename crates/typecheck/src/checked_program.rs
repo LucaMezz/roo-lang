@@ -142,10 +142,14 @@ impl CheckedProgram {
         self.positions.type_name_at(offset)
     }
 
+    fn symbol(&self, symbol: SymbolId) -> &FrozenSymbol {
+        &self.symbols[&symbol]
+    }
+
     /// Returns a string representation of the type associated with
     /// a given symbol.
     pub fn render_symbol_type(&self, symbol: SymbolId) -> String {
-        let sym = &self.symbols[&symbol];
+        let sym = self.symbol(symbol);
         let rendered = sym.ty.render();
         let generics_rendered = generics_list(&sym.generics);
         if generics_rendered.is_empty() {
@@ -157,7 +161,7 @@ impl CheckedProgram {
 
     /// Returns a string representation of a symbol.
     pub fn describe_symbol(&self, symbol: SymbolId) -> String {
-        let sym = &self.symbols[&symbol];
+        let sym = self.symbol(symbol);
         match &sym.kind {
             FrozenSymbolKind::Fn { param_names } => describe_fn_item(sym, param_names),
             FrozenSymbolKind::Param => format!("{}: {}", sym.name, sym.ty.render()),

@@ -33,9 +33,7 @@ impl<'ast> TypeCheckContext<'ast> {
                 }
             }
             Some(Term::App { args, .. }) => {
-                for arg in args {
-                    self.free_vars(arg, out);
-                }
+                args.into_iter().for_each(|arg| self.free_vars(arg, out));
             }
             None => {}
         }
@@ -43,10 +41,10 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
-        for i in 0..self.checking_stack.len() {
-            let ty = self.symbols[self.checking_stack[i]].ty;
+        self.checking_stack.clone().into_iter().for_each(|symbol| {
+            let ty = self.symbol(symbol).ty;
             self.free_vars(ty, &mut out);
-        }
+        });
         out.into_iter().collect()
     }
 
@@ -67,13 +65,13 @@ impl<'ast> TypeCheckContext<'ast> {
         // issue with LSP of mutually recursive functions where only one
         // explicitly specifies its generic type parameter.
         let mut taken: HashSet<String> = self.generic_names.all_names();
-        for &symbol in members {
-            for &id in &self.symbols[symbol].generics {
-                if let Some(name) = self.generic_names.get(&id) {
+        members.iter().for_each(|&symbol| {
+            self.symbol(symbol).generics.iter().for_each(|id| {
+                if let Some(name) = self.generic_names.get(id) {
                     taken.insert(name.clone());
                 }
-            }
-        }
+            });
+        });
 
         // Begin the process of generalisation of nested functions for
         // each individual function in the group with members provided.
@@ -84,20 +82,22 @@ impl<'ast> TypeCheckContext<'ast> {
         // function context.
         //
         // These become candidates for generalisation.
-        let mut per_member_vars: Vec<(SymbolId, Vec<VarId>)> = Vec::with_capacity(members.len());
-        for &symbol in members {
-            let ty = self.symbols[symbol].ty;
-            let mut vars = Vec::new();
-            self.free_vars(ty, &mut vars);
-            vars.retain(|v| !enclosing.contains(v));
-            per_member_vars.push((symbol, vars));
-        }
+        let per_member_vars: Vec<(SymbolId, Vec<VarId>)> = members
+            .iter()
+            .map(|&symbol| {
+                let ty = self.symbol(symbol).ty;
+                let mut vars = Vec::new();
+                self.free_vars(ty, &mut vars);
+                vars.retain(|v| !enclosing.contains(v));
+                (symbol, vars)
+            })
+            .collect();
 
         // For each unique variable collected, generalise it to a new
         // new unique generic type parameter.
         let mut assigned: HashMap<VarId, GenericId> = HashMap::new();
-        for (_, vars) in &per_member_vars {
-            for &var in vars {
+        per_member_vars.iter().for_each(|(_, vars)| {
+            vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
                     let id = self.generic_ids.insert(());
                     let name = self.generic_names.fresh_synthetic(&mut taken);
@@ -106,17 +106,17 @@ impl<'ast> TypeCheckContext<'ast> {
                     self.uni_cx.bind(var, generic_term);
                     entry.insert(id);
                 }
-            }
-        }
+            });
+        });
 
         // For each function, append all new generics synthesised from
         // generalisation to its symbol.
-        for (symbol, vars) in per_member_vars {
-            for var in vars {
+        per_member_vars.into_iter().for_each(|(symbol, vars)| {
+            vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
                 self.symbols[symbol].generics.push(id);
-            }
-        }
+            });
+        });
     }
 
     /// Replace all generic type parameters of the type of a symbol with
@@ -136,18 +136,20 @@ impl<'ast> TypeCheckContext<'ast> {
     ///
     /// See [`Self::instantiate_term`] for more information.
     fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[(TermId, Span)]) -> TermId {
-        let ty = self.symbols[symbol].ty;
-        if self.symbols[symbol].generics.is_empty() {
+        let ty = self.symbol(symbol).ty;
+        if self.symbol(symbol).generics.is_empty() {
             return ty;
         }
-        let generics = self.symbols[symbol].generics.clone();
+        let generics = self.symbol(symbol).generics.clone();
         let mut subst = HashMap::new();
-        for (&id, &(term, span)) in generics.iter().zip(explicit) {
-            let var = self.uni_cx.fresh_var();
-            let var_term = self.term_var(var);
-            let _ = self.uni_cx.unify_because(var_term, term, span);
-            subst.insert(id, var_term);
-        }
+        generics
+            .iter()
+            .zip(explicit)
+            .for_each(|(&id, &(term, span))| {
+                let var_term = self.fresh_var();
+                let _ = self.uni_cx.unify_because(var_term, term, span);
+                subst.insert(id, var_term);
+            });
         self.instantiate_term(ty, &mut subst)
     }
 
@@ -192,10 +194,7 @@ impl<'ast> TypeCheckContext<'ast> {
             Some(Term::App {
                 constructor: TyCon::Generic(id),
                 ..
-            }) => *subst.entry(id).or_insert_with(|| {
-                let var = self.uni_cx.fresh_var();
-                self.term_var(var)
-            }),
+            }) => *subst.entry(id).or_insert_with(|| self.fresh_var()),
             // The term is some arbitrary constructor applied to some arbitrary
             // arguments. So recursively check the arguments for generic
             // type parameters that still need to be substituted.
@@ -242,7 +241,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     })
                     .collect();
 
-                let max = self.symbols[symbol].generics.len();
+                let max = self.symbol(symbol).generics.len();
                 let actual = arg_tys.len();
                 if actual != max {
                     self.diagnostics.push(GenericArgumentCountMismatch {
