@@ -37,7 +37,7 @@ fn struct_expr<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<
     q_self()
         .map(Box::new)
         .or_not()
-        .then(path(ty()))
+        .then(path_turbofish(ty()))
         .then(
             expr_field(expr.clone())
                 .separated_by(just(Token::Comma))
