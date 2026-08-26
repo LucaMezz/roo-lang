@@ -165,6 +165,17 @@ struct TyAliasDef {
 #[derive(Debug)]
 struct EnumDef {
     variants: Vec<DefId>,
+    /// The generic parameters associated with this enum.
+    generics: Vec<GenericId>,
+
+    scope: ScopeId,
+}
+
+#[derive(Debug)]
+struct StructDef {
+    variant: VariantDef,
+
+    scope: ScopeId,
 }
 
 #[derive(Debug)]
@@ -173,6 +184,8 @@ struct VariantDef {
     span: Span,
     fields: Vec<FieldDef>,
     ctor_ty: Option<TyId>,
+    /// The generic parameters associated with this variant.
+    generics: Vec<GenericId>,
 }
 
 impl VariantDef {
@@ -190,7 +203,7 @@ struct FieldDef {
 /// The specific kind of [`Def`].
 #[derive(Debug)]
 enum DefKind {
-    Struct(VariantDef),
+    Struct(StructDef),
     Enum(EnumDef),
     Variant(VariantDef),
     Trait,
@@ -234,7 +247,9 @@ impl DefKind {
             DefKind::Fn(fn_data) => Some(fn_data.ty),
             DefKind::TyAlias(alias_data) => Some(alias_data.ty),
             DefKind::Local(ty) | DefKind::Param(ty) | DefKind::GenericParam(ty) => Some(*ty),
-            DefKind::Struct(variant) | DefKind::Variant(variant) => variant.ctor_ty,
+            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
+                variant.ctor_ty
+            }
             DefKind::Enum(_) | DefKind::Trait | DefKind::Mod(_) => None,
         }
     }
@@ -245,6 +260,7 @@ impl DefKind {
         match self {
             DefKind::Fn(fn_data) => Some(&fn_data.generics),
             DefKind::TyAlias(alias_data) => Some(&alias_data.generics),
+            DefKind::Struct(StructDef { variant, .. }) => Some(&variant.generics),
             _ => None,
         }
     }
@@ -621,7 +637,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn resolve_path_to_struct(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
         let id = self.resolve_path_to_type(path)?;
         match &self.def(id).kind {
-            DefKind::Struct(variant) => Some((id, variant)),
+            DefKind::Struct(StructDef { variant, .. }) => Some((id, variant)),
             _ => None,
         }
     }
@@ -701,6 +717,13 @@ impl<'ast> TypeCheckContext<'ast> {
         Some(fn_data.scope)
     }
 
+    fn struct_def_scope(&self, def: DefId) -> Option<ScopeId> {
+        let DefKind::Struct(def) = &self.def(def).kind else {
+            return None;
+        };
+        Some(def.scope)
+    }
+
     fn mod_def_scope(&self, def: DefId) -> Option<ScopeId> {
         let DefKind::Mod(scope) = self.def(def).kind else {
             return None;
@@ -734,6 +757,17 @@ impl<'ast> TypeCheckContext<'ast> {
         self.with_fn_def(symbol, |this, def, scope| {
             this.with_scope(scope, |this| f(this, def))
         })
+    }
+
+    fn with_struct_def<T>(
+        &mut self,
+        symbol: Symbol,
+        f: impl FnOnce(&mut Self, DefId, ScopeId) -> T,
+    ) -> Option<T> {
+        self.with_type_def(symbol, |this, def| {
+            this.struct_def_scope(def).map(|scope| f(this, def, scope))
+        })
+        .flatten()
     }
 
     fn with_mod_def<T>(
@@ -1081,10 +1115,13 @@ impl Resolver<'_, '_> {
 
     fn resolve_enum_item(&mut self, ident: &Ident, generics: &Generics, def: &AstEnumDef) {
         let scope = self.new_scope();
+        let generics = self.with_scope(scope, |this| {
+            this.cx.declare_generic_params(&generics.params)
+        });
         let variants = def
             .variants
             .iter()
-            .map(|v| self.resolve_variant_data(ident.symbol, ident.span, &v.data))
+            .map(|v| self.resolve_variant_data(ident.symbol, ident.span, &v.data, generics.clone()))
             .collect::<Vec<_>>();
         let variants = self.with_scope(scope, |this| {
             variants
@@ -1092,12 +1129,22 @@ impl Resolver<'_, '_> {
                 .map(|v| this.cx.declare(v.name, v.span, DefKind::Variant(v)))
                 .collect::<Vec<_>>()
         });
-        let def = EnumDef { variants };
+        let def = EnumDef {
+            variants,
+            generics,
+            scope,
+        };
         self.cx
             .declare(ident.symbol, ident.span, DefKind::Enum(def));
     }
 
-    fn resolve_variant_data(&mut self, name: Symbol, span: Span, data: &VariantData) -> VariantDef {
+    fn resolve_variant_data(
+        &mut self,
+        name: Symbol,
+        span: Span,
+        data: &VariantData,
+        generics: Vec<GenericId>,
+    ) -> VariantDef {
         let ctor_ty = match data {
             VariantData::Struct(_) => None,
             VariantData::Tuple(_) | VariantData::Unit => Some(self.cx.fresh_var_at(Some(span))),
@@ -1108,6 +1155,7 @@ impl Resolver<'_, '_> {
                 span,
                 fields: vec![],
                 ctor_ty,
+                generics,
             },
             VariantData::Tuple(fields) => VariantDef {
                 name,
@@ -1121,6 +1169,7 @@ impl Resolver<'_, '_> {
                     })
                     .collect(),
                 ctor_ty,
+                generics,
             },
             VariantData::Struct(fields) => VariantDef {
                 name,
@@ -1133,15 +1182,22 @@ impl Resolver<'_, '_> {
                     })
                     .collect(),
                 ctor_ty,
+                generics,
             },
         }
     }
 
     fn resolve_struct_item(&mut self, ident: &Ident, generics: &Generics, data: &VariantData) {
-        let variant = self.resolve_variant_data(ident.symbol, ident.span, data);
-        let def = self
-            .cx
-            .declare(ident.symbol, ident.span, DefKind::Struct(variant));
+        let scope = self.new_scope();
+        let generics = self.with_scope(scope, |this| {
+            this.cx.declare_generic_params(&generics.params)
+        });
+        let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics);
+        let def = self.cx.declare(
+            ident.symbol,
+            ident.span,
+            DefKind::Struct(StructDef { variant, scope }),
+        );
         if !matches!(data, VariantData::Struct(_)) {
             let symbol = ident.symbol;
             self.cx
@@ -1366,7 +1422,9 @@ impl SignatureLowerer<'_, '_> {
     }
 
     fn unify_variant_field_tys(&mut self, def: DefId, lowered: &[Option<TyId>]) {
-        let (DefKind::Struct(variant) | DefKind::Variant(variant)) = &self.cx.defs[def].kind else {
+        let (DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant)) =
+            &self.cx.defs[def].kind
+        else {
             return;
         };
         let field_tys: Vec<TyId> = variant.fields.iter().map(|field| field.ty).collect();
@@ -1385,7 +1443,9 @@ impl SignatureLowerer<'_, '_> {
         lowered: &[Option<TyId>],
     ) {
         let placeholder = match &self.cx.defs[def].kind {
-            DefKind::Struct(variant) | DefKind::Variant(variant) => variant.ctor_ty,
+            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
+                variant.ctor_ty
+            }
             _ => None,
         };
         let Some(placeholder) = placeholder else {
@@ -1407,12 +1467,15 @@ impl SignatureLowerer<'_, '_> {
     }
 
     fn lower_struct_item(&mut self, ident: &Ident, data: &VariantData) {
-        let lowered = self.lower_variant_data_field_tys(data);
-        let Some(def) = self.cx.with_type_def(ident.symbol, |_, def| def) else {
+        let Some((def, scope)) = self.cx.with_struct_def(ident.symbol, |_, def, scope| (def, scope))
+        else {
             return;
         };
-        self.unify_variant_field_tys(def, &lowered);
-        self.unify_ctor_ty(def, TyKind::Struct(def), data, &lowered);
+        self.with_scope(scope, |this| {
+            let lowered = this.lower_variant_data_field_tys(data);
+            this.unify_variant_field_tys(def, &lowered);
+            this.unify_ctor_ty(def, TyKind::Struct(def), data, &lowered);
+        });
     }
 
     fn lower_enum_item(&mut self, ident: &Ident, def: &AstEnumDef) {

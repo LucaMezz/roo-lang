@@ -124,15 +124,6 @@ impl<'ast> TypeCheckContext<'ast> {
         });
     }
 
-    /// Replace all generic type parameters of the type of a def with
-    /// fresh inference variables.
-    ///
-    /// See [`Self::instantiate_ty`] for more information. This simply
-    /// calls that but with an empty set of substitutions.
-    fn instantiate(&mut self, def: DefId) -> TyId {
-        self.instantiate_with(def, &[])
-    }
-
     /// Instantiates the given def's type for use at a single call site.
     /// Any `explitit` generic type arguments provided via turbofish first
     /// constrain the fresh inference variable introduced for that generic
@@ -142,10 +133,19 @@ impl<'ast> TypeCheckContext<'ast> {
     /// See [`Self::instantiate_ty`] for more information.
     fn instantiate_with(&mut self, def: DefId, explicit: &[(TyId, Span)]) -> TyId {
         let ty = self.def(def).ty();
-        if self.def(def).generics().is_empty() {
+        let generics = self.def(def).generics().to_vec();
+        if generics.is_empty() {
             return ty;
         }
-        let generics = self.def(def).generics().to_vec();
+        let mut subst = self.build_subst(&generics, explicit);
+        self.instantiate_ty(ty, &mut subst)
+    }
+
+    fn build_subst(
+        &mut self,
+        generics: &[GenericId],
+        explicit: &[(TyId, Span)],
+    ) -> HashMap<GenericId, TyId> {
         let mut subst = HashMap::new();
         generics
             .iter()
@@ -155,7 +155,33 @@ impl<'ast> TypeCheckContext<'ast> {
                 let _ = self.inf.unify_because(var_ty, ty, span);
                 subst.insert(id, var_ty);
             });
-        self.instantiate_ty(ty, &mut subst)
+        subst
+    }
+
+    fn explicit_generic_args(&mut self, path: &Path, generics: &[GenericId]) -> Vec<(TyId, Span)> {
+        let Some(generic_args) = path.segments.last().and_then(|seg| seg.args.as_ref()) else {
+            return Vec::new();
+        };
+
+        let arg_tys: Vec<(TyId, Span)> = generic_args
+            .args
+            .iter()
+            .filter_map(|arg| match arg {
+                GenericArg::Arg(ty) => Some((self.lower_ty(ty), ty.span)),
+                GenericArg::Constraint(_) => None,
+            })
+            .collect();
+
+        let max = generics.len();
+        let actual = arg_tys.len();
+        if actual != max {
+            self.diagnostics.push(GenericArgumentCountMismatch {
+                span: generic_args.span,
+                expected: max,
+                found: actual,
+            });
+        }
+        arg_tys.into_iter().take(max).collect()
     }
 
     /// Instantiates a new ty by substituting all generic type parameters
@@ -187,7 +213,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// the substitution map made of the single substitution `T |-> int`.
     /// This allows us to resolve the type of `add::<int>` to the function
     /// `Fn<int>(int, int) -> int`.
-    fn instantiate_ty(&mut self, ty: TyId, subst: &mut HashMap<GenericId, TyId>) -> TyId {
+    pub(crate) fn instantiate_ty(&mut self, ty: TyId, subst: &mut HashMap<GenericId, TyId>) -> TyId {
         let resolved = self.inf.resolve(ty);
         match self.inf.ty(resolved).cloned() {
             // The ty is just some inference variable `?a`. Nothing to do.
@@ -229,30 +255,27 @@ impl<'ast> TypeCheckContext<'ast> {
     /// the concrete type `int`, giving `identity::<int>` the type
     /// `Fn(int) -> int`.
     pub(crate) fn instantiate_path(&mut self, def: DefId, path: &Path) -> TyId {
-        match path.segments.last().and_then(|seg| seg.args.as_ref()) {
-            Some(generic_args) => {
-                let arg_tys: Vec<(TyId, Span)> = generic_args
-                    .args
-                    .iter()
-                    .filter_map(|arg| match arg {
-                        GenericArg::Arg(ty) => Some((self.lower_ty(ty), ty.span)),
-                        GenericArg::Constraint(_) => None,
-                    })
-                    .collect();
+        let generics = self.def(def).generics().to_vec();
+        let explicit = self.explicit_generic_args(path, &generics);
+        self.instantiate_with(def, &explicit)
+    }
 
-                let max = self.def(def).generics().len();
-                let actual = arg_tys.len();
-                if actual != max {
-                    self.diagnostics.push(GenericArgumentCountMismatch {
-                        span: generic_args.span,
-                        expected: max,
-                        found: actual,
-                    });
-                }
-
-                self.instantiate_with(def, &arg_tys[..actual.min(max)])
-            }
-            None => self.instantiate(def),
+    pub(crate) fn instantiate_struct_fields(
+        &mut self,
+        generics: &[GenericId],
+        path: &Path,
+        field_tys: &[TyId],
+    ) -> Vec<TyId> {
+        if generics.is_empty() {
+            return field_tys.to_vec();
         }
+
+        let explicit = self.explicit_generic_args(path, generics);
+        let mut subst = self.build_subst(generics, &explicit);
+
+        field_tys
+            .iter()
+            .map(|&ty| self.instantiate_ty(ty, &mut subst))
+            .collect()
     }
 }

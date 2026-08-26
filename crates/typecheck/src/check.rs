@@ -235,10 +235,15 @@ impl<'ast> TypeCheckContext<'ast> {
             ));
             return self.ty(TyKind::Err);
         };
-        let declared_fields: Vec<(Symbol, TyId)> =
-            variant.fields.iter().map(|f| (f.name, f.ty)).collect();
+        let generics = variant.generics.clone();
+        let field_names: Vec<Symbol> = variant.fields.iter().map(|f| f.name).collect();
+        let field_tys: Vec<TyId> = variant.fields.iter().map(|f| f.ty).collect();
 
         self.record_path_reference(&expr.path, def);
+
+        let instantiated = self.instantiate_struct_fields(&generics, &expr.path, &field_tys);
+        let declared_fields: Vec<(Symbol, TyId)> =
+            field_names.into_iter().zip(instantiated).collect();
 
         let mut provided_fields = Vec::with_capacity(expr.fields.len());
         for field in &expr.fields {
