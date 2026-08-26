@@ -2,38 +2,41 @@
 //! implementation of polymorphism via generic type parameters.
 //! Specifically, these methods facilitate the generalisation of
 //! free inference variables into generic type parameters for nested
-//! functions, as well as the instantiation of terms which contain
-//! generics by substituting them for concrete terms, or otherwise
+//! functions, as well as the instantiation of tys which contain
+//! generics by substituting them for concrete tys, or otherwise
 //! substituting them for fresh inference variables.
 
 use std::collections::{HashMap, HashSet};
 
 use ast::{GenericArg, Path, Span};
-use unify::{Term, TermId, VarId};
 
 use crate::errors::GenericArgumentCountMismatch;
-use crate::{GenericId, SymbolId, TyCon, TypeCheckContext};
+use crate::inference::{child_tys, map_children};
+use crate::types::TyKind;
+use crate::{GenericId, SymbolId, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
-    /// within the given term.
+    /// within the given ty.
     ///
     /// A type inference variable is considered `free` when it has not
-    /// yet been bound to any term. More precisely, given a term `t`,
+    /// yet been bound to any ty. More precisely, given a ty `t`,
     /// `free_vars(t)` returns the set of inference variables `?a` that
     /// occur in `t` and are not currently bound by the unification
     /// context.
-    fn free_vars(&mut self, term: TermId, out: &mut Vec<VarId>) {
-        let resolved = self.uni_cx.resolve(term);
-        match self.uni_cx.term(resolved).cloned() {
-            Some(Term::Var(v)) => {
+    fn free_vars(&mut self, ty: TyId, out: &mut Vec<VarId>) {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved).cloned() {
+            Some(TyKind::Var(v)) => {
                 let root = self.uni_cx.find(v);
                 if !out.contains(&root) {
                     out.push(root);
                 }
             }
-            Some(Term::App { args, .. }) => {
-                args.into_iter().for_each(|arg| self.free_vars(arg, out));
+            Some(kind) => {
+                child_tys(kind)
+                    .into_iter()
+                    .for_each(|arg| self.free_vars(arg, out));
             }
             None => {}
         }
@@ -102,8 +105,8 @@ impl<'ast> TypeCheckContext<'ast> {
                     let id = self.generic_ids.insert(());
                     let name = self.generic_names.fresh_synthetic(&mut taken);
                     self.generic_names.declare(id, name);
-                    let generic_term = self.term(TyCon::Generic(id));
-                    self.uni_cx.bind(var, generic_term);
+                    let generic_ty = self.ty(TyKind::Generic(id));
+                    self.uni_cx.bind(var, generic_ty);
                     entry.insert(id);
                 }
             });
@@ -122,20 +125,20 @@ impl<'ast> TypeCheckContext<'ast> {
     /// Replace all generic type parameters of the type of a symbol with
     /// fresh inference variables.
     ///
-    /// See [`Self::instantiate_term`] for more information. This simply
+    /// See [`Self::instantiate_ty`] for more information. This simply
     /// calls that but with an empty set of substitutions.
-    fn instantiate(&mut self, symbol: SymbolId) -> TermId {
+    fn instantiate(&mut self, symbol: SymbolId) -> TyId {
         self.instantiate_with(symbol, &[])
     }
 
     /// Instantiates the given symbol's type for use at a single call site.
     /// Any `explitit` generic type arguments provided via turbofish first
     /// constrain the fresh inference variable introduced for that generic
-    /// parameter. instantiate_term will fill in the rest with fresh
+    /// parameter. instantiate_ty will fill in the rest with fresh
     /// inference variables.
     ///
-    /// See [`Self::instantiate_term`] for more information.
-    fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[(TermId, Span)]) -> TermId {
+    /// See [`Self::instantiate_ty`] for more information.
+    fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[(TyId, Span)]) -> TyId {
         let ty = self.symbol(symbol).ty;
         if self.symbol(symbol).generics.is_empty() {
             return ty;
@@ -145,22 +148,22 @@ impl<'ast> TypeCheckContext<'ast> {
         generics
             .iter()
             .zip(explicit)
-            .for_each(|(&id, &(term, span))| {
-                let var_term = self.fresh_var();
-                let _ = self.uni_cx.unify_because(var_term, term, span);
-                subst.insert(id, var_term);
+            .for_each(|(&id, &(ty, span))| {
+                let var_ty = self.fresh_var();
+                let _ = self.uni_cx.unify_because(var_ty, ty, span);
+                subst.insert(id, var_ty);
             });
-        self.instantiate_term(ty, &mut subst)
+        self.instantiate_ty(ty, &mut subst)
     }
 
-    /// Instantiates a new term by substituting all generic type parameters
-    /// which appear in the term with the terms they represent, according
+    /// Instantiates a new ty by substituting all generic type parameters
+    /// which appear in the ty with the tys they represent, according
     /// to the substitution map provided. If there is no substitution specified
     /// for a given generic type parameter, then substitute it with a fresh
     /// inference variable.
     ///
-    /// For example, given `t` as the term `(T, U)`, and the substitution map
-    /// given by `T |-> String` and `U -> int`, it would produce a new term
+    /// For example, given `t` as the ty `(T, U)`, and the substitution map
+    /// given by `T |-> String` and `U -> int`, it would produce a new ty
     /// given by applying the substitutions to `t`, which would be (String, int).
     /// However, if we were only given the first substitution, `T |-> String`,
     /// then `U` would instead be substituted with some new inference variable
@@ -178,32 +181,26 @@ impl<'ast> TypeCheckContext<'ast> {
     /// ```ignore
     /// let _ = add::<int>(first, second);
     /// ```
-    /// Needs to instantiate the term representing `Fn<T>(T, T) -> T` given
+    /// Needs to instantiate the ty representing `Fn<T>(T, T) -> T` given
     /// the substitution map made of the single substitution `T |-> int`.
     /// This allows us to resolve the type of `add::<int>` to the function
     /// `Fn<int>(int, int) -> int`.
-    fn instantiate_term(&mut self, term: TermId, subst: &mut HashMap<GenericId, TermId>) -> TermId {
-        let resolved = self.uni_cx.resolve(term);
-        match self.uni_cx.term(resolved).cloned() {
-            // The term is just some inference variable `?a`. Nothing to do.
-            Some(Term::Var(_)) => resolved,
-            // The term is a generic type parameter `T`. If there is a mapping
-            // `T |-> t` where `t` is some term, then make the substitution,
+    fn instantiate_ty(&mut self, ty: TyId, subst: &mut HashMap<GenericId, TyId>) -> TyId {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved).cloned() {
+            // The ty is just some inference variable `?a`. Nothing to do.
+            Some(TyKind::Var(_)) => resolved,
+            // The ty is a generic type parameter `T`. If there is a mapping
+            // `T |-> t` where `t` is some ty, then make the substitution,
             // otherwise make the substitution `T |-> ?a` where `?a` is a
             // fresh instance variable.
-            Some(Term::App {
-                constructor: TyCon::Generic(id),
-                ..
-            }) => *subst.entry(id).or_insert_with(|| self.fresh_var()),
-            // The term is some arbitrary constructor applied to some arbitrary
+            Some(TyKind::Generic(id)) => *subst.entry(id).or_insert_with(|| self.fresh_var()),
+            // The ty is some arbitrary constructor applied to some arbitrary
             // arguments. So recursively check the arguments for generic
             // type parameters that still need to be substituted.
-            Some(Term::App { constructor, args }) => {
-                let new_args = args
-                    .iter()
-                    .map(|&arg| self.instantiate_term(arg, subst))
-                    .collect();
-                self.term_app(constructor, new_args)
+            Some(kind) => {
+                let mapped = map_children(kind, |arg| self.instantiate_ty(arg, subst));
+                self.ty(mapped)
             }
             None => resolved,
         }
@@ -225,14 +222,14 @@ impl<'ast> TypeCheckContext<'ast> {
     /// let y = 10;
     /// let z = identity::<int>(y);
     /// ```
-    /// Then this function returns a term which represents the type of the
+    /// Then this function returns a ty which represents the type of the
     /// `identity` function such that the type parameter `T` is replaced with
     /// the concrete type `int`, giving `identity::<int>` the type
     /// `Fn(int) -> int`.
-    pub(crate) fn instantiate_path(&mut self, symbol: SymbolId, path: &Path) -> TermId {
+    pub(crate) fn instantiate_path(&mut self, symbol: SymbolId, path: &Path) -> TyId {
         match path.segments.last().and_then(|seg| seg.args.as_ref()) {
             Some(generic_args) => {
-                let arg_tys: Vec<(TermId, Span)> = generic_args
+                let arg_tys: Vec<(TyId, Span)> = generic_args
                     .args
                     .iter()
                     .filter_map(|arg| match arg {

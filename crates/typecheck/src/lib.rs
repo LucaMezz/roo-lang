@@ -13,10 +13,12 @@ use std::collections::HashMap;
 use ast::visit::{Visitor, Walkable};
 use ast::{
     Fn, FnRetTy, FnTy, GenericParam, Ident, Item, ItemKind, ModKind, Path, Span, Trait, Ty,
-    TyAlias, TyKind, UseTree, UseTreeKind, VariantData,
+    TyAlias, TyKind as AstTyKind, UseTree, UseTreeKind, VariantData,
 };
 use slotmap::SlotMap;
-use unify::{TermId, UnificationContext, VarId, term};
+
+use crate::inference::{InferenceTable, TyId, VarId};
+use crate::types::TyKind;
 
 mod call_graph;
 mod check;
@@ -41,92 +43,6 @@ use crate::call_graph::{CallGraph, SCCCollector};
 use crate::errors::{
     AlreadyDefined, AnnotationsNeeded, InvalidGlobTarget, UnresolvedImport, UnresolvedType,
 };
-
-/// The enum containing all the possible constructors which can
-/// appear within terms. Specifically, a `Term` represents a type
-/// which may contain unknowns, i.e. unbound inference variables
-/// like `?a`. A `Term` is defined recursively, as
-///
-/// ```text
-///     t ::= a  |  f(t_1, t_2, ..., t_n)
-/// ```
-///
-/// for some natural n >= 0, where `f` is a constructor, and
-/// t_1,...,t_n are themselves terms. Call t_1,...,t_n the
-/// `arguments`.
-///
-/// For example, the `Term` which represents the `Int` type would
-/// be the [`TyCon::Int`] constructor, applied to zero arguments.
-#[derive(Debug, Clone, PartialEq)]
-enum TyCon {
-    // ===============
-    // Primitive Types
-    // ===============
-    // Always take 0 arguments.
-    //
-    /// The `<error>` type. Used to indicate there has been some
-    /// kind of type error.
-    Err,
-
-    /// The `any` type. Used to opt out of static type checking
-    /// in favour of runtime type checking.
-    Any,
-
-    /// The Never `!` type. Indicates that no value is ever produced.
-    /// Directly equivalent to the Never `!` type from Rust.
-    Never,
-
-    /// The `int` type. An integer value.
-    Int,
-
-    /// The `float` type. A floating point value.
-    Float,
-
-    /// The `bool` type. Either `true` or `false`.
-    Bool,
-
-    /// The `char` type. A character.
-    Char,
-
-    /// The `String` type. A string of characters of arbitrary
-    /// length.
-    Str,
-
-    /// The `Fn` type. Always takes exactly two arguments.
-    /// The first is a Tuple term containing terms representing types
-    /// of all the parameters of the function, and the second being
-    /// a term representing the return type of the function.
-    Fn,
-
-    /// The Array `[T]` type. Always takes exactly one argument,
-    /// which is a term representing the type of the elements
-    /// held by the array.
-    Array,
-
-    /// The Tuple `(T, U, ...)` type. Takes any finite number of
-    /// arguments, where the ith argument is a term representing
-    /// the type of the ith position in the tuple.
-    Tuple,
-
-    /// A Struct. Always takes zero arguments. Note that this
-    /// constructor always referes to some specific named struct.
-    /// This ensures nominal typing. Two structs are only ever
-    /// equal if they are actually the same exact named struct, not
-    /// just if they have the same shape.
-    Struct(SymbolId),
-
-    /// An Enum. Always takes zero arguments. Note that this
-    /// constructor always referes to some specific named enum.
-    /// This ensures nominal typing. Two enums are only ever
-    /// equal if they are actually the same exact named enum, not
-    /// just if they have the same shape.
-    Enum(SymbolId),
-
-    /// A generic type parameter. Always takes zero arguments.
-    /// Two generics are only ever equal if they refer to the
-    /// exact same named generic.
-    Generic(GenericId),
-}
 
 slotmap::new_key_type! {
     /// A handle to a scope stored in the scope arena within
@@ -191,9 +107,9 @@ struct Symbol {
     /// The specific kind of symbol that it is.
     kind: SymbolKind,
 
-    /// The term representing the type associated with this
+    /// The ty representing the type associated with this
     /// symbol.
-    ty: TermId,
+    ty: TyId,
 
     /// The generic parameters associated with this symbol.
     generics: Vec<GenericId>,
@@ -334,11 +250,11 @@ impl NameInterner {
 struct TypeCheckContext<'ast> {
     /// Keeps track of what every inference variable
     /// throughout the entire program is bound to. Facilitates
-    /// O(1) unification of two terms, performing the required
-    /// substitutions to ensure two terms are equal. Also
-    /// stores a [`Span`] with the reason two terms were
+    /// O(1) unification of two tys, performing the required
+    /// substitutions to ensure two tys are equal. Also
+    /// stores a [`Span`] with the reason two tys were
     /// unified.
-    uni_cx: UnificationContext<TyCon, Span>,
+    uni_cx: InferenceTable,
 
     /// Maps all names used throughout the type checking
     /// process to unique name IDs to improve performance.
@@ -406,7 +322,7 @@ impl<'ast> TypeCheckContext<'ast> {
         });
 
         Self {
-            uni_cx: UnificationContext::with_wildcards(vec![TyCon::Any, TyCon::Err, TyCon::Never]),
+            uni_cx: InferenceTable::new(),
 
             names: NameInterner::new(),
             scopes,
@@ -464,33 +380,29 @@ impl<'ast> TypeCheckContext<'ast> {
         self.positions.type_name_at(offset)
     }
 
-    fn fresh_var_at(&mut self, span: Option<Span>) -> TermId {
+    fn fresh_var_at(&mut self, span: Option<Span>) -> TyId {
         let var = self.uni_cx.fresh_var();
-        let term = self.term_var(var);
+        let ty = self.ty_var(var);
         if let Some(span) = span {
             self.inference_vars.push((var, span));
         }
-        term
+        ty
     }
 
-    fn fresh_var(&mut self) -> TermId {
+    fn fresh_var(&mut self) -> TyId {
         self.fresh_var_at(None)
     }
 
-    fn or_fresh_var(&mut self, term: Option<TermId>) -> TermId {
-        term.unwrap_or_else(|| self.fresh_var())
+    fn or_fresh_var(&mut self, ty: Option<TyId>) -> TyId {
+        ty.unwrap_or_else(|| self.fresh_var())
     }
 
-    fn term(&mut self, con: TyCon) -> TermId {
-        term!(self.uni_cx, con)
+    fn ty(&mut self, kind: TyKind) -> TyId {
+        self.uni_cx.insert_ty(kind)
     }
 
-    fn term_app(&mut self, con: TyCon, args: Vec<TermId>) -> TermId {
-        term!(self.uni_cx, con => args)
-    }
-
-    fn term_var(&mut self, id: VarId) -> TermId {
-        term!(self.uni_cx, var id)
+    fn ty_var(&mut self, id: VarId) -> TyId {
+        self.ty(TyKind::Var(id))
     }
 
     /// Performs the resolution stage of the type checking.
@@ -528,7 +440,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// symbol.
     ///
     /// This stage uses information in the AST about types of
-    /// the symbols and lowers those types into Terms. It does
+    /// the symbols and lowers those types into tys. It does
     /// this for all applicable kinds of items.
     ///
     /// For example, say one of the items is a function
@@ -539,7 +451,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// ```
     /// In the previous resolution stage, a new [`Symbol`] of
     /// kind [`SymbolKind::Fn`] would have been created inside
-    /// the symbol table. Now, a new `Term` is created for the
+    /// the symbol table. Now, a new `ty` is created for the
     /// type of this `add_int` function, based on the type
     /// annotations in the signature only. So the [`Symbol`]
     /// will now have type `Fn<T>(T, int) -> ?a`. The return
@@ -562,7 +474,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// left out).
     ///
     /// This stage performs type checking and inference on
-    /// the body of all functions. It also unifies the term
+    /// the body of all functions. It also unifies the ty
     /// representing the type of the function that was created
     /// in the previous `lower_signatures` stage.
     ///
@@ -589,7 +501,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// matches the return type of the function `apply`.
     ///
     /// So we `unify(?c, ?b)` which means that both these
-    /// inference variables must bind to the same term.
+    /// inference variables must bind to the same ty.
     /// Suppose the representative is ?b. Then the inferred
     /// type of the function at this point is
     /// `Fn( Fn(int) -> ?b ) -> ?b`.
@@ -894,7 +806,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let name = self.names.id(param_name);
         let id = self.generic_ids.insert(());
         self.generic_names.declare(id, param_name.to_owned());
-        let ty = self.term(TyCon::Generic(id));
+        let ty = self.ty(TyKind::Generic(id));
         let symbol = self.symbols.insert(Symbol {
             name,
             kind: SymbolKind::GenericParam,
@@ -935,64 +847,63 @@ impl<'ast> TypeCheckContext<'ast> {
         self.insert_in_scope(name, symbol, Namespace::Value);
     }
 
-    /// Convert a [`Ty`] AST node into a Term which represents
+    /// Convert a [`Ty`] AST node into a ty which represents
     /// that type and which can actually be used by the type
     /// checker to perform checking and inference.
-    fn lower_ty(&mut self, ty: &Ty) -> TermId {
+    fn lower_ty(&mut self, ty: &Ty) -> TyId {
         match &ty.kind {
-            TyKind::Never => self.term(TyCon::Never),
-            TyKind::Paren(inner) => self.lower_ty(inner),
-            TyKind::Array(inner) => self.lower_array_ty(inner),
-            TyKind::Tup(inner) => self.lower_tup_ty(inner),
-            TyKind::Fn(fn_ty) => self.lower_fn_ty(fn_ty, ty.span),
-            TyKind::Path(path) => self.lower_path_ty(path),
-            TyKind::ImplicitSelf => self.lower_implicit_self_ty(),
+            AstTyKind::Never => self.ty(TyKind::Never),
+            AstTyKind::Paren(inner) => self.lower_ty(inner),
+            AstTyKind::Array(inner) => self.lower_array_ty(inner),
+            AstTyKind::Tup(inner) => self.lower_tup_ty(inner),
+            AstTyKind::Fn(fn_ty) => self.lower_fn_ty(fn_ty, ty.span),
+            AstTyKind::Path(path) => self.lower_path_ty(path),
+            AstTyKind::ImplicitSelf => self.lower_implicit_self_ty(),
             // When `_` is used as a type annotation, it means
             // the type should be inferred. Hence, introduce
             // a fresh inference variable `?a` to represent
             // this type.
-            TyKind::Infer => self.fresh_var_at(Some(ty.span)),
-            TyKind::Err => self.term(TyCon::Err),
+            AstTyKind::Infer => self.fresh_var_at(Some(ty.span)),
+            AstTyKind::Err => self.ty(TyKind::Err),
         }
     }
 
-    fn lower_array_ty(&mut self, inner: &Ty) -> TermId {
+    fn lower_array_ty(&mut self, inner: &Ty) -> TyId {
         let elem = self.lower_ty(inner);
-        self.term_app(TyCon::Array, vec![elem])
+        self.ty(TyKind::Array(elem))
     }
 
-    fn lower_tup_ty(&mut self, inner: &[Box<Ty>]) -> TermId {
+    fn lower_tup_ty(&mut self, inner: &[Box<Ty>]) -> TyId {
         let args = inner.iter().map(|x| self.lower_ty(x)).collect();
-        self.term_app(TyCon::Tuple, args)
+        self.ty(TyKind::Tuple(args))
     }
 
-    fn lower_fn_ty(&mut self, fn_ty: &FnTy, span: Span) -> TermId {
+    fn lower_fn_ty(&mut self, fn_ty: &FnTy, span: Span) -> TyId {
         let FnTy { inputs, output } = fn_ty;
         let input_args = inputs.iter().map(|x| self.lower_ty(x)).collect();
-        let inputs_term = self.term_app(TyCon::Tuple, input_args);
-        let output_term = self.lower_ret_ty(output, Some(span));
-        self.term_app(TyCon::Fn, vec![inputs_term, output_term])
+        let output_ty = self.lower_ret_ty(output, Some(span));
+        self.ty(TyKind::Fn(input_args, output_ty))
     }
 
-    fn lower_ret_ty(&mut self, output: &FnRetTy, default_span: Option<Span>) -> TermId {
+    fn lower_ret_ty(&mut self, output: &FnRetTy, default_span: Option<Span>) -> TyId {
         match output {
             FnRetTy::Default(_) => self.fresh_var_at(default_span),
             FnRetTy::Ty(ty) => self.lower_ty(ty),
         }
     }
 
-    fn lower_implicit_self_ty(&mut self) -> TermId {
+    fn lower_implicit_self_ty(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn lower_path_ty(&mut self, path: &Path) -> TermId {
+    fn lower_path_ty(&mut self, path: &Path) -> TyId {
         if let [segment] = path.segments.as_slice() {
             let found = PRIMITIVE_TYPES
                 .iter()
                 .find(|(name, _)| segment.ident.name == *name);
             if let Some((name, con)) = found {
                 self.positions.record_primitive(segment.ident.span, name);
-                return self.term(con.clone());
+                return self.ty(con.clone());
             }
         }
 
@@ -1000,26 +911,26 @@ impl<'ast> TypeCheckContext<'ast> {
             .map(|symbol| {
                 self.record_path_reference(path, symbol);
                 match &self.symbol(symbol).kind {
-                    SymbolKind::Struct => self.term(TyCon::Struct(symbol)),
-                    SymbolKind::Enum => self.term(TyCon::Enum(symbol)),
+                    SymbolKind::Struct => self.ty(TyKind::Struct(symbol)),
+                    SymbolKind::Enum => self.ty(TyKind::Enum(symbol)),
                     _ => self.instantiate_path(symbol, path),
                 }
             })
             .unwrap_or_else(|| {
                 self.diagnostics
                     .push(UnresolvedType::new(path.span, display_path(path)));
-                self.term(TyCon::Err)
+                self.ty(TyKind::Err)
             })
     }
 }
 
-const PRIMITIVE_TYPES: &[(&str, TyCon)] = &[
-    ("bool", TyCon::Bool),
-    ("int", TyCon::Int),
-    ("float", TyCon::Float),
-    ("char", TyCon::Char),
-    ("String", TyCon::Str),
-    ("any", TyCon::Any),
+const PRIMITIVE_TYPES: &[(&str, TyKind)] = &[
+    ("bool", TyKind::Bool),
+    ("int", TyKind::Int),
+    ("float", TyKind::Float),
+    ("char", TyKind::Char),
+    ("String", TyKind::Str),
+    ("any", TyKind::Any),
 ];
 
 /// The AST Visitor that performs the Resolution stage of the
@@ -1169,10 +1080,10 @@ impl SignatureLowerer<'_, '_> {
         self.cx.current_scope = parent;
     }
 
-    /// Creates a term representing the type of a function
+    /// Creates a ty representing the type of a function
     /// based on the explicit type annotations within its
     /// signature.
-    fn lower_fn_sig(&mut self, f: &Fn) -> TermId {
+    fn lower_fn_sig(&mut self, f: &Fn) -> TyId {
         let inputs = f
             .sig
             .inputs
@@ -1182,9 +1093,8 @@ impl SignatureLowerer<'_, '_> {
                 None => self.cx.fresh_var(),
             })
             .collect();
-        let inputs_term = self.cx.term_app(TyCon::Tuple, inputs);
-        let output_term = self.cx.lower_ret_ty(&f.sig.output, None);
-        self.cx.term_app(TyCon::Fn, vec![inputs_term, output_term])
+        let output_ty = self.cx.lower_ret_ty(&f.sig.output, None);
+        self.cx.ty(TyKind::Fn(inputs, output_ty))
     }
 }
 
@@ -1199,12 +1109,12 @@ impl SignatureLowerer<'_, '_> {
         };
 
         self.with_scope(scope, |this| {
-            let fn_term = this.lower_fn_sig(f);
+            let fn_ty = this.lower_fn_sig(f);
             let symbol_ty = this.cx.symbol(symbol).ty;
             // Unifies the fresh placeholder inference variable which
             // was created during the previous Resolution stage with the
-            // term created by lowering the function signature.
-            let _ = this.cx.uni_cx.unify(symbol_ty, fn_term);
+            // ty created by lowering the function signature.
+            let _ = this.cx.uni_cx.unify(symbol_ty, fn_ty);
 
             // Collect information about parameter names and spans.
             if let SymbolKind::Fn(fn_data) = &mut this.cx.symbols[symbol].kind {
@@ -1329,7 +1239,7 @@ impl SignatureLowerer<'_, '_> {
                 let symbol_ty = this.cx.symbol(symbol).ty;
                 // Unifies the fresh placeholder inference variable which
                 // was created during the previous Resolution stage with the
-                // term created by lowering the type of the expression being
+                // ty created by lowering the type of the expression being
                 // aliased. A type alias can never refer to itself, directly
                 // or indirectly (e.g. `type Foo = (Foo, int);`), since that
                 // would make it an infinitely-sized type.

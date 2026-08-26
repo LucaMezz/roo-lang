@@ -3,14 +3,14 @@ use ast::{
     Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind,
 };
 use diagnostics::Related;
-use unify::{Term, UnifyError};
 
 use crate::errors::{
     ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, UnresolvedValue,
     expected_because_of, expected_due_to, generic_note, provenance,
 };
-use crate::types::Type;
-use crate::{PatDeclKind, SymbolId, SymbolKind, TermId, TyCon, TypeCheckContext, display_path};
+use crate::inference::UnifyError;
+use crate::types::{TyKind, Type};
+use crate::{PatDeclKind, SymbolId, SymbolKind, TyId, TypeCheckContext, display_path};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -51,38 +51,32 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    /// Returns a handle to a Term representing the type of an Expr
-    /// node from the AST, with the added constraint that the term
-    /// *must* be equal to an expected Term, if one is provided.
+    /// Returns a handle to a ty representing the type of an Expr
+    /// node from the AST, with the added constraint that the ty
+    /// *must* be equal to an expected ty, if one is provided.
     ///
     /// This method is simply a wrapper of
     /// [`Self::check_expr_expecting`]. See for more info.
-    pub(crate) fn check_expr(&mut self, expr: &Expr, expected: Option<TermId>) -> TermId {
+    pub(crate) fn check_expr(&mut self, expr: &Expr, expected: Option<TyId>) -> TyId {
         self.check_expr_expecting(expr, expected, None)
     }
 
     /// Returns the name of a generic parameter, if such a generic
     /// parameter exists.
-    fn generic_name_of(&mut self, term: TermId) -> Option<String> {
-        let resolved = self.uni_cx.resolve(term);
-        match self.uni_cx.term(resolved)? {
-            Term::App {
-                constructor: TyCon::Generic(id),
-                ..
-            } => self.generic_names.get(id).cloned(),
+    fn generic_name_of(&mut self, ty: TyId) -> Option<String> {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved)? {
+            TyKind::Generic(id) => self.generic_names.get(id).cloned(),
             _ => None,
         }
     }
 
-    fn first_provenance(
-        &mut self,
-        candidates: &[(TermId, &'static str, &Type)],
-    ) -> Option<Related> {
-        for &(term, side, kind) in candidates {
-            let Some(Term::Var(v)) = self.uni_cx.term(term).cloned() else {
+    fn first_provenance(&mut self, candidates: &[(TyId, &'static str, &Type)]) -> Option<Related> {
+        for &(ty, side, kind) in candidates {
+            let Some(TyKind::Var(v)) = self.uni_cx.ty(ty).cloned() else {
                 continue;
             };
-            if let Some(&span) = self.uni_cx.provenance(v) {
+            if let Some(span) = self.uni_cx.provenance(v) {
                 return Some(provenance(span, side, kind));
             }
         }
@@ -92,9 +86,9 @@ impl<'ast> TypeCheckContext<'ast> {
     fn check_expr_expecting(
         &mut self,
         expr: &Expr,
-        expected: Option<TermId>,
+        expected: Option<TyId>,
         expected_span: Option<Span>,
-    ) -> TermId {
+    ) -> TyId {
         let actual = self.check_expr_kind(&expr.kind, expected);
         // Record locations of primitive types in expressions.
         // Useful for LSP.
@@ -124,18 +118,18 @@ impl<'ast> TypeCheckContext<'ast> {
                 .expected_due_to(expected_span.map(expected_due_to))
                 .generic_on_expected(generic_on_expected)
                 .generic_on_found(generic_on_found);
-            if let Err(err_term) =
+            if let Err(err_ty) =
                 self.unify_reporting_mismatch(expected, actual, expr.span, reason, extras)
             {
-                return err_term;
+                return err_ty;
             }
         }
         actual
     }
 
-    fn check_expr_kind(&mut self, kind: &ExprKind, expected: Option<TermId>) -> TermId {
+    fn check_expr_kind(&mut self, kind: &ExprKind, expected: Option<TyId>) -> TyId {
         match kind {
-            ExprKind::Err => self.term(TyCon::Err),
+            ExprKind::Err => self.ty(TyKind::Err),
             ExprKind::Lit(lit) => self.check_lit_expr(lit),
             ExprKind::Paren(expr) => self.check_expr(expr, expected),
             ExprKind::If(cond, body, els) => self.check_if_expr(cond, body, els, expected),
@@ -168,91 +162,91 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_method_call_expr(&mut self) -> TermId {
+    fn check_method_call_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_binary_expr(&mut self) -> TermId {
+    fn check_binary_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_unary_expr(&mut self) -> TermId {
+    fn check_unary_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_let_expr(&mut self) -> TermId {
+    fn check_let_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_while_expr(&mut self) -> TermId {
+    fn check_while_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_for_loop_expr(&mut self) -> TermId {
+    fn check_for_loop_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_loop_expr(&mut self) -> TermId {
+    fn check_loop_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_match_expr(&mut self) -> TermId {
+    fn check_match_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_closure_expr(&mut self) -> TermId {
+    fn check_closure_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_assign_op_expr(&mut self) -> TermId {
+    fn check_assign_op_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_field_expr(&mut self) -> TermId {
+    fn check_field_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_index_expr(&mut self) -> TermId {
+    fn check_index_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_range_expr(&mut self) -> TermId {
+    fn check_range_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_underscore_expr(&mut self) -> TermId {
+    fn check_underscore_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_break_expr(&mut self) -> TermId {
+    fn check_break_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_continue_expr(&mut self) -> TermId {
+    fn check_continue_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_struct_expr(&mut self) -> TermId {
+    fn check_struct_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_try_expr(&mut self) -> TermId {
+    fn check_try_expr(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_lit_expr(&mut self, lit: &Lit) -> TermId {
+    fn check_lit_expr(&mut self, lit: &Lit) -> TyId {
         match lit.kind {
-            LitKind::Bool(_) => self.term(TyCon::Bool),
-            LitKind::Char(_) => self.term(TyCon::Char),
-            LitKind::Int(_) => self.term(TyCon::Int),
-            LitKind::Float(_) => self.term(TyCon::Float),
-            LitKind::Str(_) => self.term(TyCon::Str),
+            LitKind::Bool(_) => self.ty(TyKind::Bool),
+            LitKind::Char(_) => self.ty(TyKind::Char),
+            LitKind::Int(_) => self.ty(TyKind::Int),
+            LitKind::Float(_) => self.ty(TyKind::Float),
+            LitKind::Str(_) => self.ty(TyKind::Str),
         }
     }
 
-    fn check_tup_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TermId>) -> TermId {
-        let expected_args = expected
-            .and_then(|expected| self.resolved_app_with_arity(expected, TyCon::Tuple, exprs.len()));
+    fn check_tup_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TyId>) -> TyId {
+        let expected_args =
+            expected.and_then(|expected| self.resolved_tuple_with_arity(expected, exprs.len()));
 
         let args = exprs
             .iter()
@@ -263,17 +257,17 @@ impl<'ast> TypeCheckContext<'ast> {
             })
             .collect();
 
-        self.term_app(TyCon::Tuple, args)
+        self.ty(TyKind::Tuple(args))
     }
 
-    fn check_ret_expr(&mut self, expr: &Option<Box<Expr>>) -> TermId {
+    fn check_ret_expr(&mut self, expr: &Option<Box<Expr>>) -> TyId {
         if let Some(expr) = expr {
             self.check_expr(expr, None);
         }
-        self.term(TyCon::Never)
+        self.ty(TyKind::Never)
     }
 
-    fn check_path_expr(&mut self, qself: &Option<Box<QSelf>>, path: &Path) -> TermId {
+    fn check_path_expr(&mut self, qself: &Option<Box<QSelf>>, path: &Path) -> TyId {
         if qself.is_some() {
             unimplemented!();
         }
@@ -287,14 +281,12 @@ impl<'ast> TypeCheckContext<'ast> {
             .unwrap_or_else(|| {
                 self.diagnostics
                     .push(UnresolvedValue::new(path.span, display_path(path)));
-                self.term(TyCon::Err)
+                self.ty(TyKind::Err)
             })
     }
 
-    fn check_array_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TermId>) -> TermId {
-        let expected_ty = expected
-            .and_then(|expected| self.resolved_app_with_arity(expected, TyCon::Array, 1))
-            .map(|args| args[0]);
+    fn check_array_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TyId>) -> TyId {
+        let expected_ty = expected.and_then(|expected| self.resolved_array(expected));
 
         let elem_ty = exprs
             .split_first()
@@ -307,15 +299,15 @@ impl<'ast> TypeCheckContext<'ast> {
             })
             .unwrap_or_else(|| self.or_fresh_var(expected_ty));
 
-        self.term_app(TyCon::Array, vec![elem_ty])
+        self.ty(TyKind::Array(elem_ty))
     }
 
-    fn check_assign_expr(&mut self, lhs: &Expr, rhs: &Expr) -> TermId {
+    fn check_assign_expr(&mut self, lhs: &Expr, rhs: &Expr) -> TyId {
         let lhs = self.check_expr(lhs, None);
 
         self.check_expr(rhs, Some(lhs));
 
-        self.term(TyCon::Tuple)
+        self.ty(TyKind::Tuple(Vec::new()))
     }
 
     fn check_if_expr(
@@ -323,18 +315,18 @@ impl<'ast> TypeCheckContext<'ast> {
         cond: &Expr,
         body: &Block,
         els: &Option<Box<Expr>>,
-        expected: Option<TermId>,
-    ) -> TermId {
-        let bool_term = self.term(TyCon::Bool);
-        self.check_expr(cond, Some(bool_term));
+        expected: Option<TyId>,
+    ) -> TyId {
+        let bool_ty = self.ty(TyKind::Bool);
+        self.check_expr(cond, Some(bool_ty));
 
         let body_ty = self.check_block(body, expected);
 
-        let unit_term = self.term(TyCon::Tuple);
+        let unit_ty = self.ty(TyKind::Tuple(Vec::new()));
         let els_ty = els
             .as_ref()
             .map(|els| self.check_expr(els, expected))
-            .unwrap_or(unit_term);
+            .unwrap_or(unit_ty);
 
         let body_span = Self::block_value_span(body);
         let els_span = match els.as_deref() {
@@ -353,8 +345,8 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn check_if_branches_agree(
         &mut self,
-        body_ty: TermId,
-        els_ty: TermId,
+        body_ty: TyId,
+        els_ty: TyId,
         body_span: Span,
         els_span: Span,
         has_els: bool,
@@ -364,32 +356,35 @@ impl<'ast> TypeCheckContext<'ast> {
         let _ = self.unify_reporting_mismatch(body_ty, els_ty, els_span, body_span, extras);
     }
 
-    fn resolved_app(&mut self, term: TermId, con: TyCon) -> Option<Vec<TermId>> {
-        let resolved = self.uni_cx.resolve(term);
-        match self.uni_cx.term(resolved) {
-            Some(Term::App { constructor, args }) if *constructor == con => Some(args.clone()),
+    fn resolved_array(&mut self, ty: TyId) -> Option<TyId> {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved) {
+            Some(&TyKind::Array(elem)) => Some(elem),
             _ => None,
         }
     }
 
-    fn resolved_app_with_arity(
-        &mut self,
-        term: TermId,
-        con: TyCon,
-        arity: usize,
-    ) -> Option<Vec<TermId>> {
-        self.resolved_app(term, con)
-            .filter(|args| args.len() == arity)
+    fn resolved_tuple(&mut self, ty: TyId) -> Option<Vec<TyId>> {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved) {
+            Some(TyKind::Tuple(args)) => Some(args.clone()),
+            _ => None,
+        }
     }
 
-    fn resolved_fn_parts(&mut self, term: TermId) -> Option<(Vec<TermId>, TermId)> {
-        let fn_args = self.resolved_app(term, TyCon::Fn)?;
-        let output_term = fn_args[1];
-        let input_tys = self.resolved_app(fn_args[0], TyCon::Tuple)?;
-        Some((input_tys, output_term))
+    fn resolved_tuple_with_arity(&mut self, ty: TyId, arity: usize) -> Option<Vec<TyId>> {
+        self.resolved_tuple(ty).filter(|args| args.len() == arity)
     }
 
-    pub(crate) fn unify_or_report_cycle(&mut self, expected: TermId, found: TermId, span: Span) {
+    fn resolved_fn_parts(&mut self, ty: TyId) -> Option<(Vec<TyId>, TyId)> {
+        let resolved = self.uni_cx.resolve(ty);
+        match self.uni_cx.ty(resolved) {
+            Some(TyKind::Fn(params, ret)) => Some((params.clone(), *ret)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unify_or_report_cycle(&mut self, expected: TyId, found: TyId, span: Span) {
         if let Err(UnifyError::OccursCheck(_)) = self.uni_cx.unify_because(expected, found, span) {
             let expected_ty = self.resolved(expected);
             let found_ty = self.resolved(found);
@@ -400,12 +395,12 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn unify_reporting_mismatch(
         &mut self,
-        expected: TermId,
-        found: TermId,
+        expected: TyId,
+        found: TyId,
         span: Span,
         reason: Span,
         extras: TypeMismatchExtras,
-    ) -> Result<(), TermId> {
+    ) -> Result<(), TyId> {
         let Err(err) = self.uni_cx.unify_because(expected, found, reason) else {
             return Ok(());
         };
@@ -453,10 +448,10 @@ impl<'ast> TypeCheckContext<'ast> {
                 });
             }
         }
-        Err(self.term(TyCon::Err))
+        Err(self.ty(TyKind::Err))
     }
 
-    fn check_call_expr(&mut self, callee: &Expr, args: &[Box<Expr>]) -> TermId {
+    fn check_call_expr(&mut self, callee: &Expr, args: &[Box<Expr>]) -> TyId {
         let callee_ty = self.check_expr(callee, None);
 
         let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
@@ -471,7 +466,7 @@ impl<'ast> TypeCheckContext<'ast> {
         };
 
         let resolved_callee = self.uni_cx.resolve(callee_ty);
-        if let Some((input_tys, output_term)) = self.resolved_fn_parts(callee_ty) {
+        if let Some((input_tys, output_ty)) = self.resolved_fn_parts(callee_ty) {
             let expected = input_tys.len();
             let actual = args.len();
             if expected != actual {
@@ -507,14 +502,13 @@ impl<'ast> TypeCheckContext<'ast> {
                 self.check_expr_expecting(arg, expected_ty, expected_span);
             });
 
-            output_term
-        } else if matches!(self.uni_cx.term(resolved_callee), None | Some(Term::Var(_))) {
+            output_ty
+        } else if matches!(self.uni_cx.ty(resolved_callee), None | Some(TyKind::Var(_))) {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
-            let inputs_term = self.term_app(TyCon::Tuple, arg_tys);
-            let ret_term = self.fresh_var();
-            let fn_term = self.term_app(TyCon::Fn, vec![inputs_term, ret_term]);
-            self.unify_or_report_cycle(fn_term, callee_ty, callee.span);
-            ret_term
+            let ret_ty = self.fresh_var();
+            let fn_ty = self.ty(TyKind::Fn(arg_tys, ret_ty));
+            self.unify_or_report_cycle(fn_ty, callee_ty, callee.span);
+            ret_ty
         } else {
             let found = self.resolved(callee_ty);
             self.diagnostics.push(NotCallable {
@@ -526,21 +520,21 @@ impl<'ast> TypeCheckContext<'ast> {
                 self.check_expr(arg, None);
             });
 
-            self.term(TyCon::Err)
+            self.ty(TyKind::Err)
         }
     }
 
-    pub(crate) fn check_block(&mut self, block: &Block, expected: Option<TermId>) -> TermId {
+    pub(crate) fn check_block(&mut self, block: &Block, expected: Option<TyId>) -> TyId {
         self.check_block_expecting(block, expected, None)
     }
 
     fn check_block_expecting(
         &mut self,
         block: &Block,
-        expected: Option<TermId>,
+        expected: Option<TyId>,
         expected_span: Option<Span>,
-    ) -> TermId {
-        let mut ty = self.term(TyCon::Tuple);
+    ) -> TyId {
+        let mut ty = self.ty(TyKind::Tuple(Vec::new()));
         let mut diverges = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
             let is_last = i == block.stmts.len() - 1;
@@ -561,22 +555,12 @@ impl<'ast> TypeCheckContext<'ast> {
                 StmtKind::Item(_) | StmtKind::Empty => {}
             }
         }
-        if diverges {
-            self.term(TyCon::Never)
-        } else {
-            ty
-        }
+        if diverges { self.ty(TyKind::Never) } else { ty }
     }
 
-    fn is_never(&mut self, term: TermId) -> bool {
-        let resolved = self.uni_cx.resolve(term);
-        matches!(
-            self.uni_cx.term(resolved),
-            Some(Term::App {
-                constructor: TyCon::Never,
-                ..
-            })
-        )
+    fn is_never(&mut self, ty: TyId) -> bool {
+        let resolved = self.uni_cx.resolve(ty);
+        matches!(self.uni_cx.ty(resolved), Some(TyKind::Never))
     }
 
     pub(crate) fn check_local(&mut self, local: &Local) {
@@ -603,27 +587,17 @@ impl<'ast> TypeCheckContext<'ast> {
         self.check_pat(&local.pat, expected, PatDeclKind::Let);
     }
 
-    fn prefer_non_never(&mut self, a: TermId, b: TermId) -> TermId {
+    fn prefer_non_never(&mut self, a: TyId, b: TyId) -> TyId {
         if self.is_never(a) { b } else { a }
     }
 
-    pub(crate) fn check_pat(
-        &mut self,
-        pat: &Pat,
-        expected: TermId,
-        decl_kind: PatDeclKind,
-    ) -> TermId {
+    pub(crate) fn check_pat(&mut self, pat: &Pat, expected: TyId, decl_kind: PatDeclKind) -> TyId {
         let actual = self.check_pat_kind(&pat.kind, expected, decl_kind);
         let _ = self.uni_cx.unify_because(actual, expected, pat.span);
         actual
     }
 
-    fn check_pat_kind(
-        &mut self,
-        kind: &PatKind,
-        expected: TermId,
-        decl_kind: PatDeclKind,
-    ) -> TermId {
+    fn check_pat_kind(&mut self, kind: &PatKind, expected: TyId, decl_kind: PatDeclKind) -> TyId {
         match kind {
             PatKind::Wild => expected,
             PatKind::Rest => expected,
@@ -647,9 +621,9 @@ impl<'ast> TypeCheckContext<'ast> {
         &mut self,
         ident: &Ident,
         sub: &Option<Box<Pat>>,
-        expected: TermId,
+        expected: TyId,
         decl_kind: PatDeclKind,
-    ) -> TermId {
+    ) -> TyId {
         let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
         let _ = self
             .uni_cx
@@ -662,13 +636,8 @@ impl<'ast> TypeCheckContext<'ast> {
         expected
     }
 
-    fn check_tuple_pat(
-        &mut self,
-        pats: &[Pat],
-        expected: TermId,
-        decl_kind: PatDeclKind,
-    ) -> TermId {
-        let expected_args = self.resolved_app_with_arity(expected, TyCon::Tuple, pats.len());
+    fn check_tuple_pat(&mut self, pats: &[Pat], expected: TyId, decl_kind: PatDeclKind) -> TyId {
+        let expected_args = self.resolved_tuple_with_arity(expected, pats.len());
 
         let args = pats
             .iter()
@@ -679,50 +648,50 @@ impl<'ast> TypeCheckContext<'ast> {
             })
             .collect();
 
-        self.term_app(TyCon::Tuple, args)
+        self.ty(TyKind::Tuple(args))
     }
 
-    fn check_missing_pat(&mut self) -> TermId {
+    fn check_missing_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_struct_pat(&mut self) -> TermId {
+    fn check_struct_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_tuple_struct_pat(&mut self) -> TermId {
+    fn check_tuple_struct_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_or_pat(&mut self) -> TermId {
+    fn check_or_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_path_pat(&mut self) -> TermId {
+    fn check_path_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_expr_pat(&mut self) -> TermId {
+    fn check_expr_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_range_pat(&mut self) -> TermId {
+    fn check_range_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_array_pat(&mut self) -> TermId {
+    fn check_array_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_never_pat(&mut self) -> TermId {
+    fn check_never_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_paren_pat(&mut self) -> TermId {
+    fn check_paren_pat(&mut self) -> TyId {
         unimplemented!()
     }
 
-    fn check_err_pat(&mut self) -> TermId {
+    fn check_err_pat(&mut self) -> TyId {
         unimplemented!()
     }
 }
@@ -822,7 +791,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let body = f.body.as_ref()?;
 
         let symbol_ty = self.symbol(symbol).ty;
-        let (input_tys, output_term) = self.resolved_fn_parts(symbol_ty)?;
+        let (input_tys, output_ty) = self.resolved_fn_parts(symbol_ty)?;
 
         self.sccc.enter(symbol);
         let parent_fn = self.current_fn;
@@ -842,7 +811,7 @@ impl<'ast> TypeCheckContext<'ast> {
                 FnRetTy::Default(span) => *span,
                 FnRetTy::Ty(ty) => ty.span,
             };
-            this.check_block_expecting(body, Some(output_term), Some(output_span));
+            this.check_block_expecting(body, Some(output_ty), Some(output_span));
 
             this.check_nested_functions(nested_items(body), symbol);
         });

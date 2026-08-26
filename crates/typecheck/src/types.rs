@@ -1,20 +1,19 @@
 //! Defines the [`Type`] enum, representing a type in the final
 //! result of the type checking process. This enum is also
-//! responsible for lowering from the terms used internally
+//! responsible for lowering from the tys used internally
 //! throughout the entire type checking process, to the final
 //! Type variants.
 
-use ast::{Pat, PatKind, Span};
+use ast::{Pat, PatKind};
 use slotmap::SlotMap;
-use unify::{Term, UnificationContext};
 
 use crate::generic_names::GenericNames;
-use crate::inference::{TyId as InferTyId, VarId as InferVarId};
-use crate::{GenericId, NameInterner, Symbol, SymbolId, TermId, TyCon, TypeCheckContext};
+use crate::inference::{InferenceTable, TyId, VarId};
+use crate::{GenericId, NameInterner, Symbol, SymbolId, TypeCheckContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
-    Var(InferVarId),
+    Var(VarId),
     Any,
     Never,
     Int,
@@ -23,9 +22,9 @@ pub(crate) enum TyKind {
     Char,
     Str,
     Err,
-    Array(InferTyId),
-    Tuple(Vec<InferTyId>),
-    Fn(Vec<InferTyId>, InferTyId),
+    Array(TyId),
+    Tuple(Vec<TyId>),
+    Fn(Vec<TyId>, TyId),
     Struct(SymbolId),
     Enum(SymbolId),
     Generic(GenericId),
@@ -44,27 +43,27 @@ pub(crate) fn pat_display_name(pat: &Pat) -> String {
 
 impl<'ast> TypeCheckContext<'ast> {
     // Produces a final completely resolved type from an intermediate
-    // term. This is done once the entirety of the type checking
+    // ty. This is done once the entirety of the type checking
     // process is completed.
-    pub(crate) fn resolved(&mut self, term: TermId) -> Type {
+    pub(crate) fn resolved(&mut self, ty: TyId) -> Type {
         resolve_type(
             &mut self.uni_cx,
             &self.symbols,
             &self.names,
             &self.generic_names,
-            term,
+            ty,
         )
     }
 }
 
 /// A fully resolved type.
 ///
-/// The entire type checking process operates on `Term`s which are only
-/// used internally. `Term` is the live, mutable representation that
+/// The entire type checking process operates on `ty`s which are only
+/// used internally. `ty` is the live, mutable representation that
 /// checking and inference actually works with, and only makes sense
-/// in terms of a `UnificationContext`.
+/// in tys of a `UnificationContext`.
 ///
-/// internal `Term`s are first lowered to `Types` once the checking
+/// internal `ty`s are first lowered to `Types` once the checking
 /// process is complete.
 #[derive(Debug, Clone)]
 pub(crate) enum Type {
@@ -117,8 +116,8 @@ impl diagnostics::ToArgValue for Type {
     }
 }
 
-/// Converts an intermediate `Term` used throughout type checking
-/// into a fully-resolved `Type`. This essentially freezes the Term,
+/// Converts an intermediate `ty` used throughout type checking
+/// into a fully-resolved `Type`. This essentially freezes the ty,
 /// replacing any still unbound inference variables with
 /// [`Type::Unresolved`].
 ///
@@ -126,59 +125,48 @@ impl diagnostics::ToArgValue for Type {
 /// its own without needing to have access to names, symbols,
 /// generics, or the unification context.
 pub(crate) fn resolve_type(
-    uni_cx: &mut UnificationContext<TyCon, Span>,
+    uni_cx: &mut InferenceTable,
     symbols: &SlotMap<SymbolId, Symbol>,
     names: &NameInterner,
     generic_names: &GenericNames,
-    term: TermId,
+    ty: TyId,
 ) -> Type {
-    let resolved = uni_cx.resolve(term);
-    let Some(term) = uni_cx.term(resolved).cloned() else {
+    let resolved = uni_cx.resolve(ty);
+    let Some(kind) = uni_cx.ty(resolved).cloned() else {
         return Type::Unresolved;
     };
-    let (constructor, args) = match term {
-        Term::Var(_) => return Type::Unresolved,
-        Term::App { constructor, args } => (constructor, args),
-    };
 
-    match constructor {
-        TyCon::Any => Type::Any,
-        TyCon::Never => Type::Never,
-        TyCon::Int => Type::Int,
-        TyCon::Float => Type::Float,
-        TyCon::Bool => Type::Bool,
-        TyCon::Char => Type::Char,
-        TyCon::Str => Type::Str,
-        TyCon::Err => Type::Err,
-        TyCon::Array => Type::Array(Box::new(resolve_type(
+    match kind {
+        TyKind::Var(_) => Type::Unresolved,
+        TyKind::Any => Type::Any,
+        TyKind::Never => Type::Never,
+        TyKind::Int => Type::Int,
+        TyKind::Float => Type::Float,
+        TyKind::Bool => Type::Bool,
+        TyKind::Char => Type::Char,
+        TyKind::Str => Type::Str,
+        TyKind::Err => Type::Err,
+        TyKind::Array(elem) => Type::Array(Box::new(resolve_type(
             uni_cx,
             symbols,
             names,
             generic_names,
-            args[0],
+            elem,
         ))),
-        TyCon::Tuple => Type::Tuple(
+        TyKind::Tuple(args) => Type::Tuple(
             args.iter()
                 .map(|&arg| resolve_type(uni_cx, symbols, names, generic_names, arg))
                 .collect(),
         ),
-        TyCon::Fn => {
-            let resolved_inputs = uni_cx.resolve(args[0]);
-            let param_types: Vec<TermId> = match uni_cx.term(resolved_inputs).cloned() {
-                Some(Term::App {
-                    constructor: TyCon::Tuple,
-                    args,
-                }) => args,
-                _ => Vec::new(),
-            };
-            let params = param_types
+        TyKind::Fn(params, output) => {
+            let params = params
                 .iter()
                 .map(|&arg| resolve_type(uni_cx, symbols, names, generic_names, arg))
                 .collect();
-            let output = Box::new(resolve_type(uni_cx, symbols, names, generic_names, args[1]));
+            let output = Box::new(resolve_type(uni_cx, symbols, names, generic_names, output));
             Type::Fn(params, output)
         }
-        TyCon::Struct(symbol) | TyCon::Enum(symbol) => {
+        TyKind::Struct(symbol) | TyKind::Enum(symbol) => {
             let name = symbols[symbol].name;
             let text = names
                 .name(name)
@@ -186,7 +174,7 @@ pub(crate) fn resolve_type(
                 .unwrap_or_else(|| "<unknown>".to_owned());
             Type::Named(text)
         }
-        TyCon::Generic(id) => {
+        TyKind::Generic(id) => {
             let text = generic_names
                 .get(&id)
                 .cloned()

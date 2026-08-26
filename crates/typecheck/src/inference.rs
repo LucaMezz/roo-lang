@@ -1,3 +1,4 @@
+//! Facilitates the creation and unification of tys
 use ast::Span;
 use slotmap::SlotMap;
 use union_find::{QuickUnionUf, Union, UnionFind, UnionResult};
@@ -5,11 +6,20 @@ use union_find::{QuickUnionUf, Union, UnionFind, UnionResult};
 use crate::types::TyKind;
 
 slotmap::new_key_type! {
+    /// A handle to a ty
     pub(crate) struct TyId;
 
+    /// A handle to an inference variable.
     pub(crate) struct VarId;
 }
 
+/// Represents the binding of an inference variable `?a`.
+///
+/// An inference variable `?a` can either be bound to Some
+/// ty `t`, in which case the [`Binding`] contains the
+/// id of the ty that it is bound to. Otherwise, if the
+/// inference variable is free, then this binding will
+/// contain `None`.
 #[derive(Clone, Copy, Default)]
 struct Binding(Option<TyId>);
 
@@ -22,23 +32,46 @@ impl Union for Binding {
     }
 }
 
+/// Documents a reason for why a variable was bound to
+/// a specific ty.
 struct ProvenanceEntry {
+    /// The id of the inference variable that this entry
+    /// corresponds to.
     var: VarId,
+
+    /// The reason for why the variable was bound.
     reason: Span,
 }
 
+/// Stores everything needed to keep track of all inference
+/// variables and tys in some context, and perform
+/// unifications on them.
 pub(crate) struct InferenceTable {
-    terms: SlotMap<TyId, TyKind>,
+    /// A generational arena containing all of the tys in
+    /// this context.
+    tys: SlotMap<TyId, TyKind>,
+
+    /// A generational arena containing all of the inference
+    /// variables within this context.
     var_slots: SlotMap<VarId, usize>,
+
+    /// A mapping from union_find key to variable id
     uf_key_to_var: Vec<VarId>,
+
+    /// A UnionFind data structure containing all of the
+    /// bindings of inference variables. Facilitates
+    /// efficient unification.
     bindings: QuickUnionUf<Binding>,
+
+    /// Stores all provinence entries recorded.
     provenance: Vec<ProvenanceEntry>,
 }
 
 impl InferenceTable {
+    /// Creates a new empty [`InferenceTable`].
     pub(crate) fn new() -> Self {
         Self {
-            terms: SlotMap::with_key(),
+            tys: SlotMap::with_key(),
             var_slots: SlotMap::with_key(),
             uf_key_to_var: Vec::new(),
             bindings: QuickUnionUf::new(0),
@@ -46,14 +79,19 @@ impl InferenceTable {
         }
     }
 
-    pub(crate) fn insert_term(&mut self, kind: TyKind) -> TyId {
-        self.terms.insert(kind)
+    /// Inserts a new ty into this [`InferenceTable`]
+    pub(crate) fn insert_ty(&mut self, kind: TyKind) -> TyId {
+        self.tys.insert(kind)
     }
 
-    pub(crate) fn term(&self, id: TyId) -> Option<&TyKind> {
-        self.terms.get(id)
+    /// Gets a reference to the ty with the given id,
+    /// if it exists.
+    pub(crate) fn ty(&self, id: TyId) -> Option<&TyKind> {
+        self.tys.get(id)
     }
 
+    /// Creates a new free inference variable, and returns
+    /// its id.
     pub(crate) fn fresh_var(&mut self) -> VarId {
         let uf_key = self.bindings.insert(Binding(None));
         let var = self.var_slots.insert(uf_key);
@@ -62,30 +100,49 @@ impl InferenceTable {
         var
     }
 
+    /// Gets the id of the representative of the equivalence
+    /// class of the variable with the given id.
+    ///
+    /// If many inference variables are bound to the same
+    /// ty, this method will consistently return the
+    /// same inference variable among that group, for a
+    /// certain state.
+    ///
+    /// This corresponds to the representative / root node
+    /// within the underlying union-find data structure.
     pub(crate) fn find(&mut self, var: VarId) -> VarId {
         let uf_key = self.var_slots[var];
         let root_key = self.bindings.find(uf_key);
         self.uf_key_to_var[root_key]
     }
 
+    /// Returns the id of the ty that a given inference
+    /// variable is bound to, if it is not unbound.
     pub(crate) fn binding(&mut self, var: VarId) -> Option<TyId> {
         let uf_key = self.var_slots[var];
         self.bindings.get(uf_key).0
     }
 
-    pub(crate) fn bind(&mut self, var: VarId, term: TyId) -> Option<TyId> {
+    /// Binds an inference variable to a ty. Gives back
+    /// the ty that it was bound to.
+    pub(crate) fn bind(&mut self, var: VarId, ty: TyId) -> Option<TyId> {
         let uf_key = self.var_slots[var];
-        std::mem::replace(self.bindings.get_mut(uf_key), Binding(Some(term))).0
+        std::mem::replace(self.bindings.get_mut(uf_key), Binding(Some(ty))).0
     }
 
+    /// Unions two variables.
     pub(crate) fn union_vars(&mut self, a: VarId, b: VarId) -> bool {
         let ka = self.var_slots[a];
         let kb = self.var_slots[b];
         self.bindings.union(ka, kb)
     }
 
+    /// Resolves a ty. Recursively resolve tys which are
+    /// just inference variables with no constructor, until
+    /// it arrives at the ty which is actually represented
+    /// by the given ty.
     pub(crate) fn resolve(&mut self, id: TyId) -> TyId {
-        match self.term(id).expect("valid TyId") {
+        match self.ty(id).expect("valid TyId") {
             TyKind::Var(v) => {
                 let v = *v;
                 match self.binding(v) {
@@ -97,21 +154,42 @@ impl InferenceTable {
         }
     }
 
+    /// Performs the 'occurs check' for the inference
+    /// variable `v` in the given ty. Recursively checks if
+    /// the given ty contains the inference variable `v`
+    /// anywhere within it.
     fn occurs(&mut self, v: VarId, id: TyId) -> bool {
         let id = self.resolve(id);
-        let kind = self.term(id).expect("valid TyId").clone();
+        let kind = self.ty(id).expect("valid TyId").clone();
         match kind {
             TyKind::Var(v2) => self.find(v) == self.find(v2),
-            other => child_terms(&other)
-                .into_iter()
-                .any(|arg| self.occurs(v, arg)),
+            other => child_tys(other).into_iter().any(|arg| self.occurs(v, arg)),
         }
     }
 
+    /// Unify two tys.
+    ///
+    /// This forces the two tys to be equal to one another.
+    /// If this is not possible, or if doing so would require
+    /// an infinite cyclic type, then an error is raised.
+    ///
+    /// Unification of two tys `t_1` and `t_2` essentially
+    /// produces a set of substitions `S` which replace
+    /// inference variables within the tys `t_1` and `t_2`
+    /// with tys, such that applying all substitutions
+    /// results in both tys being equal.
+    ///
+    /// If S contains the substitution `?a |-> t`, then the
+    /// inference variable `?a` will be bound to the ty
+    /// `t`.
     pub(crate) fn unify(&mut self, t1: TyId, t2: TyId) -> Result<(), UnifyError> {
         self.unify_impl(t1, t2, None)
     }
 
+    /// Performs unification given a reason.
+    ///
+    /// See [`Self::unify`] for more information about the
+    /// unify operation.
     pub(crate) fn unify_because(
         &mut self,
         t1: TyId,
@@ -121,17 +199,12 @@ impl InferenceTable {
         self.unify_impl(t1, t2, Some(reason))
     }
 
-    fn unify_impl(
-        &mut self,
-        t1: TyId,
-        t2: TyId,
-        reason: Option<Span>,
-    ) -> Result<(), UnifyError> {
+    fn unify_impl(&mut self, t1: TyId, t2: TyId, reason: Option<Span>) -> Result<(), UnifyError> {
         let resolved_t1 = self.resolve(t1);
         let resolved_t2 = self.resolve(t2);
 
-        let kind1 = self.term(resolved_t1).expect("valid TyId").clone();
-        let kind2 = self.term(resolved_t2).expect("valid TyId").clone();
+        let kind1 = self.ty(resolved_t1).expect("valid TyId").clone();
+        let kind2 = self.ty(resolved_t2).expect("valid TyId").clone();
 
         match (kind1, kind2) {
             (TyKind::Var(v1), TyKind::Var(v2)) => {
@@ -218,9 +291,15 @@ impl InferenceTable {
         self.provenance.push(ProvenanceEntry { var, reason });
     }
 
+    /// Retrieves the most recent recorded provenance related
+    /// to the type variable provided.
     pub(crate) fn provenance(&mut self, var: VarId) -> Option<Span> {
+        // Get the representative of the set.
         let target = self.find(var);
         let mut found = None;
+        // Search backwards through the provenance list to
+        // find the most recent entry which has the same
+        // representative as the `var` provided.
         for i in (0..self.provenance.len()).rev() {
             let entry_var = self.provenance[i].var;
             if self.find(entry_var) == target {
@@ -242,7 +321,7 @@ fn is_wildcard(kind: &TyKind) -> bool {
     matches!(kind, TyKind::Any | TyKind::Err | TyKind::Never)
 }
 
-fn child_terms(kind: &TyKind) -> Vec<TyId> {
+pub(crate) fn child_tys(kind: TyKind) -> Vec<TyId> {
     match kind {
         TyKind::Var(_)
         | TyKind::Any
@@ -256,32 +335,93 @@ fn child_terms(kind: &TyKind) -> Vec<TyId> {
         | TyKind::Struct(_)
         | TyKind::Enum(_)
         | TyKind::Generic(_) => Vec::new(),
-        TyKind::Array(elem) => vec![*elem],
-        TyKind::Tuple(elems) => elems.clone(),
-        TyKind::Fn(params, ret) => {
-            let mut all = params.clone();
-            all.push(*ret);
-            all
+        TyKind::Array(elem) => vec![elem],
+        TyKind::Tuple(elems) => elems,
+        TyKind::Fn(mut params, ret) => {
+            params.push(ret);
+            params
         }
     }
 }
 
+pub(crate) fn map_children(kind: TyKind, mut f: impl FnMut(TyId) -> TyId) -> TyKind {
+    match kind {
+        TyKind::Array(elem) => TyKind::Array(f(elem)),
+        TyKind::Tuple(args) => TyKind::Tuple(args.into_iter().map(&mut f).collect()),
+        TyKind::Fn(params, ret) => {
+            let params = params.into_iter().map(&mut f).collect();
+            let ret = f(ret);
+            TyKind::Fn(params, ret)
+        }
+        other => other,
+    }
+}
+
+/// An error that is produced when the unification of two
+/// tys fails. This means there is no set `S` of
+/// substitutions of inference variables with tys that
+/// can be made in order to make two tys `t_1` and `t_2`
+/// equal.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UnifyError {
+    /// Somewhere at corresponding points within the two
+    /// tys `t_1` and `t_2`, there are two constructors
+    /// which differ. e.g.
+    ///
+    /// ```text
+    /// ...f(...)... != ...g(...)...
+    /// ```
+    ///
     #[error("constructor mismatch: {k1:?} != {k2:?}")]
     ConstructorMismatch {
+        /// Ty ID of the first ty
         t1: TyId,
+
+        /// Kind being applied in the first ty
         k1: TyKind,
+
+        /// Ty ID of the second ty
         t2: TyId,
+
+        /// Kind being applied in the second ty
         k2: TyKind,
     },
+    /// Somewhere at corresponding points within the two
+    /// tys `t_1` and `t_2`, there are two constructors
+    /// which have a differing number of arguments. e.g.
+    ///
+    /// ```text
+    /// ...f(t_1, t_2, ..., t_n)... != ...g(t_1, t2, ..., t_m)...
+    /// ```
+    //
+    /// where n != m
+    ///
     #[error("arity mismatch: {arity1} args vs {arity2} args")]
     ArityMismatch {
+        /// Ty ID of the first ty
         t1: TyId,
+
+        /// The arity of the first ty
         arity1: usize,
+
+        /// Ty ID of the second ty
         t2: TyId,
+
+        /// The arity of the second ty
         arity2: usize,
     },
+    /// At some point within the ty, if there is just
+    /// an inference variable `?a` on one side and an
+    /// application of a constructor on the other, then
+    /// if anywhere in the arguments of that application,
+    /// the same inference variable `?a` appears, then
+    /// only an infinite cyclical type can work, which
+    /// is not possible in practice. e.g.
+    ///
+    /// ```text
+    /// ...f(t_1, ..., ?a, ..., t_n)... != ...?a...
+    /// ```
+    ///
     #[error("occurs check failed for {0:?}")]
     OccursCheck(VarId),
 }

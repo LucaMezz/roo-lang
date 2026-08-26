@@ -3,7 +3,6 @@ use std::ops::Range;
 
 use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
-use unify::Term;
 
 fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
@@ -99,16 +98,9 @@ fn local(source: &str) -> Local {
     *local
 }
 
-fn resolved_args(cx: &mut TypeCheckContext<'_>, term: TermId) -> Option<(TyCon, Vec<TermId>)> {
-    let resolved = cx.uni_cx.resolve(term);
-    match cx.uni_cx.term(resolved) {
-        Some(Term::App { constructor, args }) => Some((constructor.clone(), args.clone())),
-        _ => None,
-    }
-}
-
-fn resolved_con(cx: &mut TypeCheckContext<'_>, term: TermId) -> Option<TyCon> {
-    resolved_args(cx, term).map(|(con, _)| con)
+fn resolved_kind(cx: &mut TypeCheckContext<'_>, ty: TyId) -> Option<TyKind> {
+    let resolved = cx.uni_cx.resolve(ty);
+    cx.uni_cx.ty(resolved).cloned()
 }
 
 fn declared_symbol(
@@ -221,32 +213,33 @@ fn resolve_path_module_segment_is_looked_up_by_namespace_not_by_name_alone() {
 fn lower_ty_never() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("!"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_paren_unwraps_to_the_inner_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("(!)"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_array_wraps_the_element_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("[!]"));
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Array);
-    assert_eq!(args.len(), 1);
-    assert_eq!(resolved_con(&mut cx, args[0]), Some(TyCon::Never));
+    let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
+        panic!("should be an Array ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, elem), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_tup_builds_one_arg_per_element() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("(!, !)"));
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Tuple);
+    let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
+        panic!("should be a Tuple ty");
+    };
     assert_eq!(args.len(), 2);
 }
 
@@ -254,28 +247,29 @@ fn lower_ty_tup_builds_one_arg_per_element() {
 fn lower_ty_unit_is_a_zero_arg_tuple() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("()"));
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Tuple);
-    assert!(args.is_empty());
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn lower_ty_fn_with_explicit_return_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("Fn(!) -> !"));
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Fn);
-    assert_eq!(args.len(), 2);
-    assert_eq!(resolved_con(&mut cx, args[1]), Some(TyCon::Never));
+    let Some(TyKind::Fn(params, ret)) = resolved_kind(&mut cx, t) else {
+        panic!("should be a Fn ty");
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_fn_with_no_return_type_defaults_to_a_fresh_unbound_var() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("Fn(!)"));
-    let (_, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    let resolved = cx.uni_cx.resolve(args[1]);
-    assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
+    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, t) else {
+        panic!("should be a Fn ty");
+    };
+    let resolved = cx.uni_cx.resolve(ret);
+    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -283,34 +277,34 @@ fn lower_ty_infer_produces_a_fresh_unbound_var() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("_"));
     let resolved = cx.uni_cx.resolve(t);
-    assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
+    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
 fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
     let mut cx = TypeCheckContext::new();
     let err_ty = Ty {
-        kind: TyKind::Err,
+        kind: AstTyKind::Err,
         span: ast::Span { start: 0, end: 0 },
     };
-    let err_term = cx.lower_ty(&err_ty);
-    let int_term = cx.term(TyCon::Int);
-    assert!(cx.uni_cx.unify(err_term, int_term).is_ok());
+    let err_ty = cx.lower_ty(&err_ty);
+    let int_ty = cx.ty(TyKind::Int);
+    assert!(cx.uni_cx.unify(err_ty, int_ty).is_ok());
 }
 
 #[test]
 fn lower_ty_path_resolves_primitive_names() {
     let cases = [
-        ("bool", TyCon::Bool),
-        ("int", TyCon::Int),
-        ("float", TyCon::Float),
-        ("char", TyCon::Char),
-        ("String", TyCon::Str),
+        ("bool", TyKind::Bool),
+        ("int", TyKind::Int),
+        ("float", TyKind::Float),
+        ("char", TyKind::Char),
+        ("String", TyKind::Str),
     ];
     for (src, expected) in cases {
         let mut cx = TypeCheckContext::new();
         let t = cx.lower_ty(&ty(src));
-        assert_eq!(resolved_con(&mut cx, t), Some(expected), "input: {src}");
+        assert_eq!(resolved_kind(&mut cx, t), Some(expected), "input: {src}");
     }
 }
 
@@ -322,7 +316,7 @@ fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
         .expect("Foo should resolve");
 
     let t = cx.lower_ty(&ty("Foo"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Struct(symbol)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(symbol)));
 }
 
 #[test]
@@ -333,14 +327,14 @@ fn lower_ty_path_resolves_a_declared_enum_by_nominal_identity() {
         .expect("Foo should resolve");
 
     let t = cx.lower_ty(&ty("Foo"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Enum(symbol)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Enum(symbol)));
 }
 
 #[test]
 fn lower_ty_path_to_an_undeclared_name_is_err() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("DoesNotExist"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Err));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
 }
 
 #[test]
@@ -351,51 +345,51 @@ fn lower_ty_path_walks_through_a_module() {
         .expect("m::Foo should resolve");
 
     let t = cx.lower_ty(&ty("m::Foo"));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Struct(symbol)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(symbol)));
 }
 
 #[test]
 fn check_expr_bool_literal() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("true"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Bool));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
     let t = cx.check_expr(&expr("false"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Bool));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
 }
 
 #[test]
 fn check_expr_int_literal() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("5"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_expr_float_literal() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("5.0"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Float));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
 fn check_expr_str_literal() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("\"hi\""), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Str));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Str));
 }
 
 #[test]
 fn check_expr_char_literal() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("'a'"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Char));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Char));
 }
 
 #[test]
 fn check_expr_paren_has_the_inner_exprs_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("(5)"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
@@ -406,9 +400,9 @@ fn check_expr_err_is_a_wildcard() {
         kind: ExprKind::Err,
         span: ast::Span { start: 0, end: 0 },
     };
-    let bool_term = cx.term(TyCon::Bool);
-    let t = cx.check_expr(&err_expr, Some(bool_term));
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Err));
+    let bool_ty = cx.ty(TyKind::Bool);
+    let t = cx.check_expr(&err_expr, Some(bool_ty));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
 }
 
 #[test]
@@ -419,40 +413,44 @@ fn check_expr_unifies_the_result_against_the_expected_type() {
         .expect("foo should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
 
-    let never_term = cx.term(TyCon::Never);
-    cx.check_expr(&expr("foo"), Some(never_term));
+    let never_ty = cx.ty(TyKind::Never);
+    cx.check_expr(&expr("foo"), Some(never_ty));
 
-    assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
 }
 
 #[test]
 fn check_expr_tup_elements_keep_independent_types() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("(1, \"hi\")"), None);
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Tuple);
-    assert_eq!(resolved_con(&mut cx, args[0]), Some(TyCon::Int));
-    assert_eq!(resolved_con(&mut cx, args[1]), Some(TyCon::Str));
+    let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
+        panic!("should be a Tuple ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, args[0]), Some(TyKind::Int));
+    assert_eq!(resolved_kind(&mut cx, args[1]), Some(TyKind::Str));
 }
 
 #[test]
 fn check_expr_array_elements_are_unified_with_each_other() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("[1, 2, 3]"), None);
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Array);
-    assert_eq!(resolved_con(&mut cx, args[0]), Some(TyCon::Int));
+    let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
+        panic!("should be an Array ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, elem), Some(TyKind::Int));
 }
 
 #[test]
 fn check_expr_empty_array_uses_the_expected_element_type() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    let array_of_never = cx.term_app(TyCon::Array, vec![never_term]);
+    let never_ty = cx.ty(TyKind::Never);
+    let array_of_never = cx.ty(TyKind::Array(never_ty));
 
     let t = cx.check_expr(&expr("[]"), Some(array_of_never));
-    let (_, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(resolved_con(&mut cx, args[0]), Some(TyCon::Never));
+    let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
+        panic!("should be an Array ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, elem), Some(TyKind::Never));
 }
 
 #[test]
@@ -471,14 +469,14 @@ fn check_expr_path_resolves_to_the_symbols_type() {
 fn check_expr_path_to_an_undeclared_name_is_err() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("doesNotExist"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Err));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
 }
 
 #[test]
 fn check_expr_cast_lowers_the_target_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("5 as float"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Float));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
@@ -491,8 +489,10 @@ fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
 
     cx.check_expr(&expr("foo()"), None);
 
-    let (con, _) = resolved_args(&mut cx, symbol_ty).expect("should be an App term");
-    assert_eq!(con, TyCon::Fn);
+    assert!(matches!(
+        resolved_kind(&mut cx, symbol_ty),
+        Some(TyKind::Fn(..))
+    ));
 }
 
 #[test]
@@ -505,9 +505,10 @@ fn check_expr_call_checks_arguments_against_the_signature() {
         .expect("foo should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
 
-    let (_, fn_args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    let (_, input_args) = resolved_args(&mut cx, fn_args[0]).expect("should be a Tuple term");
-    assert_eq!(resolved_con(&mut cx, input_args[0]), Some(TyCon::Int));
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should be a Fn ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
 }
 
 #[test]
@@ -698,120 +699,120 @@ fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
     let mut cx = resolve("fn foo() {}");
     let t = cx.check_expr(&expr("foo()"), None);
     let resolved = cx.uni_cx.resolve(t);
-    assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
+    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
 fn check_expr_ret_with_no_value_is_never() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("return"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn check_expr_ret_with_a_value_is_still_never_not_the_values_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("return 5"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn never_is_a_wildcard_that_unifies_with_anything() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    let int_term = cx.term(TyCon::Int);
-    assert!(cx.uni_cx.unify(never_term, int_term).is_ok());
+    let never_ty = cx.ty(TyKind::Never);
+    let int_ty = cx.ty(TyKind::Int);
+    assert!(cx.uni_cx.unify(never_ty, int_ty).is_ok());
 }
 
 #[test]
 fn if_with_no_else_and_a_unit_then_branch_is_unit_typed() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Tuple));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn if_branches_are_unified_together() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { 1 } else { 2 }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_prefers_the_else_branchs_type_when_the_then_branch_diverges() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { return } else { 5 }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { 5 } else { return }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_is_never_when_both_branches_diverge() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { return } else { return }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges_via_a_semicolon() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_expr(&expr("if true { 5 } else { return 0; }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_empty_is_unit() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{}"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Tuple));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn check_block_trailing_expr_with_no_semicolon_is_its_type() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{ 5 }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_trailing_expr_with_a_semicolon_does_not_count() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{ 5; }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Tuple));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
-fn check_block_a_semicolon_terminated_return_makes_the_block_never() {
+fn check_block_a_semicolon_tyinated_return_makes_the_block_never() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{ return 0; }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn check_block_a_non_trailing_let_declares_a_symbol_visible_to_later_statements() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{ let x = 5; x }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_a_non_trailing_lets_ascription_propagates_to_a_later_reference() {
     let mut cx = TypeCheckContext::new();
     let t = cx.check_block(&block("{ let x: float; let y = x; y }"), None);
-    assert_eq!(resolved_con(&mut cx, t), Some(TyCon::Float));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
 fn check_pat_ident_declares_a_local_symbol() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
+    let never_ty = cx.ty(TyKind::Never);
+    cx.check_pat(&pat("x"), never_ty, PatDeclKind::Let);
 
     assert!(lookup(&cx, cx.current_scope, Namespace::Value, "x"));
 }
@@ -819,30 +820,30 @@ fn check_pat_ident_declares_a_local_symbol() {
 #[test]
 fn check_pat_ident_binds_the_locals_type_to_expected() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    cx.check_pat(&pat("x"), never_term, PatDeclKind::Let);
+    let never_ty = cx.ty(TyKind::Never);
+    cx.check_pat(&pat("x"), never_ty, PatDeclKind::Let);
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
     let symbol_ty = cx.symbol(symbol).ty;
-    assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
 }
 
 #[test]
 fn check_pat_wild_matches_anything_and_binds_nothing() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    let t = cx.check_pat(&pat("_"), never_term, PatDeclKind::Let);
-    assert_eq!(t, never_term);
+    let never_ty = cx.ty(TyKind::Never);
+    let t = cx.check_pat(&pat("_"), never_ty, PatDeclKind::Let);
+    assert_eq!(t, never_ty);
     assert!(cx.symbols.is_empty());
 }
 
 #[test]
 fn check_pat_tuple_declares_one_local_per_position() {
     let mut cx = TypeCheckContext::new();
-    let never_term = cx.term(TyCon::Never);
-    let int_term = cx.term(TyCon::Int);
-    let expected = cx.term_app(TyCon::Tuple, vec![never_term, int_term]);
+    let never_ty = cx.ty(TyKind::Never);
+    let int_ty = cx.ty(TyKind::Int);
+    let expected = cx.ty(TyKind::Tuple(vec![never_ty, int_ty]));
 
     cx.check_pat(&pat("(a, b)"), expected, PatDeclKind::Let);
 
@@ -852,17 +853,18 @@ fn check_pat_tuple_declares_one_local_per_position() {
         .expect("b should be declared");
     let a_ty = cx.symbol(a).ty;
     let b_ty = cx.symbol(b).ty;
-    assert_eq!(resolved_con(&mut cx, a_ty), Some(TyCon::Never));
-    assert_eq!(resolved_con(&mut cx, b_ty), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, a_ty), Some(TyKind::Never));
+    assert_eq!(resolved_kind(&mut cx, b_ty), Some(TyKind::Int));
 }
 
 #[test]
 fn check_pat_tuple_with_no_matching_expected_shape_uses_fresh_vars_per_position() {
     let mut cx = TypeCheckContext::new();
-    let int_term = cx.term(TyCon::Int);
-    let t = cx.check_pat(&pat("(a, b)"), int_term, PatDeclKind::Let);
-    let (con, args) = resolved_args(&mut cx, t).expect("should be an App term");
-    assert_eq!(con, TyCon::Tuple);
+    let int_ty = cx.ty(TyKind::Int);
+    let t = cx.check_pat(&pat("(a, b)"), int_ty, PatDeclKind::Let);
+    let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
+        panic!("should be a Tuple ty");
+    };
     assert_eq!(args.len(), 2);
 }
 
@@ -874,7 +876,7 @@ fn check_local_declares_the_pattern_with_the_initializers_type() {
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
     let symbol_ty = cx.symbol(symbol).ty;
-    assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
 }
 
 #[test]
@@ -885,7 +887,7 @@ fn check_local_with_no_initializer_uses_the_ascription() {
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
     let symbol_ty = cx.symbol(symbol).ty;
-    assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Never));
+    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
 }
 
 #[test]
@@ -898,8 +900,10 @@ fn check_local_ascription_constrains_the_initializer() {
     cx.check_local(&local("let x: ! = foo();"));
 
     let symbol_ty = cx.symbol(symbol).ty;
-    let (_, fn_args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    assert_eq!(resolved_con(&mut cx, fn_args[1]), Some(TyCon::Never));
+    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should be a Fn ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Never));
 }
 
 #[test]
@@ -910,12 +914,12 @@ fn lower_signatures_fn_with_typed_params_and_return() {
         .expect("add should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
 
-    let (con, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    assert_eq!(con, TyCon::Fn);
-    let (_, input_args) = resolved_args(&mut cx, args[0]).expect("should be a Tuple term");
-    assert_eq!(resolved_con(&mut cx, input_args[0]), Some(TyCon::Int));
-    assert_eq!(resolved_con(&mut cx, input_args[1]), Some(TyCon::Int));
-    assert_eq!(resolved_con(&mut cx, args[1]), Some(TyCon::Float));
+    let Some(TyKind::Fn(input_args, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should be a Fn ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
+    assert_eq!(resolved_kind(&mut cx, input_args[1]), Some(TyKind::Int));
+    assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Float));
 }
 
 #[test]
@@ -926,9 +930,11 @@ fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
         .expect("foo should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
 
-    let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    let resolved = cx.uni_cx.resolve(args[1]);
-    assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
+    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should be a Fn ty");
+    };
+    let resolved = cx.uni_cx.resolve(ret);
+    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -939,10 +945,11 @@ fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
         .expect("foo should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
 
-    let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    let (_, input_args) = resolved_args(&mut cx, args[0]).expect("should be a Tuple term");
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should be a Fn ty");
+    };
     let resolved = cx.uni_cx.resolve(input_args[0]);
-    assert!(matches!(cx.uni_cx.term(resolved), Some(Term::Var(_))));
+    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -952,7 +959,7 @@ fn lower_signatures_ty_alias() {
         .resolve_path_to_type(&path(&["MyInt"]))
         .expect("MyInt should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
-    assert_eq!(resolved_con(&mut cx, symbol_ty), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
 }
 
 #[test]
@@ -966,8 +973,10 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
     let symbol = declared_symbol(&cx, body_scope, Namespace::Value, "inner")
         .expect("inner should be declared");
     let symbol_ty = cx.symbol(symbol).ty;
-    let (con, _) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    assert_eq!(con, TyCon::Fn);
+    assert!(matches!(
+        resolved_kind(&mut cx, symbol_ty),
+        Some(TyKind::Fn(..))
+    ));
 }
 
 #[test]
@@ -984,8 +993,10 @@ fn lower_signatures_recurses_into_a_mod() {
     let symbol =
         declared_symbol(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
     let symbol_ty = cx.symbol(symbol).ty;
-    let (con, _) = resolved_args(&mut cx, symbol_ty).expect("should be a Fn term");
-    assert_eq!(con, TyCon::Fn);
+    assert!(matches!(
+        resolved_kind(&mut cx, symbol_ty),
+        Some(TyKind::Fn(..))
+    ));
 }
 
 #[test]
@@ -1056,9 +1067,10 @@ fn lower_signatures_makes_the_declared_signature_authoritative() {
 
     cx.check_expr(&expr("foo(\"wrong\")"), None);
 
-    let (_, args) = resolved_args(&mut cx, symbol_ty).expect("should still be a Fn term");
-    let (_, input_args) = resolved_args(&mut cx, args[0]).expect("should still be a Tuple term");
-    assert_eq!(resolved_con(&mut cx, input_args[0]), Some(TyCon::Int));
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+        panic!("should still be a Fn ty");
+    };
+    assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
 }
 
 fn check_all(source: &str) -> TypeCheckContext<'static> {
@@ -1100,7 +1112,7 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
 }
 
 struct Renderer<'a> {
-    uni_cx: &'a mut UnificationContext<TyCon, Span>,
+    uni_cx: &'a mut InferenceTable,
     symbols: &'a SlotMap<SymbolId, Symbol>,
     names: &'a NameInterner,
     generic_names: &'a GenericNames,
@@ -1126,99 +1138,102 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl Renderer<'_> {
-    fn render_term(&mut self, term: TermId) -> String {
+    fn render_ty(&mut self, ty: TyId) -> String {
         let mut buf = String::new();
-        self.render_term_into(&mut buf, term, None);
+        self.render_ty_into(&mut buf, ty, None);
         buf
     }
 
-    fn render_term_into(
+    fn render_ty_into(
         &mut self,
         buf: &mut String,
-        term: TermId,
-        highlight: Option<TermId>,
+        ty: TyId,
+        highlight: Option<TyId>,
     ) -> Option<Range<usize>> {
         if let Some(highlight) = highlight {
-            if self.uni_cx.resolve(term) == self.uni_cx.resolve(highlight) {
+            if self.uni_cx.resolve(ty) == self.uni_cx.resolve(highlight) {
                 let start = buf.len();
-                buf.push_str(&self.render_term(term));
+                buf.push_str(&self.render_ty(ty));
                 return Some(start..buf.len());
             }
         }
 
-        let resolved = self.uni_cx.resolve(term);
-        let Some(term) = self.uni_cx.term(resolved).cloned() else {
+        let resolved = self.uni_cx.resolve(ty);
+        let Some(kind) = self.uni_cx.ty(resolved).cloned() else {
             buf.push_str("<error>");
             return None;
         };
 
-        let (constructor, args) = match term {
-            Term::Var(_) => {
+        match kind {
+            TyKind::Var(_) => {
                 buf.push('_');
-                return None;
+                None
             }
-            Term::App { constructor, args } => (constructor, args),
-        };
-
-        match constructor {
-            TyCon::Any => {
+            TyKind::Any => {
                 buf.push_str("any");
                 None
             }
-            TyCon::Never => {
+            TyKind::Never => {
                 buf.push('!');
                 None
             }
-            TyCon::Int => {
+            TyKind::Int => {
                 buf.push_str("int");
                 None
             }
-            TyCon::Float => {
+            TyKind::Float => {
                 buf.push_str("float");
                 None
             }
-            TyCon::Bool => {
+            TyKind::Bool => {
                 buf.push_str("bool");
                 None
             }
-            TyCon::Char => {
+            TyKind::Char => {
                 buf.push_str("char");
                 None
             }
-            TyCon::Str => {
+            TyKind::Str => {
                 buf.push_str("String");
                 None
             }
-            TyCon::Err => {
+            TyKind::Err => {
                 buf.push_str("<error>");
                 None
             }
-            TyCon::Array => {
+            TyKind::Array(elem) => {
                 buf.push('[');
-                let range = self.render_term_into(buf, args[0], highlight);
+                let range = self.render_ty_into(buf, elem, highlight);
                 buf.push(']');
                 range
             }
-            TyCon::Tuple => {
+            TyKind::Tuple(args) => {
                 buf.push('(');
                 let mut range = None;
-                for (i, &arg) in args.iter().enumerate() {
+                for (i, arg) in args.into_iter().enumerate() {
                     if i > 0 {
                         buf.push_str(", ");
                     }
-                    range = range.or(self.render_term_into(buf, arg, highlight));
+                    range = range.or(self.render_ty_into(buf, arg, highlight));
                 }
                 buf.push(')');
                 range
             }
-            TyCon::Fn => {
-                buf.push_str("Fn");
-                let inputs_range = self.render_term_into(buf, args[0], highlight);
+            TyKind::Fn(params, output) => {
+                buf.push_str("Fn(");
+                let mut inputs_range = None;
+                for (i, arg) in params.into_iter().enumerate() {
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
+                    inputs_range = inputs_range.or(self.render_ty_into(buf, arg, highlight));
+                }
+                buf.push(')');
                 buf.push_str(" -> ");
-                let output_range = self.render_term_into(buf, args[1], highlight);
+                let output_range = self.render_ty_into(buf, output, highlight);
                 inputs_range.or(output_range)
             }
-            TyCon::Struct(symbol) | TyCon::Enum(symbol) => {
+            TyKind::Struct(symbol) | TyKind::Enum(symbol) => {
                 let name = self.symbols[symbol].name;
                 let text = self
                     .names
@@ -1228,7 +1243,7 @@ impl Renderer<'_> {
                 buf.push_str(&text);
                 None
             }
-            TyCon::Generic(id) => {
+            TyKind::Generic(id) => {
                 let text = self
                     .generic_names
                     .get(&id)
@@ -1242,7 +1257,7 @@ impl Renderer<'_> {
 
     fn render_symbol_type(&mut self, symbol: SymbolId) -> String {
         let ty = self.symbols[symbol].ty;
-        let rendered = self.render_term(ty);
+        let rendered = self.render_ty(ty);
         let generics = self.symbols[symbol].generics.clone();
         let generics_rendered = generics_list(self.generic_names, &generics);
         if generics_rendered.is_empty() {
@@ -1310,29 +1325,15 @@ impl Renderer<'_> {
 
         let ty = self.symbols[symbol].ty;
         let resolved = self.uni_cx.resolve(ty);
-        let Some(Term::App {
-            constructor: TyCon::Fn,
-            args,
-        }) = self.uni_cx.term(resolved).cloned()
-        else {
+        let Some(TyKind::Fn(param_types, output)) = self.uni_cx.ty(resolved).cloned() else {
             return self.render_symbol_type(symbol);
-        };
-        let (inputs, output) = (args[0], args[1]);
-
-        let resolved_inputs = self.uni_cx.resolve(inputs);
-        let param_types: Vec<TermId> = match self.uni_cx.term(resolved_inputs).cloned() {
-            Some(Term::App {
-                constructor: TyCon::Tuple,
-                args,
-            }) => args,
-            _ => Vec::new(),
         };
 
         let params: Vec<String> = param_types
             .iter()
             .enumerate()
             .map(|(i, &ty)| {
-                let rendered = self.render_term(ty);
+                let rendered = self.render_ty(ty);
                 match param_names.get(i) {
                     Some(name) => format!("{name}: {rendered}"),
                     None => rendered,
@@ -1340,7 +1341,7 @@ impl Renderer<'_> {
             })
             .collect();
 
-        let output_rendered = self.render_term(output);
+        let output_rendered = self.render_ty(output);
         format!(
             "fn {name}{generics_rendered}({}) -> {output_rendered}",
             params.join(", ")
@@ -1359,7 +1360,7 @@ fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type()
     let x_symbol = declared_symbol(&cx, body_scope, Namespace::Value, "x")
         .expect("x should be declared as a param");
     let x_ty = cx.symbol(x_symbol).ty;
-    assert_eq!(resolved_con(&mut cx, x_ty), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
 #[test]
@@ -1377,7 +1378,7 @@ fn check_all_recurses_into_a_nested_fns_body() {
     let x_symbol = declared_symbol(&cx, inner_scope, Namespace::Value, "x")
         .expect("x should be declared as inner's param");
     let x_ty = cx.symbol(x_symbol).ty;
-    assert_eq!(resolved_con(&mut cx, x_ty), Some(TyCon::Int));
+    assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
 #[test]
