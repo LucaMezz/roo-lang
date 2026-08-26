@@ -84,19 +84,19 @@ fn main() -> ExitCode {
 fn print_item(cx: &CheckedProgram, names: &parser::Interner, item: &Item, depth: usize) {
     let indent = "  ".repeat(depth);
     match &item.kind {
-        ItemKind::Fn(f) => match cx.binding_at(f.ident.span.start) {
-            Some(binding) => println!(
+        ItemKind::Fn(f) => match cx.def_at(f.ident.span.start) {
+            Some(def) => println!(
                 "{indent}fn {}: {}",
                 names.resolve(f.ident.symbol),
-                cx.render_binding_type(binding)
+                cx.render_def_type(def)
             ),
             None => println!("{indent}fn {} (unresolved)", names.resolve(f.ident.symbol)),
         },
-        ItemKind::TyAlias(alias) => match cx.binding_at(alias.ident.span.start) {
-            Some(binding) => println!(
+        ItemKind::TyAlias(alias) => match cx.def_at(alias.ident.span.start) {
+            Some(def) => println!(
                 "{indent}type {} = {}",
                 names.resolve(alias.ident.symbol),
-                cx.render_binding_type(binding)
+                cx.render_def_type(def)
             ),
             None => println!(
                 "{indent}type {} (unresolved)",

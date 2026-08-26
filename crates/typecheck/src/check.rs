@@ -10,7 +10,7 @@ use crate::errors::{
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{BindingId, BindingKind, PatDeclKind, TyId, TypeCheckContext, display_path};
+use crate::{DefId, DefKind, PatDeclKind, TyId, TypeCheckContext, display_path};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -273,10 +273,10 @@ impl<'ast> TypeCheckContext<'ast> {
         }
 
         self.resolve_path_to_value(path)
-            .map(|binding| {
-                self.record_path_reference(path, binding);
-                self.check_referenced_fn(binding);
-                self.instantiate_path(binding, path)
+            .map(|def| {
+                self.record_path_reference(path, def);
+                self.check_referenced_fn(def);
+                self.instantiate_path(def, path)
             })
             .unwrap_or_else(|| {
                 self.diagnostics.push(UnresolvedValue::new(
@@ -459,8 +459,8 @@ impl<'ast> TypeCheckContext<'ast> {
         let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
             ExprKind::Path(None, path) => self
                 .resolve_path_to_value(path)
-                .map(|binding| match &self.binding(binding).kind {
-                    BindingKind::Fn(fn_data) => fn_data.param_spans.clone(),
+                .map(|def| match &self.def(def).kind {
+                    DefKind::Fn(fn_data) => fn_data.param_spans.clone(),
                     _ => Vec::new(),
                 })
                 .unwrap_or_default(),
@@ -627,7 +627,7 @@ impl<'ast> TypeCheckContext<'ast> {
         decl_kind: PatDeclKind,
     ) -> TyId {
         let ty = self.fresh_var_at(Some(ident.span));
-        self.declare(ident.symbol, ident.span, decl_kind.binding_kind(ty));
+        self.declare(ident.symbol, ident.span, decl_kind.def_kind(ty));
         let _ = self.inf.unify_because(ty, expected, ident.span);
 
         if let Some(sub) = sub {
@@ -698,29 +698,28 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl<'ast> TypeCheckContext<'ast> {
-    fn resolve_fn_binding(&mut self, f: &ast::Fn) -> Option<BindingId> {
+    fn resolve_fn_def(&mut self, f: &ast::Fn) -> Option<DefId> {
         let name = f.ident.symbol;
-        self.with_value_binding(name, |_, binding| binding)
+        self.with_value_def(name, |_, def| def)
     }
 
-    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(BindingId, &'b ast::Fn)> {
+    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(DefId, &'b ast::Fn)> {
         let ItemKind::Fn(f) = &item.kind else {
             return None;
         };
-        self.resolve_fn_binding(f)
-            .map(|binding| (binding, f.as_ref()))
+        self.resolve_fn_def(f).map(|def| (def, f.as_ref()))
     }
 
     pub(crate) fn check_function(&mut self, f: &'ast ast::Fn) {
-        self.resolve_fn_binding(f)
-            .and_then(|binding| self.check_fn_body(binding, f))
+        self.resolve_fn_def(f)
+            .and_then(|def| self.check_fn_body(def, f))
             .into_iter()
             .for_each(|scc| self.generalize_group(&scc));
     }
 
     pub(crate) fn check_module(&mut self, ident: &Ident, kind: &'ast ModKind) {
         let name = ident.symbol;
-        self.with_mod_scope(name, |this, _binding| match kind {
+        self.with_mod_scope(name, |this, _def| match kind {
             ModKind::Loaded(items) => {
                 this.check_items(items.iter().map(Box::as_ref));
             }
@@ -730,10 +729,10 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn record_edge(
         &mut self,
-        from: BindingId,
-        to: BindingId,
-        check: impl FnOnce(&mut Self) -> Option<Vec<BindingId>>,
-    ) -> Option<Vec<BindingId>> {
+        from: DefId,
+        to: DefId,
+        check: impl FnOnce(&mut Self) -> Option<Vec<DefId>>,
+    ) -> Option<Vec<DefId>> {
         if !self.sccc.is_visited(to) {
             let completed = check(self);
             if self.sccc.is_visited(to) {
@@ -746,26 +745,22 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_nested_functions(
-        &mut self,
-        items: impl IntoIterator<Item = &'ast Item>,
-        from: BindingId,
-    ) {
+    fn check_nested_functions(&mut self, items: impl IntoIterator<Item = &'ast Item>, from: DefId) {
         items
             .into_iter()
             .filter_map(|item| self.resolve_fn(item))
             .collect::<Vec<_>>()
             .into_iter()
-            .for_each(|(binding, f)| {
-                let scc = self.record_edge(from, binding, |this| this.check_fn_body(binding, f));
+            .for_each(|(def, f)| {
+                let scc = self.record_edge(from, def, |this| this.check_fn_body(def, f));
                 if let Some(scc) = scc {
                     self.generalize_group(&scc);
                 }
             });
     }
 
-    fn check_referenced_fn(&mut self, binding: BindingId) {
-        let Some(&item) = self.items_by_binding.get(&binding) else {
+    fn check_referenced_fn(&mut self, def: DefId) {
+        let Some(&item) = self.items_by_def.get(&def) else {
             return;
         };
         let ItemKind::Fn(f) = &item.kind else {
@@ -774,31 +769,31 @@ impl<'ast> TypeCheckContext<'ast> {
 
         let scc = match self.current_fn {
             Some(from) => {
-                self.graph.call(from, binding);
-                self.record_edge(from, binding, |this| this.check_fn_body(binding, f))
+                self.graph.call(from, def);
+                self.record_edge(from, def, |this| this.check_fn_body(def, f))
             }
-            None if !self.sccc.is_visited(binding) => self.check_fn_body(binding, f),
+            None if !self.sccc.is_visited(def) => self.check_fn_body(def, f),
             None => None,
         };
 
         scc.into_iter().for_each(|scc| self.generalize_group(&scc));
     }
 
-    fn check_fn_body(&mut self, binding: BindingId, f: &'ast ast::Fn) -> Option<Vec<BindingId>> {
-        if self.sccc.is_visited(binding) {
+    fn check_fn_body(&mut self, def: DefId, f: &'ast ast::Fn) -> Option<Vec<DefId>> {
+        if self.sccc.is_visited(def) {
             return None;
         }
 
-        let scope = self.fn_binding_scope(binding)?;
+        let scope = self.fn_def_scope(def)?;
         let body = f.body.as_ref()?;
 
-        let binding_ty = self.binding(binding).ty();
-        let (input_tys, output_ty) = self.resolved_fn_parts(binding_ty)?;
+        let def_ty = self.def(def).ty();
+        let (input_tys, output_ty) = self.resolved_fn_parts(def_ty)?;
 
-        self.sccc.enter(binding);
+        self.sccc.enter(def);
         let parent_fn = self.current_fn;
-        self.current_fn = Some(binding);
-        self.checking_stack.push(binding);
+        self.current_fn = Some(def);
+        self.checking_stack.push(def);
 
         self.with_scope(scope, |this| {
             f.sig
@@ -815,12 +810,12 @@ impl<'ast> TypeCheckContext<'ast> {
             };
             this.check_block_expecting(body, Some(output_ty), Some(output_span));
 
-            this.check_nested_functions(nested_items(body), binding);
+            this.check_nested_functions(nested_items(body), def);
         });
 
         self.checking_stack.pop();
         self.current_fn = parent_fn;
-        self.sccc.exit(binding)
+        self.sccc.exit(def)
     }
 }
 
@@ -838,8 +833,8 @@ pub(crate) fn collect_fn_mod_items<'ast>(
     items.into_iter().for_each(|item| match &item.kind {
         ItemKind::Fn(f) => {
             let name = f.ident.symbol;
-            cx.with_fn_scope(name, |cx, binding| {
-                cx.items_by_binding.insert(binding, item);
+            cx.with_fn_scope(name, |cx, def| {
+                cx.items_by_def.insert(def, item);
 
                 let Some(body) = f.body.as_ref() else {
                     return;
@@ -850,8 +845,8 @@ pub(crate) fn collect_fn_mod_items<'ast>(
         }
         ItemKind::Mod(ident, kind) => {
             let name = ident.symbol;
-            cx.with_mod_scope(name, |cx, binding| {
-                cx.items_by_binding.insert(binding, item);
+            cx.with_mod_scope(name, |cx, def| {
+                cx.items_by_def.insert(def, item);
 
                 match kind {
                     ModKind::Loaded(items) => {

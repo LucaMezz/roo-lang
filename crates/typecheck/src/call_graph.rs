@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::{IndexMap, IndexSet};
 
-use crate::BindingId;
+use crate::DefId;
 
 /// A directed graph where each node is a function, and each directed
 /// edge from a node `f` to a node `g` represents that the function
@@ -29,9 +29,9 @@ use crate::BindingId;
 #[derive(Debug)]
 pub struct CallGraph {
     /// A list of all of the functions which appear in this call graph.
-    nodes: IndexSet<BindingId>,
+    nodes: IndexSet<DefId>,
     /// A list of calls from the body of one function to another.
-    edges: IndexMap<BindingId, IndexSet<BindingId>>,
+    edges: IndexMap<DefId, IndexSet<DefId>>,
 }
 
 impl CallGraph {
@@ -46,19 +46,19 @@ impl CallGraph {
     /// Records an edge from some node `f` to another node `g`.
     ///
     /// Indicates a call from the function `f` to the function `g`.
-    pub fn call(&mut self, from: BindingId, to: BindingId) {
+    pub fn call(&mut self, from: DefId, to: DefId) {
         self.nodes.insert(from);
         self.nodes.insert(to);
         self.edges.entry(from).or_default().insert(to);
     }
 
     #[allow(unused)]
-    pub fn nodes(&self) -> &IndexSet<BindingId> {
+    pub fn nodes(&self) -> &IndexSet<DefId> {
         &self.nodes
     }
 
     #[allow(unused)]
-    pub fn edges(&self) -> &IndexMap<BindingId, IndexSet<BindingId>> {
+    pub fn edges(&self) -> &IndexMap<DefId, IndexSet<DefId>> {
         &self.edges
     }
 }
@@ -71,12 +71,12 @@ impl CallGraph {
 /// that can be called while traversing the tree when function
 /// calls are discovered.
 pub struct SCCCollector {
-    index: HashMap<BindingId, u32>,
-    lowlink: HashMap<BindingId, u32>,
-    on_stack: HashSet<BindingId>,
-    stack: Vec<BindingId>,
+    index: HashMap<DefId, u32>,
+    lowlink: HashMap<DefId, u32>,
+    on_stack: HashSet<DefId>,
+    stack: Vec<DefId>,
     next_index: u32,
-    sccs: Vec<Vec<BindingId>>,
+    sccs: Vec<Vec<DefId>>,
 }
 
 impl SCCCollector {
@@ -95,7 +95,7 @@ impl SCCCollector {
     /// Consumes the [`SCCCollector`], returning a list of all
     /// of the strongly connected components which have been
     /// discovered by it.
-    pub fn sccs(self) -> Vec<Vec<BindingId>> {
+    pub fn sccs(self) -> Vec<Vec<DefId>> {
         self.sccs
     }
 
@@ -105,12 +105,12 @@ impl SCCCollector {
     /// Used to prevent repeated checking of functions when they
     /// may have already been checked at an earlier point due
     /// to some other function calling it.
-    pub fn is_visited(&self, symbol: BindingId) -> bool {
+    pub fn is_visited(&self, symbol: DefId) -> bool {
         self.index.contains_key(&symbol)
     }
 
     /// Called when a new function begins being checked.
-    pub fn enter(&mut self, symbol: BindingId) {
+    pub fn enter(&mut self, symbol: DefId) {
         self.index.insert(symbol, self.next_index);
         self.lowlink.insert(symbol, self.next_index);
         self.next_index += 1;
@@ -119,7 +119,7 @@ impl SCCCollector {
     }
 
     /// Called when a function has completed its checking.
-    pub fn exit(&mut self, symbol: BindingId) -> Option<Vec<BindingId>> {
+    pub fn exit(&mut self, symbol: DefId) -> Option<Vec<DefId>> {
         if self.lowlink[&symbol] != self.index[&symbol] {
             return None;
         }
@@ -149,7 +149,7 @@ impl SCCCollector {
     /// calling function `f` stays the same *unless* `g` can
     /// reach something with an even smaller index, and since
     /// `f` reaches `g`, it means so can `f`.
-    pub fn pull_lowlink(&mut self, from: BindingId, to: BindingId) {
+    pub fn pull_lowlink(&mut self, from: DefId, to: DefId) {
         let pulled = self.lowlink[&to];
         let mine = self.lowlink.get_mut(&from).unwrap();
         *mine = (*mine).min(pulled);
@@ -165,7 +165,7 @@ impl SCCCollector {
     ///
     /// This situation represents when the edge from `f` to `g`
     /// represents a 'back edge' in the DFS tree.
-    pub fn note_back_edge(&mut self, from: BindingId, to: BindingId) {
+    pub fn note_back_edge(&mut self, from: DefId, to: DefId) {
         if self.on_stack.contains(&to) {
             let idx = self.index[&to];
             let mine = self.lowlink.get_mut(&from).unwrap();

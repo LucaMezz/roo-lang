@@ -7,38 +7,38 @@ use intern::Interner;
 use crate::errors::{Locale, TypeCheckDiagnostic};
 use crate::position_index::PositionIndex;
 use crate::types::{Type, resolve_type};
-use crate::{BindingId, BindingKind, FnBinding, TypeCheckContext};
+use crate::{DefId, DefKind, FnDef, TypeCheckContext};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Constructs the final result of the type checking stage, which
     /// will be output to the client of this crate.
     ///
     /// The process of freezing the [`TypeCheckContext`] to arrive at
-    /// the final checked program involves converting  all bindings
-    /// within the binding table into frozen bindings. This replaces
+    /// the final checked program involves converting  all defs
+    /// within the def table into frozen defs. This replaces
     /// interned symbol ids with the actual symbol strings, converts the
-    /// BindingKind to a FrozenBindingKind, and resolves the `Ty`
-    /// representing the type of the binding to a frozen `Type`.
+    /// DefKind to a FrozenDefKind, and resolves the `Ty`
+    /// representing the type of the def to a frozen `Type`.
     ///
     /// TODO Make the CheckedProgram result produced by the
     /// TypeCheckContext actually preserve the module -> exported
-    /// binding structure, since the embedding API will need to allow
-    /// for calling / getting bindings of items within modules.
+    /// def structure, since the embedding API will need to allow
+    /// for calling / getting defs of items within modules.
     fn freeze(mut self) -> CheckedProgram {
-        let mut bindings = HashMap::with_capacity(self.bindings.len());
-        for (id, binding) in self.bindings.iter() {
-            let ty = match binding.kind.ty() {
+        let mut defs = HashMap::with_capacity(self.defs.len());
+        for (id, def) in self.defs.iter() {
+            let ty = match def.kind.ty() {
                 Some(ty) => resolve_type(
                     &mut self.inf,
-                    &self.bindings,
+                    &self.defs,
                     &self.symbols,
                     &self.generic_names,
                     ty,
                 ),
                 None => Type::Unresolved,
             };
-            let symbol = self.symbols.resolve(binding.symbol).to_owned();
-            let generics = binding
+            let symbol = self.symbols.resolve(def.symbol).to_owned();
+            let generics = def
                 .generics()
                 .iter()
                 .map(|id| {
@@ -48,23 +48,23 @@ impl<'ast> TypeCheckContext<'ast> {
                         .unwrap_or_else(|| "<generic>".to_owned())
                 })
                 .collect();
-            let kind = match &binding.kind {
-                BindingKind::Fn(FnBinding { param_symbols, .. }) => FrozenBindingKind::Fn {
+            let kind = match &def.kind {
+                DefKind::Fn(FnDef { param_symbols, .. }) => FrozenDefKind::Fn {
                     param_symbols: param_symbols.clone(),
                 },
-                BindingKind::Param(_) => FrozenBindingKind::Param,
-                BindingKind::Local(_) => FrozenBindingKind::Local,
-                BindingKind::TyAlias(_) => FrozenBindingKind::TyAlias,
-                BindingKind::Mod(_) => FrozenBindingKind::Mod,
-                BindingKind::Struct
-                | BindingKind::Enum
-                | BindingKind::Variant
-                | BindingKind::Trait
-                | BindingKind::GenericParam(_) => FrozenBindingKind::Other,
+                DefKind::Param(_) => FrozenDefKind::Param,
+                DefKind::Local(_) => FrozenDefKind::Local,
+                DefKind::TyAlias(_) => FrozenDefKind::TyAlias,
+                DefKind::Mod(_) => FrozenDefKind::Mod,
+                DefKind::Struct
+                | DefKind::Enum
+                | DefKind::Variant
+                | DefKind::Trait
+                | DefKind::GenericParam(_) => FrozenDefKind::Other,
             };
-            bindings.insert(
+            defs.insert(
                 id,
-                FrozenBinding {
+                FrozenDef {
                     symbol,
                     kind,
                     ty,
@@ -76,19 +76,19 @@ impl<'ast> TypeCheckContext<'ast> {
         CheckedProgram {
             diagnostics: self.diagnostics.into_vec(),
             positions: self.positions,
-            bindings,
+            defs,
         }
     }
 }
 
-struct FrozenBinding {
+struct FrozenDef {
     symbol: String,
-    kind: FrozenBindingKind,
+    kind: FrozenDefKind,
     ty: Type,
     generics: Vec<String>,
 }
 
-enum FrozenBindingKind {
+enum FrozenDefKind {
     Fn { param_symbols: Vec<String> },
     Param,
     Local,
@@ -102,7 +102,7 @@ enum FrozenBindingKind {
 pub struct CheckedProgram {
     diagnostics: Vec<TypeCheckDiagnostic>,
     positions: PositionIndex,
-    bindings: HashMap<BindingId, FrozenBinding>,
+    defs: HashMap<DefId, FrozenDef>,
 }
 
 impl CheckedProgram {
@@ -110,7 +110,7 @@ impl CheckedProgram {
     /// type checking process on the given items. Performs type
     /// inference and confirms all types are compatible, and then
     /// returns the [`CheckedProgram`] containing information
-    /// about the discovered items and their bindings and types.
+    /// about the discovered items and their defs and types.
     pub fn check(items: &[Box<Item>], symbols: Interner) -> CheckedProgram {
         let mut cx = TypeCheckContext::new(symbols);
         cx.resolve(items);
@@ -130,10 +130,10 @@ impl CheckedProgram {
         self.diagnostics.iter().map(|d| d.render(catalog)).collect()
     }
 
-    /// Queries the checked program to see if there is a binding
+    /// Queries the checked program to see if there is a def
     /// associated with a specific offset in the source file.
-    pub fn binding_at(&self, offset: usize) -> Option<BindingId> {
-        self.positions.binding_at(offset)
+    pub fn def_at(&self, offset: usize) -> Option<DefId> {
+        self.positions.def_at(offset)
     }
 
     /// Queries the checked program to see if there is a concrete
@@ -142,14 +142,14 @@ impl CheckedProgram {
         self.positions.type_name_at(offset)
     }
 
-    fn binding(&self, binding: BindingId) -> &FrozenBinding {
-        &self.bindings[&binding]
+    fn def(&self, def: DefId) -> &FrozenDef {
+        &self.defs[&def]
     }
 
     /// Returns a string representation of the type associated with
-    /// a given binding.
-    pub fn render_binding_type(&self, binding: BindingId) -> String {
-        let bind = self.binding(binding);
+    /// a given def.
+    pub fn render_def_type(&self, def: DefId) -> String {
+        let bind = self.def(def);
         let rendered = bind.ty.render();
         let generics_rendered = generics_list(&bind.generics);
         if generics_rendered.is_empty() {
@@ -159,18 +159,18 @@ impl CheckedProgram {
         }
     }
 
-    /// Returns a string representation of a binding.
-    pub fn describe_binding(&self, binding: BindingId) -> String {
-        let bind = self.binding(binding);
+    /// Returns a string representation of a def.
+    pub fn describe_def(&self, def: DefId) -> String {
+        let bind = self.def(def);
         match &bind.kind {
-            FrozenBindingKind::Fn { param_symbols } => describe_fn_item(bind, param_symbols),
-            FrozenBindingKind::Param => format!("{}: {}", bind.symbol, bind.ty.render()),
-            FrozenBindingKind::Local => format!("let {}: {}", bind.symbol, bind.ty.render()),
-            FrozenBindingKind::TyAlias => {
+            FrozenDefKind::Fn { param_symbols } => describe_fn_item(bind, param_symbols),
+            FrozenDefKind::Param => format!("{}: {}", bind.symbol, bind.ty.render()),
+            FrozenDefKind::Local => format!("let {}: {}", bind.symbol, bind.ty.render()),
+            FrozenDefKind::TyAlias => {
                 format!("type {}", alias_symbol_with_generics(bind))
             }
-            FrozenBindingKind::Mod => format!("mod {}", bind.symbol),
-            FrozenBindingKind::Other => self.render_binding_type(binding),
+            FrozenDefKind::Mod => format!("mod {}", bind.symbol),
+            FrozenDefKind::Other => self.render_def_type(def),
         }
     }
 }
@@ -183,15 +183,15 @@ fn generics_list(generics: &[String]) -> String {
     format!("<{}>", generics.join(", "))
 }
 
-/// Returns a string with the binding symbol followed by a
-/// generic list of the binding.
-fn alias_symbol_with_generics(bind: &FrozenBinding) -> String {
+/// Returns a string with the def symbol followed by a
+/// generic list of the def.
+fn alias_symbol_with_generics(bind: &FrozenDef) -> String {
     format!("{}{}", bind.symbol, generics_list(&bind.generics))
 }
 
 /// Returns a full string representation of the entire signature
 /// of a function.
-fn describe_fn_item(bind: &FrozenBinding, param_symbols: &[String]) -> String {
+fn describe_fn_item(bind: &FrozenDef, param_symbols: &[String]) -> String {
     let generics_rendered = generics_list(&bind.generics);
     let Type::Fn(params, output) = &bind.ty else {
         return bind.ty.render();

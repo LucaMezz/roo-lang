@@ -216,8 +216,8 @@ fn hover_at(text: &str, position: Position) -> Option<Hover> {
     let index = LineIndex::new(text);
     let offset = index.offset(text, position);
 
-    let ty = match cx.binding_at(offset) {
-        Some(symbol) => cx.describe_binding(symbol),
+    let ty = match cx.def_at(offset) {
+        Some(symbol) => cx.describe_def(symbol),
         None => cx.type_symbol_at(offset)?.to_owned(),
     };
 

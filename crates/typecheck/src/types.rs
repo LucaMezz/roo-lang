@@ -10,7 +10,7 @@ use slotmap::SlotMap;
 
 use crate::generic_names::GenericNames;
 use crate::inference::{InferenceTable, TyId, VarId};
-use crate::{Binding, BindingId, GenericId, TypeCheckContext};
+use crate::{Def, DefId, GenericId, TypeCheckContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
@@ -26,8 +26,8 @@ pub(crate) enum TyKind {
     Array(TyId),
     Tuple(Vec<TyId>),
     Fn(Vec<TyId>, TyId),
-    Struct(BindingId),
-    Enum(BindingId),
+    Struct(DefId),
+    Enum(DefId),
     Generic(GenericId),
 }
 
@@ -49,7 +49,7 @@ impl<'ast> TypeCheckContext<'ast> {
     pub(crate) fn resolved(&mut self, ty: TyId) -> Type {
         resolve_type(
             &mut self.inf,
-            &self.bindings,
+            &self.defs,
             &self.symbols,
             &self.generic_names,
             ty,
@@ -123,11 +123,11 @@ impl diagnostics::ToArgValue for Type {
 /// [`Type::Unresolved`].
 ///
 /// The resulting `Type` is recursive and can be read entirely on
-/// its own without needing to have access to names, bindings,
+/// its own without needing to have access to names, defs,
 /// generics, or the unification context.
 pub(crate) fn resolve_type(
     inf: &mut InferenceTable,
-    bindings: &SlotMap<BindingId, Binding>,
+    defs: &SlotMap<DefId, Def>,
     names: &Interner,
     generic_names: &GenericNames,
     ty: TyId,
@@ -149,26 +149,26 @@ pub(crate) fn resolve_type(
         TyKind::Err => Type::Err,
         TyKind::Array(elem) => Type::Array(Box::new(resolve_type(
             inf,
-            bindings,
+            defs,
             names,
             generic_names,
             elem,
         ))),
         TyKind::Tuple(args) => Type::Tuple(
             args.iter()
-                .map(|&arg| resolve_type(inf, bindings, names, generic_names, arg))
+                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
                 .collect(),
         ),
         TyKind::Fn(params, output) => {
             let params = params
                 .iter()
-                .map(|&arg| resolve_type(inf, bindings, names, generic_names, arg))
+                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
                 .collect();
-            let output = Box::new(resolve_type(inf, bindings, names, generic_names, output));
+            let output = Box::new(resolve_type(inf, defs, names, generic_names, output));
             Type::Fn(params, output)
         }
-        TyKind::Struct(binding) | TyKind::Enum(binding) => {
-            let name = bindings[binding].symbol;
+        TyKind::Struct(def) | TyKind::Enum(def) => {
+            let name = defs[def].symbol;
             Type::Named(names.resolve(name).to_owned())
         }
         TyKind::Generic(id) => {

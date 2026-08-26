@@ -13,7 +13,7 @@ use ast::{GenericArg, Path, Span};
 use crate::errors::GenericArgumentCountMismatch;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
-use crate::{BindingId, BindingKind, GenericId, TyId, TypeCheckContext, VarId};
+use crate::{DefId, DefKind, GenericId, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
@@ -44,14 +44,14 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
-        self.checking_stack.clone().into_iter().for_each(|binding| {
-            let ty = self.binding(binding).ty();
+        self.checking_stack.clone().into_iter().for_each(|def| {
+            let ty = self.def(def).ty();
             self.free_vars(ty, &mut out);
         });
         out.into_iter().collect()
     }
 
-    pub(crate) fn generalize_group(&mut self, members: &[BindingId]) {
+    pub(crate) fn generalize_group(&mut self, members: &[DefId]) {
         // Restart synthetic names for generic type parameters back to `T`.
         self.generic_names.reset_synthetic_counter();
 
@@ -68,8 +68,8 @@ impl<'ast> TypeCheckContext<'ast> {
         // issue with LSP of mutually recursive functions where only one
         // explicitly specifies its generic type parameter.
         let mut taken: HashSet<String> = self.generic_names.all_names();
-        members.iter().for_each(|&binding| {
-            self.binding(binding).generics().iter().for_each(|id| {
+        members.iter().for_each(|&def| {
+            self.def(def).generics().iter().for_each(|id| {
                 if let Some(name) = self.generic_names.get(id) {
                     taken.insert(name.clone());
                 }
@@ -85,14 +85,14 @@ impl<'ast> TypeCheckContext<'ast> {
         // function context.
         //
         // These become candidates for generalisation.
-        let per_member_vars: Vec<(BindingId, Vec<VarId>)> = members
+        let per_member_vars: Vec<(DefId, Vec<VarId>)> = members
             .iter()
-            .map(|&binding| {
-                let ty = self.binding(binding).ty();
+            .map(|&def| {
+                let ty = self.def(def).ty();
                 let mut vars = Vec::new();
                 self.free_vars(ty, &mut vars);
                 vars.retain(|v| !enclosing.contains(v));
-                (binding, vars)
+                (def, vars)
             })
             .collect();
 
@@ -113,39 +113,39 @@ impl<'ast> TypeCheckContext<'ast> {
         });
 
         // For each function, append all new generics synthesised from
-        // generalisation to its binding.
-        per_member_vars.into_iter().for_each(|(binding, vars)| {
+        // generalisation to its def.
+        per_member_vars.into_iter().for_each(|(def, vars)| {
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
-                if let BindingKind::Fn(fn_data) = &mut self.bindings[binding].kind {
+                if let DefKind::Fn(fn_data) = &mut self.defs[def].kind {
                     fn_data.generics.push(id);
                 }
             });
         });
     }
 
-    /// Replace all generic type parameters of the type of a binding with
+    /// Replace all generic type parameters of the type of a def with
     /// fresh inference variables.
     ///
     /// See [`Self::instantiate_ty`] for more information. This simply
     /// calls that but with an empty set of substitutions.
-    fn instantiate(&mut self, binding: BindingId) -> TyId {
-        self.instantiate_with(binding, &[])
+    fn instantiate(&mut self, def: DefId) -> TyId {
+        self.instantiate_with(def, &[])
     }
 
-    /// Instantiates the given binding's type for use at a single call site.
+    /// Instantiates the given def's type for use at a single call site.
     /// Any `explitit` generic type arguments provided via turbofish first
     /// constrain the fresh inference variable introduced for that generic
     /// parameter. instantiate_ty will fill in the rest with fresh
     /// inference variables.
     ///
     /// See [`Self::instantiate_ty`] for more information.
-    fn instantiate_with(&mut self, binding: BindingId, explicit: &[(TyId, Span)]) -> TyId {
-        let ty = self.binding(binding).ty();
-        if self.binding(binding).generics().is_empty() {
+    fn instantiate_with(&mut self, def: DefId, explicit: &[(TyId, Span)]) -> TyId {
+        let ty = self.def(def).ty();
+        if self.def(def).generics().is_empty() {
             return ty;
         }
-        let generics = self.binding(binding).generics().to_vec();
+        let generics = self.def(def).generics().to_vec();
         let mut subst = HashMap::new();
         generics
             .iter()
@@ -171,7 +171,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// then `U` would instead be substituted with some new inference variable
     /// `?a`.
     ///
-    /// This is used when generic type parameters of a binding need to be
+    /// This is used when generic type parameters of a def need to be
     /// replaced by concrete types. For example, consider a function with
     /// the signature
     /// ```ignore
@@ -209,7 +209,7 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     /// Makes substitutions for all the generic type parameters of the given
-    /// binding. If the given path contains any explicit type arguments, then
+    /// def. If the given path contains any explicit type arguments, then
     /// it will directly make those substitutions. Otherwise, fresh inference
     /// variables are introduced in place of each generic type parameter.
     ///
@@ -228,7 +228,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// `identity` function such that the type parameter `T` is replaced with
     /// the concrete type `int`, giving `identity::<int>` the type
     /// `Fn(int) -> int`.
-    pub(crate) fn instantiate_path(&mut self, binding: BindingId, path: &Path) -> TyId {
+    pub(crate) fn instantiate_path(&mut self, def: DefId, path: &Path) -> TyId {
         match path.segments.last().and_then(|seg| seg.args.as_ref()) {
             Some(generic_args) => {
                 let arg_tys: Vec<(TyId, Span)> = generic_args
@@ -240,7 +240,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     })
                     .collect();
 
-                let max = self.binding(binding).generics().len();
+                let max = self.def(def).generics().len();
                 let actual = arg_tys.len();
                 if actual != max {
                     self.diagnostics.push(GenericArgumentCountMismatch {
@@ -250,9 +250,9 @@ impl<'ast> TypeCheckContext<'ast> {
                     });
                 }
 
-                self.instantiate_with(binding, &arg_tys[..actual.min(max)])
+                self.instantiate_with(def, &arg_tys[..actual.min(max)])
             }
-            None => self.instantiate(binding),
+            None => self.instantiate(def),
         }
     }
 }
