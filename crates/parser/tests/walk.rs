@@ -9,7 +9,8 @@ struct IdentCollector {
 
 impl Visitor for IdentCollector {
     fn visit_ident(&mut self, ident: &ast::Ident) {
-        self.names.push(self.interner.resolve(ident.symbol).to_owned());
+        self.names
+            .push(self.interner.resolve(ident.symbol).to_owned());
     }
 }
 

@@ -33,6 +33,18 @@ impl Interner {
         sym
     }
 
+    pub fn intern_owned(&mut self, s: &String) -> Symbol {
+        if let Some(&sym) = self.ids.get(s.as_str()) {
+            return sym;
+        }
+
+        let boxed: Box<str> = s.as_str().into();
+        let sym = Symbol(self.strings.len() as u32);
+        self.ids.insert(boxed.clone(), sym);
+        self.strings.push(boxed);
+        sym
+    }
+
     pub fn get(&self, s: &str) -> Option<Symbol> {
         self.ids.get(s).copied()
     }

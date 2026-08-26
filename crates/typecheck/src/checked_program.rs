@@ -56,9 +56,9 @@ impl<'ast> TypeCheckContext<'ast> {
                 DefKind::Local(_) => FrozenDefKind::Local,
                 DefKind::TyAlias(_) => FrozenDefKind::TyAlias,
                 DefKind::Mod(_) => FrozenDefKind::Mod,
-                DefKind::Struct
-                | DefKind::Enum
-                | DefKind::Variant
+                DefKind::Struct(_)
+                | DefKind::Enum(_)
+                | DefKind::Variant(_)
                 | DefKind::Trait
                 | DefKind::GenericParam(_) => FrozenDefKind::Other,
             };

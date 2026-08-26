@@ -56,7 +56,10 @@ pub(crate) type ParserExtra<'src> = extra::Full<Simple<'src, Token<'src>>, State
 
 pub(crate) type Extra<'src, 'b> = MapExtra<'src, 'b, ParserInput<'src>, ParserExtra<'src>>;
 
-pub trait RooParser<'src, O>: Parser<'src, ParserInput<'src>, O, ParserExtra<'src>> + Clone {}
+pub trait RooParser<'src, O>:
+    Parser<'src, ParserInput<'src>, O, ParserExtra<'src>> + Clone
+{
+}
 
 impl<'src, O, T> RooParser<'src, O> for T where
     T: Parser<'src, ParserInput<'src>, O, ParserExtra<'src>> + Clone

@@ -217,6 +217,44 @@ impl AlreadyDefined {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 12, level = "error")]
+pub struct UnknownField {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub struct_name: String,
+}
+
+impl UnknownField {
+    pub fn new(span: Span, name: String, struct_name: String) -> Self {
+        Self {
+            span,
+            name,
+            struct_name,
+        }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 13, level = "error")]
+pub struct MissingField {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub struct_name: String,
+}
+
+impl MissingField {
+    pub fn new(span: Span, name: String, struct_name: String) -> Self {
+        Self {
+            span,
+            name,
+            struct_name,
+        }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -230,6 +268,8 @@ diagnostics::catalog! {
         UnresolvedType,
         UnresolvedValue,
         AlreadyDefined,
+        UnknownField,
+        MissingField,
     }
 }
 

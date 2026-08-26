@@ -1358,9 +1358,9 @@ impl Renderer<'_> {
                 format!("type {}", self.alias_symbol_with_generics(def))
             }
             DefKind::Mod(_) => format!("mod {}", self.def_display_symbol(def)),
-            DefKind::Struct
-            | DefKind::Enum
-            | DefKind::Variant
+            DefKind::Struct(_)
+            | DefKind::Enum(_)
+            | DefKind::Variant(_)
             | DefKind::Trait
             | DefKind::GenericParam(_) => self.render_def_type(def),
         }

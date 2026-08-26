@@ -353,7 +353,10 @@ mod tests {
             .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(state.resolve(parsed.ident.expect("should have an ident").symbol), "x");
+        assert_eq!(
+            state.resolve(parsed.ident.expect("should have an ident").symbol),
+            "x"
+        );
         assert!(parsed.ty.is_some());
     }
 
@@ -514,7 +517,10 @@ mod tests {
     fn parses_a_fn_item() {
         let tokens = tokens("fn add(a: int, b: int) -> int { a }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -538,7 +544,10 @@ mod tests {
     fn parses_a_fn_item_with_a_self_param() {
         let tokens = tokens("fn describe(self) -> String { self.name }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -560,7 +569,10 @@ mod tests {
     fn parses_a_fn_item_with_a_self_param_and_more_params() {
         let tokens = tokens("fn heal(self, amount: int) { self.health += amount; }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -588,7 +600,10 @@ mod tests {
     fn parses_a_struct_item() {
         let tokens = tokens("struct Point { x: int, y: int }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Struct(ident, generics, data) = parsed.kind else {
             panic!("expected ItemKind::Struct");
         };
@@ -608,7 +623,10 @@ mod tests {
     fn parses_an_enum_item() {
         let tokens = tokens("enum Color { Red, Green, Blue }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Enum(ident, _, def) = parsed.kind else {
             panic!("expected ItemKind::Enum");
         };
@@ -637,7 +655,10 @@ mod tests {
     fn parses_a_trait_item_with_a_supertrait_bound_and_members() {
         let tokens = tokens("trait Shape: Clone { fn area(self) -> float; type Unit; }");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Trait(t) = parsed.kind else {
             panic!("expected ItemKind::Trait");
         };
@@ -674,7 +695,10 @@ mod tests {
     fn parses_an_unloaded_mod_item() {
         let tokens = tokens("mod foo;");
         let mut state = crate::State::default();
-        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = item()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let ItemKind::Mod(ident, kind) = parsed.kind else {
             panic!("expected ItemKind::Mod");
         };

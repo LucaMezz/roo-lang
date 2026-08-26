@@ -13,7 +13,6 @@ mod utilities {
     }
 }
 
-
 fn main() -> () {
     let something = apply(id); 
 }

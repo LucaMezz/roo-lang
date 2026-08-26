@@ -1,0 +1,23 @@
+
+#[allow(unused)]
+struct Vector2 {
+    x,
+    y: float,
+}
+
+#[extern(no)]
+struct Unit;
+
+struct Handle(int, Vector2);
+
+fn main() {
+    
+    let zero: Vector2 = Vector2 { x: 0, y: 0.0 };
+    let zilch: float = 0.0;
+    let y = 10 as float;
+    let coord: Vector2 = Vector2 { x: 10.2, y };
+
+    let sample: Unit = Unit;
+
+    let standard: Handle = Handle(1, zero);
+}

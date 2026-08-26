@@ -1,12 +1,14 @@
 use ast::{
     Block, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind, ModKind,
-    Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind,
+    Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
 };
 use diagnostics::Related;
+use intern::Symbol;
 
 use crate::errors::{
-    ArgumentCountMismatch, CyclicType, NotCallable, TypeMismatch, UnresolvedValue,
-    expected_because_of, expected_due_to, generic_note, provenance,
+    ArgumentCountMismatch, CyclicType, MissingField, NotCallable, TypeMismatch, UnknownField,
+    UnresolvedType, UnresolvedValue, expected_because_of, expected_due_to, generic_note,
+    provenance,
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
@@ -157,7 +159,7 @@ impl<'ast> TypeCheckContext<'ast> {
             ExprKind::Underscore => self.check_underscore_expr(),
             ExprKind::Break(..) => self.check_break_expr(),
             ExprKind::Continue(..) => self.check_continue_expr(),
-            ExprKind::Struct(..) => self.check_struct_expr(),
+            ExprKind::Struct(expr) => self.check_struct_expr(expr),
             ExprKind::Try(..) => self.check_try_expr(),
         }
     }
@@ -226,8 +228,53 @@ impl<'ast> TypeCheckContext<'ast> {
         unimplemented!()
     }
 
-    fn check_struct_expr(&mut self) -> TyId {
-        unimplemented!()
+    fn check_struct_expr(&mut self, expr: &StructExpr) -> TyId {
+        let Some((def, variant)) = self.resolve_path_to_struct(&expr.path) else {
+            self.diagnostics.push(UnresolvedType::new(
+                expr.path.span,
+                display_path(&expr.path, &self.symbols),
+            ));
+            return self.ty(TyKind::Err);
+        };
+        let declared_fields: Vec<(Symbol, TyId)> =
+            variant.fields.iter().map(|f| (f.name, f.ty)).collect();
+
+        self.record_path_reference(&expr.path, def);
+
+        let mut provided_fields = Vec::with_capacity(expr.fields.len());
+        for field in &expr.fields {
+            let expected = declared_fields
+                .iter()
+                .find(|(name, _)| *name == field.ident.symbol)
+                .map(|(_, ty)| *ty);
+            self.check_expr(&field.expr, expected);
+            match expected {
+                Some(_) => provided_fields.push(field.ident.symbol),
+                None => self.diagnostics.push(UnknownField::new(
+                    field.span,
+                    self.symbols.resolve(field.ident.symbol).to_owned(),
+                    display_path(&expr.path, &self.symbols),
+                )),
+            }
+        }
+
+        let ty = self.ty(TyKind::Struct(def));
+
+        if let Some(rest) = &expr.rest {
+            self.check_expr(rest, Some(ty));
+        } else {
+            for &(name, _) in &declared_fields {
+                if !provided_fields.contains(&name) {
+                    self.diagnostics.push(MissingField::new(
+                        expr.path.span,
+                        self.symbols.resolve(name).to_owned(),
+                        display_path(&expr.path, &self.symbols),
+                    ));
+                }
+            }
+        }
+
+        ty
     }
 
     fn check_try_expr(&mut self) -> TyId {

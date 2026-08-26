@@ -87,7 +87,10 @@ mod tests {
     fn parses_a_simple_path_type() {
         let tokens = tokens("int");
         let mut state = crate::State::default();
-        let parsed = ty().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = ty()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
@@ -173,7 +176,10 @@ mod tests {
     fn parses_a_generic_path_type() {
         let tokens = tokens("Vec<int>");
         let mut state = crate::State::default();
-        let parsed = ty().parse_with_state(tokens, &mut state).into_result().expect("should parse");
+        let parsed = ty()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
