@@ -1,0 +1,16 @@
+[package]
+name = "intern"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "A string interner giving names cheap, Copy handles across the compiler"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["interner", "compiler"]
+categories = ["compilers"]
+# repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

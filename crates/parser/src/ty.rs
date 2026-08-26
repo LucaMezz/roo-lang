@@ -86,12 +86,13 @@ mod tests {
     #[test]
     fn parses_a_simple_path_type() {
         let tokens = tokens("int");
-        let parsed = ty().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = ty().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
         assert_eq!(path.segments.len(), 1);
-        assert_eq!(path.segments[0].ident.name, "int");
+        assert_eq!(state.resolve(path.segments[0].ident.symbol), "int");
         assert!(path.segments[0].args.is_none());
     }
 
@@ -171,12 +172,13 @@ mod tests {
     #[test]
     fn parses_a_generic_path_type() {
         let tokens = tokens("Vec<int>");
-        let parsed = ty().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = ty().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let TyKind::Path(path) = parsed.kind else {
             panic!("expected TyKind::Path, got {:?}", parsed.kind);
         };
         assert_eq!(path.segments.len(), 1);
-        assert_eq!(path.segments[0].ident.name, "Vec");
+        assert_eq!(state.resolve(path.segments[0].ident.symbol), "Vec");
         let args = path.segments[0]
             .args
             .as_ref()

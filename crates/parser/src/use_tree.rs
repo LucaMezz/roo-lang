@@ -49,14 +49,15 @@ mod tests {
     #[test]
     fn parses_a_renamed_use() {
         let tokens = tokens("foo as bar");
+        let mut state = crate::State::default();
         let parsed = use_tree()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Simple(Some(rename)) = parsed.kind else {
             panic!("expected UseTreeKind::Simple(Some(_))");
         };
-        assert_eq!(rename.name, "bar");
+        assert_eq!(state.resolve(rename.symbol), "bar");
     }
 
     #[test]
@@ -84,23 +85,25 @@ mod tests {
     #[test]
     fn parses_a_nested_use_group() {
         let tokens = tokens("foo::{a, b}");
+        let mut state = crate::State::default();
         let parsed = use_tree()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
             panic!("expected UseTreeKind::Nested");
         };
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].prefix.segments[0].ident.name, "a");
-        assert_eq!(items[1].prefix.segments[0].ident.name, "b");
+        assert_eq!(state.resolve(items[0].prefix.segments[0].ident.symbol), "a");
+        assert_eq!(state.resolve(items[1].prefix.segments[0].ident.symbol), "b");
     }
 
     #[test]
     fn parses_a_nested_group_with_varied_items() {
         let tokens = tokens("foo::{a::b, c::*, d as e}");
+        let mut state = crate::State::default();
         let parsed = use_tree()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let UseTreeKind::Nested { items, .. } = parsed.kind else {
@@ -113,7 +116,7 @@ mod tests {
         let UseTreeKind::Simple(Some(ref rename)) = items[2].kind else {
             panic!("expected UseTreeKind::Simple(Some(_))");
         };
-        assert_eq!(rename.name, "e");
+        assert_eq!(state.resolve(rename.symbol), "e");
     }
 
     #[test]

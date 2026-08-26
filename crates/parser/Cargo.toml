@@ -14,6 +14,7 @@ categories = ["compilers", "parser-implementations"]
 chumsky = { version = "0.13.0", features = ["pratt"] }
 lexer = { version = "0.1.0", path = "../lexer" }
 ast = { version = "0.1.0", path = "../ast" }
+intern = { version = "0.1.0", path = "../intern" }
 
 [lints]
 workspace = true

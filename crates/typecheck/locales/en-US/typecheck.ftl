@@ -38,5 +38,5 @@ unresolved-type = cannot find type `{$path}` in this scope
 
 unresolved-value = cannot find value `{$path}` in this scope
 
-already-defined = the name `{$name}` is defined multiple times
+already-defined = the symbol `{$name}` is defined multiple times
 already-defined-original = previously defined here

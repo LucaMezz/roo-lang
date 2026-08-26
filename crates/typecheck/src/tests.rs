@@ -3,51 +3,54 @@ use std::ops::Range;
 
 use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
+use intern::Interner;
 
 fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .expect("should parse");
 
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(state.0);
     cx.resolve(&items);
     cx
 }
 
 fn resolve_and_lower<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .expect("should parse");
 
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(state.0);
     cx.resolve(&items);
     cx.lower_signatures(&items);
     cx
 }
 
-fn lookup(cx: &TypeCheckContext<'_>, scope: ScopeId, namespace: Namespace, name: &str) -> bool {
-    let Some(&name) = cx.names.ids.get(name) else {
+fn lookup(cx: &TypeCheckContext<'_>, scope: ScopeId, namespace: Namespace, symbol: &str) -> bool {
+    let Some(symbol) = cx.symbols.get(symbol) else {
         return false;
     };
     let map = match namespace {
         Namespace::Type => &cx.scopes[scope].types,
         Namespace::Value => &cx.scopes[scope].values,
     };
-    map.contains_key(&name)
+    map.contains_key(&symbol)
 }
 
-fn path(segments: &[&str]) -> Path {
+fn path(symbols: &mut Interner, segments: &[&str]) -> Path {
     let dummy_span = ast::Span { start: 0, end: 0 };
     Path {
         segments: segments
             .iter()
-            .map(|name| ast::PathSegment {
+            .map(|symbol| ast::PathSegment {
                 ident: ast::Ident {
-                    name: name.to_string(),
+                    symbol: symbols.intern(symbol),
                     span: dummy_span,
                 },
                 args: None,
@@ -57,40 +60,39 @@ fn path(segments: &[&str]) -> Path {
     }
 }
 
-fn expr(source: &str) -> Expr {
+fn parse_into<'src, O>(
+    symbols: &mut Interner,
+    parser: impl parser::RooParser<'src, O>,
+    source: &'src str,
+) -> O {
     let tokens = lexer::tokenize_all(source).expect("should lex");
-    parser::expr()
-        .parse(parser::input(tokens))
+    let mut state = parser::State::from(std::mem::take(symbols));
+    let result = parser
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
-        .expect("should parse")
+        .expect("should parse");
+    *symbols = state.0;
+    result
 }
 
-fn ty(source: &str) -> Ty {
-    let tokens = lexer::tokenize_all(source).expect("should lex");
-    parser::ty()
-        .parse(parser::input(tokens))
-        .into_result()
-        .expect("should parse")
+fn expr(symbols: &mut Interner, source: &str) -> Expr {
+    parse_into(symbols, parser::expr(), source)
 }
 
-fn pat(source: &str) -> Pat {
-    let tokens = lexer::tokenize_all(source).expect("should lex");
-    parser::pat(parser::expr())
-        .parse(parser::input(tokens))
-        .into_result()
-        .expect("should parse")
+fn ty(symbols: &mut Interner, source: &str) -> Ty {
+    parse_into(symbols, parser::ty(), source)
 }
 
-fn block(source: &str) -> Block {
-    let tokens = lexer::tokenize_all(source).expect("should lex");
-    parser::block(parser::expr())
-        .parse(parser::input(tokens))
-        .into_result()
-        .expect("should parse")
+fn pat(symbols: &mut Interner, source: &str) -> Pat {
+    parse_into(symbols, parser::pat(parser::expr()), source)
 }
 
-fn local(source: &str) -> Local {
-    let mut blk = block(&format!("{{ {source} }}"));
+fn block(symbols: &mut Interner, source: &str) -> Block {
+    parse_into(symbols, parser::block(parser::expr()), source)
+}
+
+fn local(symbols: &mut Interner, source: &str) -> Local {
+    let mut blk = block(symbols, &format!("{{ {source} }}"));
     let stmt = blk.stmts.remove(0);
     let StmtKind::Let(local) = stmt.kind else {
         panic!("expected a let statement, got {:?}", stmt.kind);
@@ -103,18 +105,18 @@ fn resolved_kind(cx: &mut TypeCheckContext<'_>, ty: TyId) -> Option<TyKind> {
     cx.inf.ty(resolved).cloned()
 }
 
-fn declared_symbol(
+fn declared_binding(
     cx: &TypeCheckContext<'_>,
     scope: ScopeId,
     namespace: Namespace,
-    name: &str,
-) -> Option<SymbolId> {
-    let name = *cx.names.ids.get(name)?;
+    symbol: &str,
+) -> Option<BindingId> {
+    let symbol = cx.symbols.get(symbol)?;
     let map = match namespace {
         Namespace::Type => &cx.scopes[scope].types,
         Namespace::Value => &cx.scopes[scope].values,
     };
-    map.get(&name).copied()
+    map.get(&symbol).copied()
 }
 
 #[test]
@@ -124,7 +126,7 @@ fn declares_a_free_fn_in_the_value_namespace() {
 }
 
 #[test]
-fn declares_a_named_struct_only_in_the_type_namespace() {
+fn declares_a_symbold_struct_only_in_the_type_namespace() {
     let cx = resolve("struct Foo { x: int }");
     assert!(lookup(&cx, cx.current_scope, Namespace::Type, "Foo"));
     assert!(!lookup(&cx, cx.current_scope, Namespace::Value, "Foo"));
@@ -138,7 +140,7 @@ fn declares_a_tuple_struct_in_both_namespaces() {
 }
 
 #[test]
-fn a_struct_and_a_fn_can_share_a_name() {
+fn a_struct_and_a_fn_can_share_a_symbol() {
     let cx = resolve("struct Foo { x: int } fn Foo() {}");
     assert!(lookup(&cx, cx.current_scope, Namespace::Type, "Foo"));
     assert!(lookup(&cx, cx.current_scope, Namespace::Value, "Foo"));
@@ -173,60 +175,69 @@ fn an_item_nested_inside_a_fn_body_is_hoisted_into_its_own_scope() {
 }
 
 #[test]
-fn resolve_path_finds_a_single_segment_name() {
+fn resolve_path_finds_a_single_segment_symbol() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path_to_type(&path(&["Foo"])).is_some());
+    let target = path(&mut cx.symbols, &["Foo"]);
+    assert!(cx.resolve_path_to_type(&target).is_some());
 }
 
 #[test]
-fn resolve_path_fails_on_an_undeclared_name() {
+fn resolve_path_fails_on_an_undeclared_symbol() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path_to_type(&path(&["Bar"])).is_none());
+    let target = path(&mut cx.symbols, &["Bar"]);
+    assert!(cx.resolve_path_to_type(&target).is_none());
 }
 
 #[test]
 fn resolve_path_checks_the_requested_namespace() {
     let mut cx = resolve("struct Foo { x: int }");
-    assert!(cx.resolve_path_to_value(&path(&["Foo"])).is_none());
+    let target = path(&mut cx.symbols, &["Foo"]);
+    assert!(cx.resolve_path_to_value(&target).is_none());
 }
 
 #[test]
 fn resolve_path_walks_through_a_module() {
     let mut cx = resolve("mod m { fn baz() {} }");
-    let resolved = cx.resolve_path_to_value(&path(&["m", "baz"]));
+    let target = path(&mut cx.symbols, &["m", "baz"]);
+    let resolved = cx.resolve_path_to_value(&target);
     assert!(resolved.is_some());
 }
 
 #[test]
 fn resolve_path_rejects_walking_through_a_non_module_segment() {
     let mut cx = resolve("struct Foo { x: int } fn bar() {}");
-    assert!(cx.resolve_path_to_value(&path(&["Foo", "bar"])).is_none());
+    let target = path(&mut cx.symbols, &["Foo", "bar"]);
+    assert!(cx.resolve_path_to_value(&target).is_none());
 }
 
 #[test]
-fn resolve_path_module_segment_is_looked_up_by_namespace_not_by_name_alone() {
+fn resolve_path_module_segment_is_looked_up_by_namespace_not_by_symbol_alone() {
     let mut cx = resolve("mod m { fn baz() {} } fn m() {}");
-    assert!(cx.resolve_path_to_value(&path(&["m", "baz"])).is_some());
+    let target = path(&mut cx.symbols, &["m", "baz"]);
+    assert!(cx.resolve_path_to_value(&target).is_some());
 }
 
 #[test]
 fn lower_ty_never() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("!"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "!");
+    let t = cx.lower_ty(&ty_val);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_paren_unwraps_to_the_inner_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("(!)"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "(!)");
+    let t = cx.lower_ty(&ty_val);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn lower_ty_array_wraps_the_element_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("[!]"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "[!]");
+    let t = cx.lower_ty(&ty_val);
     let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
         panic!("should be an Array ty");
     };
@@ -235,8 +246,9 @@ fn lower_ty_array_wraps_the_element_type() {
 
 #[test]
 fn lower_ty_tup_builds_one_arg_per_element() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("(!, !)"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "(!, !)");
+    let t = cx.lower_ty(&ty_val);
     let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Tuple ty");
     };
@@ -245,15 +257,17 @@ fn lower_ty_tup_builds_one_arg_per_element() {
 
 #[test]
 fn lower_ty_unit_is_a_zero_arg_tuple() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("()"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "()");
+    let t = cx.lower_ty(&ty_val);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn lower_ty_fn_with_explicit_return_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("Fn(!) -> !"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "Fn(!) -> !");
+    let t = cx.lower_ty(&ty_val);
     let Some(TyKind::Fn(params, ret)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Fn ty");
     };
@@ -263,8 +277,9 @@ fn lower_ty_fn_with_explicit_return_type() {
 
 #[test]
 fn lower_ty_fn_with_no_return_type_defaults_to_a_fresh_unbound_var() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("Fn(!)"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "Fn(!)");
+    let t = cx.lower_ty(&ty_val);
     let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Fn ty");
     };
@@ -274,15 +289,16 @@ fn lower_ty_fn_with_no_return_type_defaults_to_a_fresh_unbound_var() {
 
 #[test]
 fn lower_ty_infer_produces_a_fresh_unbound_var() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("_"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "_");
+    let t = cx.lower_ty(&ty_val);
     let resolved = cx.inf.resolve(t);
     assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
 fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let err_ty = Ty {
         kind: AstTyKind::Err,
         span: ast::Span { start: 0, end: 0 },
@@ -293,7 +309,7 @@ fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
 }
 
 #[test]
-fn lower_ty_path_resolves_primitive_names() {
+fn lower_ty_path_resolves_primitive_symbols() {
     let cases = [
         ("bool", TyKind::Bool),
         ("int", TyKind::Int),
@@ -302,8 +318,9 @@ fn lower_ty_path_resolves_primitive_names() {
         ("String", TyKind::Str),
     ];
     for (src, expected) in cases {
-        let mut cx = TypeCheckContext::new();
-        let t = cx.lower_ty(&ty(src));
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let ty_val = ty(&mut cx.symbols, src);
+        let t = cx.lower_ty(&ty_val);
         assert_eq!(resolved_kind(&mut cx, t), Some(expected), "input: {src}");
     }
 }
@@ -311,90 +328,104 @@ fn lower_ty_path_resolves_primitive_names() {
 #[test]
 fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
     let mut cx = resolve("struct Foo { x: int }");
-    let symbol = cx
-        .resolve_path_to_type(&path(&["Foo"]))
+    let target = path(&mut cx.symbols, &["Foo"]);
+    let binding = cx
+        .resolve_path_to_type(&target)
         .expect("Foo should resolve");
 
-    let t = cx.lower_ty(&ty("Foo"));
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(symbol)));
+    let ty_val = ty(&mut cx.symbols, "Foo");
+    let t = cx.lower_ty(&ty_val);
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(binding)));
 }
 
 #[test]
 fn lower_ty_path_resolves_a_declared_enum_by_nominal_identity() {
     let mut cx = resolve("enum Foo { Bar }");
-    let symbol = cx
-        .resolve_path_to_type(&path(&["Foo"]))
+    let target = path(&mut cx.symbols, &["Foo"]);
+    let binding = cx
+        .resolve_path_to_type(&target)
         .expect("Foo should resolve");
 
-    let t = cx.lower_ty(&ty("Foo"));
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Enum(symbol)));
+    let ty_val = ty(&mut cx.symbols, "Foo");
+    let t = cx.lower_ty(&ty_val);
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Enum(binding)));
 }
 
 #[test]
-fn lower_ty_path_to_an_undeclared_name_is_err() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.lower_ty(&ty("DoesNotExist"));
+fn lower_ty_path_to_an_undeclared_symbol_is_err() {
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let ty_val = ty(&mut cx.symbols, "DoesNotExist");
+    let t = cx.lower_ty(&ty_val);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
 }
 
 #[test]
 fn lower_ty_path_walks_through_a_module() {
     let mut cx = resolve("mod m { struct Foo; }");
-    let symbol = cx
-        .resolve_path_to_type(&path(&["m", "Foo"]))
+    let target = path(&mut cx.symbols, &["m", "Foo"]);
+    let binding = cx
+        .resolve_path_to_type(&target)
         .expect("m::Foo should resolve");
 
-    let t = cx.lower_ty(&ty("m::Foo"));
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(symbol)));
+    let ty_val = ty(&mut cx.symbols, "m::Foo");
+    let t = cx.lower_ty(&ty_val);
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(binding)));
 }
 
 #[test]
 fn check_expr_bool_literal() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("true"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "true");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
-    let t = cx.check_expr(&expr("false"), None);
+    let expr_val = expr(&mut cx.symbols, "false");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
 }
 
 #[test]
 fn check_expr_int_literal() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("5"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "5");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_expr_float_literal() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("5.0"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "5.0");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
 fn check_expr_str_literal() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("\"hi\""), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "\"hi\"");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Str));
 }
 
 #[test]
 fn check_expr_char_literal() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("'a'"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "'a'");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Char));
 }
 
 #[test]
 fn check_expr_paren_has_the_inner_exprs_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("(5)"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "(5)");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_expr_err_is_a_wildcard() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let err_expr = Expr {
         annotations: Vec::new(),
         kind: ExprKind::Err,
@@ -408,21 +439,24 @@ fn check_expr_err_is_a_wildcard() {
 #[test]
 fn check_expr_unifies_the_result_against_the_expected_type() {
     let mut cx = resolve("fn foo() {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
     let never_ty = cx.ty(TyKind::Never);
-    cx.check_expr(&expr("foo"), Some(never_ty));
+    let expr_val = expr(&mut cx.symbols, "foo");
+    cx.check_expr(&expr_val, Some(never_ty));
 
-    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
+    assert_eq!(resolved_kind(&mut cx, binding_ty), Some(TyKind::Never));
 }
 
 #[test]
 fn check_expr_tup_elements_keep_independent_types() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("(1, \"hi\")"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "(1, \"hi\")");
+    let t = cx.check_expr(&expr_val, None);
     let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Tuple ty");
     };
@@ -432,8 +466,9 @@ fn check_expr_tup_elements_keep_independent_types() {
 
 #[test]
 fn check_expr_array_elements_are_unified_with_each_other() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("[1, 2, 3]"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "[1, 2, 3]");
+    let t = cx.check_expr(&expr_val, None);
     let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
         panic!("should be an Array ty");
     };
@@ -442,11 +477,12 @@ fn check_expr_array_elements_are_unified_with_each_other() {
 
 #[test]
 fn check_expr_empty_array_uses_the_expected_element_type() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
     let array_of_never = cx.ty(TyKind::Array(never_ty));
 
-    let t = cx.check_expr(&expr("[]"), Some(array_of_never));
+    let expr_val = expr(&mut cx.symbols, "[]");
+    let t = cx.check_expr(&expr_val, Some(array_of_never));
     let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
         panic!("should be an Array ty");
     };
@@ -454,43 +490,49 @@ fn check_expr_empty_array_uses_the_expected_element_type() {
 }
 
 #[test]
-fn check_expr_path_resolves_to_the_symbols_type() {
+fn check_expr_path_resolves_to_the_bindings_type() {
     let mut cx = resolve("fn foo() {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    let t = cx.check_expr(&expr("foo"), None);
-    assert_eq!(t, symbol_ty);
+    let expr_val = expr(&mut cx.symbols, "foo");
+    let t = cx.check_expr(&expr_val, None);
+    assert_eq!(t, binding_ty);
 }
 
 #[test]
-fn check_expr_path_to_an_undeclared_name_is_err() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("doesNotExist"), None);
+fn check_expr_path_to_an_undeclared_symbol_is_err() {
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "doesNotExist");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
 }
 
 #[test]
 fn check_expr_cast_lowers_the_target_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("5 as float"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "5 as float");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
 fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
     let mut cx = resolve("fn foo() {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    cx.check_expr(&expr("foo()"), None);
+    let expr_val = expr(&mut cx.symbols, "foo()");
+    cx.check_expr(&expr_val, None);
 
     assert!(matches!(
-        resolved_kind(&mut cx, symbol_ty),
+        resolved_kind(&mut cx, binding_ty),
         Some(TyKind::Fn(..))
     ));
 }
@@ -498,14 +540,16 @@ fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
 #[test]
 fn check_expr_call_checks_arguments_against_the_signature() {
     let mut cx = resolve("fn foo() {}");
-    cx.check_expr(&expr("foo(5)"), None);
+    let expr_val = expr(&mut cx.symbols, "foo(5)");
+    cx.check_expr(&expr_val, None);
 
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should be a Fn ty");
     };
     assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
@@ -545,7 +589,7 @@ fn use_it() {
 fn check_all_referencing_an_undefined_value_is_an_error() {
     let source = r#"
 fn use_it() {
-    let x = totally_undefined_name;
+    let x = totally_undefined_symbol;
 }
 "#;
     let cx = check_all(source);
@@ -555,11 +599,11 @@ fn use_it() {
     let d = &diagnostics[0];
     assert_eq!(
         d.message(),
-        "cannot find value `totally_undefined_name` in this scope"
+        "cannot find value `totally_undefined_symbol` in this scope"
     );
     assert_eq!(
         &source[d.span().start..d.span().end],
-        "totally_undefined_name"
+        "totally_undefined_symbol"
     );
 }
 
@@ -571,7 +615,7 @@ fn check_all_redeclaring_a_function_in_the_same_scope_is_an_error() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
 
     let d = &diagnostics[0];
-    assert_eq!(d.message(), "the name `foo` is defined multiple times");
+    assert_eq!(d.message(), "the symbol `foo` is defined multiple times");
     assert_eq!(&source[d.span().start..d.span().end], "foo");
     assert_eq!(d.related().len(), 1);
     let (related_span, related_message) = &d.related()[0];
@@ -587,19 +631,19 @@ fn check_all_redeclaring_a_module_in_the_same_scope_is_an_error() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(
         diagnostics[0].message(),
-        "the name `m` is defined multiple times"
+        "the symbol `m` is defined multiple times"
     );
 }
 
 #[test]
-fn check_all_duplicate_parameter_names_are_an_error() {
+fn check_all_duplicate_parameter_symbols_are_an_error() {
     let source = "fn use_it(x: int, x: bool) {}";
     let cx = check_all(source);
     let diagnostics = cx.diagnostics();
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(
         diagnostics[0].message(),
-        "the name `x` is defined multiple times"
+        "the symbol `x` is defined multiple times"
     );
 }
 
@@ -617,7 +661,7 @@ fn use_it() {
 }
 
 #[test]
-fn check_all_a_let_binding_can_shadow_a_parameter_of_the_same_name() {
+fn check_all_a_let_binding_can_shadow_a_parameter_of_the_same_symbol() {
     let source = r#"
 fn use_it(x: int) {
     let x = "shadow the param";
@@ -637,11 +681,12 @@ fn apply(f, x) {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let target = path(&mut cx.symbols, &["apply"]);
     let apply = cx
-        .resolve_path_to_value(&path(&["apply"]))
+        .resolve_path_to_value(&target)
         .expect("apply should resolve");
     assert_eq!(
-        cx.symbol(apply).generics().len(),
+        cx.binding(apply).generics().len(),
         2,
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
@@ -697,28 +742,31 @@ fn check_all_a_generic_ty_alias_referencing_only_its_own_params_is_not_cyclic() 
 #[test]
 fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
     let mut cx = resolve("fn foo() {}");
-    let t = cx.check_expr(&expr("foo()"), None);
+    let expr_val = expr(&mut cx.symbols, "foo()");
+    let t = cx.check_expr(&expr_val, None);
     let resolved = cx.inf.resolve(t);
     assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
 fn check_expr_ret_with_no_value_is_never() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("return"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "return");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn check_expr_ret_with_a_value_is_still_never_not_the_values_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("return 5"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "return 5");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn never_is_a_wildcard_that_unifies_with_anything() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
     let int_ty = cx.ty(TyKind::Int);
     assert!(cx.inf.unify(never_ty, int_ty).is_ok());
@@ -726,142 +774,159 @@ fn never_is_a_wildcard_that_unifies_with_anything() {
 
 #[test]
 fn if_with_no_else_and_a_unit_then_branch_is_unit_typed() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn if_branches_are_unified_together() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { 1 } else { 2 }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { 1 } else { 2 }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_prefers_the_else_branchs_type_when_the_then_branch_diverges() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { return } else { 5 }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { return } else { 5 }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { 5 } else { return }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { 5 } else { return }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn if_is_never_when_both_branches_diverge() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { return } else { return }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { return } else { return }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
 fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges_via_a_semicolon() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_expr(&expr("if true { 5 } else { return 0; }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let expr_val = expr(&mut cx.symbols, "if true { 5 } else { return 0; }");
+    let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_empty_is_unit() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{}"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{}");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn check_block_trailing_expr_with_no_semicolon_is_its_type() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{ 5 }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{ 5 }");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_trailing_expr_with_a_semicolon_does_not_count() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{ 5; }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{ 5; }");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
 }
 
 #[test]
 fn check_block_a_semicolon_tyinated_return_makes_the_block_never() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{ return 0; }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{ return 0; }");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
 }
 
 #[test]
-fn check_block_a_non_trailing_let_declares_a_symbol_visible_to_later_statements() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{ let x = 5; x }"), None);
+fn check_block_a_non_trailing_let_declares_a_binding_visible_to_later_statements() {
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{ let x = 5; x }");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
 }
 
 #[test]
 fn check_block_a_non_trailing_lets_ascription_propagates_to_a_later_reference() {
-    let mut cx = TypeCheckContext::new();
-    let t = cx.check_block(&block("{ let x: float; let y = x; y }"), None);
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let block_val = block(&mut cx.symbols, "{ let x: float; let y = x; y }");
+    let t = cx.check_block(&block_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
 }
 
 #[test]
-fn check_pat_ident_declares_a_local_symbol() {
-    let mut cx = TypeCheckContext::new();
+fn check_pat_ident_declares_a_local_binding() {
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
-    cx.check_pat(&pat("x"), never_ty, PatDeclKind::Let);
+    let pat_val = pat(&mut cx.symbols, "x");
+    cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
 
     assert!(lookup(&cx, cx.current_scope, Namespace::Value, "x"));
 }
 
 #[test]
 fn check_pat_ident_binds_the_locals_type_to_expected() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
-    cx.check_pat(&pat("x"), never_ty, PatDeclKind::Let);
+    let pat_val = pat(&mut cx.symbols, "x");
+    cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
 
-    let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
+    let binding = declared_binding(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty();
-    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
+    let binding_ty = cx.binding(binding).ty();
+    assert_eq!(resolved_kind(&mut cx, binding_ty), Some(TyKind::Never));
 }
 
 #[test]
 fn check_pat_wild_matches_anything_and_binds_nothing() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
-    let t = cx.check_pat(&pat("_"), never_ty, PatDeclKind::Let);
+    let pat_val = pat(&mut cx.symbols, "_");
+    let t = cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
     assert_eq!(t, never_ty);
-    assert!(cx.symbols.is_empty());
+    assert!(cx.bindings.is_empty());
 }
 
 #[test]
 fn check_pat_tuple_declares_one_local_per_position() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let never_ty = cx.ty(TyKind::Never);
     let int_ty = cx.ty(TyKind::Int);
     let expected = cx.ty(TyKind::Tuple(vec![never_ty, int_ty]));
 
-    cx.check_pat(&pat("(a, b)"), expected, PatDeclKind::Let);
+    let pat_val = pat(&mut cx.symbols, "(a, b)");
+    cx.check_pat(&pat_val, expected, PatDeclKind::Let);
 
-    let a = declared_symbol(&cx, cx.current_scope, Namespace::Value, "a")
+    let a = declared_binding(&cx, cx.current_scope, Namespace::Value, "a")
         .expect("a should be declared");
-    let b = declared_symbol(&cx, cx.current_scope, Namespace::Value, "b")
+    let b = declared_binding(&cx, cx.current_scope, Namespace::Value, "b")
         .expect("b should be declared");
-    let a_ty = cx.symbol(a).ty();
-    let b_ty = cx.symbol(b).ty();
+    let a_ty = cx.binding(a).ty();
+    let b_ty = cx.binding(b).ty();
     assert_eq!(resolved_kind(&mut cx, a_ty), Some(TyKind::Never));
     assert_eq!(resolved_kind(&mut cx, b_ty), Some(TyKind::Int));
 }
 
 #[test]
 fn check_pat_tuple_with_no_matching_expected_shape_uses_fresh_vars_per_position() {
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(Interner::new());
     let int_ty = cx.ty(TyKind::Int);
-    let t = cx.check_pat(&pat("(a, b)"), int_ty, PatDeclKind::Let);
+    let pat_val = pat(&mut cx.symbols, "(a, b)");
+    let t = cx.check_pat(&pat_val, int_ty, PatDeclKind::Let);
     let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Tuple ty");
     };
@@ -870,37 +935,41 @@ fn check_pat_tuple_with_no_matching_expected_shape_uses_fresh_vars_per_position(
 
 #[test]
 fn check_local_declares_the_pattern_with_the_initializers_type() {
-    let mut cx = TypeCheckContext::new();
-    cx.check_local(&local("let x = 5;"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let local_val = local(&mut cx.symbols, "let x = 5;");
+    cx.check_local(&local_val);
 
-    let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
+    let binding = declared_binding(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty();
-    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
+    let binding_ty = cx.binding(binding).ty();
+    assert_eq!(resolved_kind(&mut cx, binding_ty), Some(TyKind::Int));
 }
 
 #[test]
 fn check_local_with_no_initializer_uses_the_ascription() {
-    let mut cx = TypeCheckContext::new();
-    cx.check_local(&local("let x: !;"));
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let local_val = local(&mut cx.symbols, "let x: !;");
+    cx.check_local(&local_val);
 
-    let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
+    let binding = declared_binding(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty();
-    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
+    let binding_ty = cx.binding(binding).ty();
+    assert_eq!(resolved_kind(&mut cx, binding_ty), Some(TyKind::Never));
 }
 
 #[test]
 fn check_local_ascription_constrains_the_initializer() {
     let mut cx = resolve("fn foo() {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
 
-    cx.check_local(&local("let x: ! = foo();"));
+    let local_val = local(&mut cx.symbols, "let x: ! = foo();");
+    cx.check_local(&local_val);
 
-    let symbol_ty = cx.symbol(symbol).ty();
-    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+    let binding_ty = cx.binding(binding).ty();
+    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should be a Fn ty");
     };
     assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Never));
@@ -909,12 +978,13 @@ fn check_local_ascription_constrains_the_initializer() {
 #[test]
 fn lower_signatures_fn_with_typed_params_and_return() {
     let mut cx = resolve_and_lower("fn add(a: int, b: int) -> float { a }");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["add"]))
+    let target = path(&mut cx.symbols, &["add"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("add should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    let Some(TyKind::Fn(input_args, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+    let Some(TyKind::Fn(input_args, ret)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should be a Fn ty");
     };
     assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
@@ -925,12 +995,13 @@ fn lower_signatures_fn_with_typed_params_and_return() {
 #[test]
 fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
     let mut cx = resolve_and_lower("fn foo() {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
+    let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should be a Fn ty");
     };
     let resolved = cx.inf.resolve(ret);
@@ -940,12 +1011,13 @@ fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
 #[test]
 fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
     let mut cx = resolve_and_lower("fn foo(x) {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should be a Fn ty");
     };
     let resolved = cx.inf.resolve(input_args[0]);
@@ -955,11 +1027,12 @@ fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
 #[test]
 fn lower_signatures_ty_alias() {
     let mut cx = resolve_and_lower("type MyInt = int;");
-    let symbol = cx
-        .resolve_path_to_type(&path(&["MyInt"]))
+    let target = path(&mut cx.symbols, &["MyInt"]);
+    let binding = cx
+        .resolve_path_to_type(&target)
         .expect("MyInt should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
-    assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
+    let binding_ty = cx.binding(binding).ty();
+    assert_eq!(resolved_kind(&mut cx, binding_ty), Some(TyKind::Int));
 }
 
 #[test]
@@ -970,11 +1043,11 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
         .iter()
         .find_map(|(id, scope)| (scope.parent == Some(cx.current_scope)).then_some(id))
         .expect("outer's body should have a child scope");
-    let symbol = declared_symbol(&cx, body_scope, Namespace::Value, "inner")
+    let binding = declared_binding(&cx, body_scope, Namespace::Value, "inner")
         .expect("inner should be declared");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
     assert!(matches!(
-        resolved_kind(&mut cx, symbol_ty),
+        resolved_kind(&mut cx, binding_ty),
         Some(TyKind::Fn(..))
     ));
 }
@@ -982,19 +1055,18 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
 #[test]
 fn lower_signatures_recurses_into_a_mod() {
     let mut cx = resolve_and_lower("mod m { fn baz(x: bool) {} }");
-    let m_symbol = cx
-        .resolve_path_to_type(&path(&["m"]))
-        .expect("m should resolve");
-    let SymbolKind::Mod(m_scope) = &cx.symbol(m_symbol).kind else {
-        panic!("m should be a Mod symbol");
+    let target = path(&mut cx.symbols, &["m"]);
+    let m_binding = cx.resolve_path_to_type(&target).expect("m should resolve");
+    let BindingKind::Mod(m_scope) = &cx.binding(m_binding).kind else {
+        panic!("m should be a Mod binding");
     };
     let m_scope = *m_scope;
 
-    let symbol =
-        declared_symbol(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding =
+        declared_binding(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
+    let binding_ty = cx.binding(binding).ty();
     assert!(matches!(
-        resolved_kind(&mut cx, symbol_ty),
+        resolved_kind(&mut cx, binding_ty),
         Some(TyKind::Fn(..))
     ));
 }
@@ -1003,10 +1075,11 @@ fn lower_signatures_recurses_into_a_mod() {
 fn lower_use_tree_simple_imports_a_value_into_the_current_scope() {
     let mut cx = resolve_and_lower("mod m { fn baz() {} } use m::baz;");
 
+    let target = path(&mut cx.symbols, &["m", "baz"]);
     let original = cx
-        .resolve_path_to_value(&path(&["m", "baz"]))
+        .resolve_path_to_value(&target)
         .expect("m::baz should resolve");
-    let imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz")
+    let imported = declared_binding(&cx, cx.current_scope, Namespace::Value, "baz")
         .expect("baz should have been imported into the current scope");
 
     assert_eq!(imported, original);
@@ -1016,16 +1089,18 @@ fn lower_use_tree_simple_imports_a_value_into_the_current_scope() {
 fn lower_use_tree_glob_imports_every_item_from_a_module() {
     let mut cx = resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::*;");
 
+    let foo_target = path(&mut cx.symbols, &["m", "Foo"]);
     let foo_original = cx
-        .resolve_path_to_type(&path(&["m", "Foo"]))
+        .resolve_path_to_type(&foo_target)
         .expect("m::Foo should resolve");
+    let baz_target = path(&mut cx.symbols, &["m", "baz"]);
     let baz_original = cx
-        .resolve_path_to_value(&path(&["m", "baz"]))
+        .resolve_path_to_value(&baz_target)
         .expect("m::baz should resolve");
 
-    let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
+    let foo_imported = declared_binding(&cx, cx.current_scope, Namespace::Type, "Foo")
         .expect("Foo should have been imported into the current scope");
-    let baz_imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz")
+    let baz_imported = declared_binding(&cx, cx.current_scope, Namespace::Value, "baz")
         .expect("baz should have been imported into the current scope");
 
     assert_eq!(foo_imported, foo_original);
@@ -1033,41 +1108,45 @@ fn lower_use_tree_glob_imports_every_item_from_a_module() {
 }
 
 #[test]
-fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_renames() {
+fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_resymbols() {
     let mut cx =
         resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::{Foo, baz as make_baz};");
 
+    let foo_target = path(&mut cx.symbols, &["m", "Foo"]);
     let foo_original = cx
-        .resolve_path_to_type(&path(&["m", "Foo"]))
+        .resolve_path_to_type(&foo_target)
         .expect("m::Foo should resolve");
+    let baz_target = path(&mut cx.symbols, &["m", "baz"]);
     let baz_original = cx
-        .resolve_path_to_value(&path(&["m", "baz"]))
+        .resolve_path_to_value(&baz_target)
         .expect("m::baz should resolve");
 
-    let foo_imported = declared_symbol(&cx, cx.current_scope, Namespace::Type, "Foo")
+    let foo_imported = declared_binding(&cx, cx.current_scope, Namespace::Type, "Foo")
         .expect("Foo should have been imported into the current scope");
-    let make_baz_imported = declared_symbol(&cx, cx.current_scope, Namespace::Value, "make_baz")
+    let make_baz_imported = declared_binding(&cx, cx.current_scope, Namespace::Value, "make_baz")
         .expect("baz should have been imported as make_baz");
 
     assert_eq!(foo_imported, foo_original);
     assert_eq!(make_baz_imported, baz_original);
     assert!(
-        declared_symbol(&cx, cx.current_scope, Namespace::Value, "baz").is_none(),
-        "baz should not also be imported under its original name"
+        declared_binding(&cx, cx.current_scope, Namespace::Value, "baz").is_none(),
+        "baz should not also be imported under its original symbol"
     );
 }
 
 #[test]
 fn lower_signatures_makes_the_declared_signature_authoritative() {
     let mut cx = resolve_and_lower("fn foo(x: int) {}");
-    let symbol = cx
-        .resolve_path_to_value(&path(&["foo"]))
+    let target = path(&mut cx.symbols, &["foo"]);
+    let binding = cx
+        .resolve_path_to_value(&target)
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty();
+    let binding_ty = cx.binding(binding).ty();
 
-    cx.check_expr(&expr("foo(\"wrong\")"), None);
+    let expr_val = expr(&mut cx.symbols, "foo(\"wrong\")");
+    cx.check_expr(&expr_val, None);
 
-    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
+    let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, binding_ty) else {
         panic!("should still be a Fn ty");
     };
     assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
@@ -1075,23 +1154,24 @@ fn lower_signatures_makes_the_declared_signature_authoritative() {
 
 fn check_all(source: &str) -> TypeCheckContext<'static> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .expect("should parse");
     let items: &'static [Box<Item>] = Vec::leak(items);
 
-    let mut cx = TypeCheckContext::new();
+    let mut cx = TypeCheckContext::new(state.0);
     cx.resolve(items);
     cx.lower_signatures(items);
     cx.check(items);
     cx
 }
 
-fn fn_body_scope(cx: &TypeCheckContext<'_>, symbol: SymbolId) -> ScopeId {
-    match &cx.symbol(symbol).kind {
-        SymbolKind::Fn(fn_data) => fn_data.scope,
-        _ => panic!("expected a Fn symbol"),
+fn fn_body_scope(cx: &TypeCheckContext<'_>, binding: BindingId) -> ScopeId {
+    match &cx.binding(binding).kind {
+        BindingKind::Fn(fn_data) => fn_data.scope,
+        _ => panic!("expected a Fn binding"),
     }
 }
 
@@ -1099,7 +1179,7 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
     if generics.is_empty() {
         return String::new();
     }
-    let names: Vec<String> = generics
+    let symbols: Vec<String> = generics
         .iter()
         .map(|id| {
             generic_names
@@ -1108,13 +1188,13 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
                 .unwrap_or_else(|| "<generic>".to_owned())
         })
         .collect();
-    format!("<{}>", names.join(", "))
+    format!("<{}>", symbols.join(", "))
 }
 
 struct Renderer<'a> {
     inf: &'a mut InferenceTable,
-    symbols: &'a SlotMap<SymbolId, Symbol>,
-    names: &'a NameInterner,
+    bindings: &'a SlotMap<BindingId, Binding>,
+    symbols: &'a Interner,
     generic_names: &'a GenericNames,
 }
 
@@ -1122,18 +1202,18 @@ impl<'ast> TypeCheckContext<'ast> {
     fn renderer(&mut self) -> Renderer<'_> {
         Renderer {
             inf: &mut self.inf,
+            bindings: &self.bindings,
             symbols: &self.symbols,
-            names: &self.names,
             generic_names: &self.generic_names,
         }
     }
 
-    fn render_symbol_type(&mut self, symbol: SymbolId) -> String {
-        self.renderer().render_symbol_type(symbol)
+    fn render_binding_type(&mut self, binding: BindingId) -> String {
+        self.renderer().render_binding_type(binding)
     }
 
-    fn describe_symbol(&mut self, symbol: SymbolId) -> String {
-        self.renderer().describe_symbol(symbol)
+    fn describe_binding(&mut self, binding: BindingId) -> String {
+        self.renderer().describe_binding(binding)
     }
 }
 
@@ -1233,14 +1313,9 @@ impl Renderer<'_> {
                 let output_range = self.render_ty_into(buf, output, highlight);
                 inputs_range.or(output_range)
             }
-            TyKind::Struct(symbol) | TyKind::Enum(symbol) => {
-                let name = self.symbols[symbol].name;
-                let text = self
-                    .names
-                    .name(name)
-                    .cloned()
-                    .unwrap_or_else(|| "<unknown>".to_owned());
-                buf.push_str(&text);
+            TyKind::Struct(binding) | TyKind::Enum(binding) => {
+                let symbol = self.bindings[binding].symbol;
+                buf.push_str(self.symbols.resolve(symbol));
                 None
             }
             TyKind::Generic(id) => {
@@ -1255,10 +1330,10 @@ impl Renderer<'_> {
         }
     }
 
-    fn render_symbol_type(&mut self, symbol: SymbolId) -> String {
-        let ty = self.symbols[symbol].ty();
+    fn render_binding_type(&mut self, binding: BindingId) -> String {
+        let ty = self.bindings[binding].ty();
         let rendered = self.render_ty(ty);
-        let generics = self.symbols[symbol].generics();
+        let generics = self.bindings[binding].generics();
         let generics_rendered = generics_list(self.generic_names, generics);
         if generics_rendered.is_empty() {
             rendered
@@ -1267,66 +1342,59 @@ impl Renderer<'_> {
         }
     }
 
-    fn describe_symbol(&mut self, symbol: SymbolId) -> String {
-        match &self.symbols[symbol].kind {
-            SymbolKind::Fn(_) => self.describe_fn_item(symbol),
-            SymbolKind::Param(_) => {
-                let name = self.symbol_display_name(symbol);
-                let ty = self.render_symbol_type(symbol);
-                format!("{name}: {ty}")
+    fn describe_binding(&mut self, binding: BindingId) -> String {
+        match &self.bindings[binding].kind {
+            BindingKind::Fn(_) => self.describe_fn_item(binding),
+            BindingKind::Param(_) => {
+                let symbol = self.binding_display_symbol(binding);
+                let ty = self.render_binding_type(binding);
+                format!("{symbol}: {ty}")
             }
-            SymbolKind::Local(_) => {
-                let name = self.symbol_display_name(symbol);
-                let ty = self.render_symbol_type(symbol);
-                format!("let {name}: {ty}")
+            BindingKind::Local(_) => {
+                let symbol = self.binding_display_symbol(binding);
+                let ty = self.render_binding_type(binding);
+                format!("let {symbol}: {ty}")
             }
-            SymbolKind::TyAlias(_) => {
-                format!("type {}", self.alias_name_with_generics(symbol))
+            BindingKind::TyAlias(_) => {
+                format!("type {}", self.alias_symbol_with_generics(binding))
             }
-            SymbolKind::Mod(_) => format!("mod {}", self.symbol_display_name(symbol)),
-            SymbolKind::Struct
-            | SymbolKind::Enum
-            | SymbolKind::Variant
-            | SymbolKind::Trait
-            | SymbolKind::GenericParam(_) => self.render_symbol_type(symbol),
+            BindingKind::Mod(_) => format!("mod {}", self.binding_display_symbol(binding)),
+            BindingKind::Struct
+            | BindingKind::Enum
+            | BindingKind::Variant
+            | BindingKind::Trait
+            | BindingKind::GenericParam(_) => self.render_binding_type(binding),
         }
     }
 
-    fn symbol_display_name(&mut self, symbol: SymbolId) -> String {
-        let name = self.symbols[symbol].name;
-        self.names
-            .name(name)
-            .cloned()
-            .unwrap_or_else(|| "_".to_owned())
+    fn binding_display_symbol(&mut self, binding: BindingId) -> String {
+        let symbol = self.bindings[binding].symbol;
+        self.symbols.resolve(symbol).to_owned()
     }
 
-    fn alias_name_with_generics(&mut self, symbol: SymbolId) -> String {
-        let name = self.symbol_display_name(symbol);
-        let generics = self.symbols[symbol].generics();
+    fn alias_symbol_with_generics(&mut self, binding: BindingId) -> String {
+        let symbol = self.binding_display_symbol(binding);
+        let generics = self.bindings[binding].generics();
         let generics_rendered = generics_list(self.generic_names, generics);
-        format!("{name}{generics_rendered}")
+        format!("{symbol}{generics_rendered}")
     }
 
-    fn describe_fn_item(&mut self, symbol: SymbolId) -> String {
-        let name = self.symbols[symbol].name;
-        let name = self
-            .names
-            .name(name)
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_owned());
+    fn describe_fn_item(&mut self, binding: BindingId) -> String {
+        let symbol = self.bindings[binding].symbol;
+        let symbol = self.symbols.resolve(symbol).to_owned();
 
-        let generics = self.symbols[symbol].generics();
+        let generics = self.bindings[binding].generics();
         let generics_rendered = generics_list(self.generic_names, generics);
 
-        let SymbolKind::Fn(FnSymbol { param_names, .. }) = &self.symbols[symbol].kind else {
-            unreachable!("describe_fn_item is only ever called for a SymbolKind::Fn symbol");
+        let BindingKind::Fn(FnBinding { param_symbols, .. }) = &self.bindings[binding].kind else {
+            unreachable!("describe_fn_item is only ever called for a BindingKind::Fn binding");
         };
-        let param_names = param_names.clone();
+        let param_symbols = param_symbols.clone();
 
-        let ty = self.symbols[symbol].ty();
+        let ty = self.bindings[binding].ty();
         let resolved = self.inf.resolve(ty);
         let Some(TyKind::Fn(param_types, output)) = self.inf.ty(resolved).cloned() else {
-            return self.render_symbol_type(symbol);
+            return self.render_binding_type(binding);
         };
 
         let params: Vec<String> = param_types
@@ -1334,8 +1402,8 @@ impl Renderer<'_> {
             .enumerate()
             .map(|(i, &ty)| {
                 let rendered = self.render_ty(ty);
-                match param_names.get(i) {
-                    Some(name) => format!("{name}: {rendered}"),
+                match param_symbols.get(i) {
+                    Some(symbol) => format!("{symbol}: {rendered}"),
                     None => rendered,
                 }
             })
@@ -1343,7 +1411,7 @@ impl Renderer<'_> {
 
         let output_rendered = self.render_ty(output);
         format!(
-            "fn {name}{generics_rendered}({}) -> {output_rendered}",
+            "fn {symbol}{generics_rendered}({}) -> {output_rendered}",
             params.join(", ")
         )
     }
@@ -1352,37 +1420,39 @@ impl Renderer<'_> {
 #[test]
 fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type() {
     let mut cx = check_all("fn identity(x) -> int { x }");
-    let fn_symbol = cx
-        .resolve_path_to_value(&path(&["identity"]))
+    let target = path(&mut cx.symbols, &["identity"]);
+    let fn_binding = cx
+        .resolve_path_to_value(&target)
         .expect("identity should resolve");
-    let body_scope = fn_body_scope(&cx, fn_symbol);
+    let body_scope = fn_body_scope(&cx, fn_binding);
 
-    let x_symbol = declared_symbol(&cx, body_scope, Namespace::Value, "x")
+    let x_binding = declared_binding(&cx, body_scope, Namespace::Value, "x")
         .expect("x should be declared as a param");
-    let x_ty = cx.symbol(x_symbol).ty();
+    let x_ty = cx.binding(x_binding).ty();
     assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
 #[test]
 fn check_all_recurses_into_a_nested_fns_body() {
     let mut cx = check_all("fn outer() { fn inner(x) -> int { x } }");
-    let outer_symbol = cx
-        .resolve_path_to_value(&path(&["outer"]))
+    let target = path(&mut cx.symbols, &["outer"]);
+    let outer_binding = cx
+        .resolve_path_to_value(&target)
         .expect("outer should resolve");
-    let outer_scope = fn_body_scope(&cx, outer_symbol);
+    let outer_scope = fn_body_scope(&cx, outer_binding);
 
-    let inner_symbol = declared_symbol(&cx, outer_scope, Namespace::Value, "inner")
+    let inner_binding = declared_binding(&cx, outer_scope, Namespace::Value, "inner")
         .expect("inner should be declared inside outer's body");
-    let inner_scope = fn_body_scope(&cx, inner_symbol);
+    let inner_scope = fn_body_scope(&cx, inner_binding);
 
-    let x_symbol = declared_symbol(&cx, inner_scope, Namespace::Value, "x")
+    let x_binding = declared_binding(&cx, inner_scope, Namespace::Value, "x")
         .expect("x should be declared as inner's param");
-    let x_ty = cx.symbol(x_symbol).ty();
+    let x_ty = cx.binding(x_binding).ty();
     assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
 #[test]
-fn check_all_nested_fn_body_resolves_a_reference_to_an_outer_params_symbol() {
+fn check_all_nested_fn_body_resolves_a_reference_to_an_outer_params_binding() {
     let source = r#"
 fn outer(x: int) {
     fn inner() {
@@ -1396,13 +1466,13 @@ fn outer(x: int) {
     let param_use_offset = source.rfind('x').unwrap();
     assert_ne!(param_decl_offset, param_use_offset);
 
-    let decl_symbol = cx
-        .symbol_at(param_decl_offset)
+    let decl_binding = cx
+        .binding_at(param_decl_offset)
         .expect("should resolve at outer's parameter declaration");
-    let use_symbol = cx
-        .symbol_at(param_use_offset)
+    let use_binding = cx
+        .binding_at(param_use_offset)
         .expect("inner's reference to x should resolve to outer's parameter");
-    assert_eq!(decl_symbol, use_symbol);
+    assert_eq!(decl_binding, use_binding);
 }
 
 #[test]
@@ -1581,7 +1651,7 @@ fn use_it() {
 }
 
 #[test]
-fn symbol_at_finds_a_fns_own_declaration_and_every_later_reference_to_it() {
+fn binding_at_finds_a_fns_own_declaration_and_every_later_reference_to_it() {
     let source = r#"
 fn add_one(x: int) -> int {
     x
@@ -1599,18 +1669,18 @@ fn use_it() {
         "test source should have two distinct occurrences"
     );
 
-    let decl_symbol = cx
-        .symbol_at(decl_offset)
+    let decl_binding = cx
+        .binding_at(decl_offset)
         .expect("should resolve at the declaration");
-    let use_symbol = cx
-        .symbol_at(use_offset)
+    let use_binding = cx
+        .binding_at(use_offset)
         .expect("should resolve at the call site");
-    assert_eq!(decl_symbol, use_symbol);
-    assert_eq!(cx.render_symbol_type(decl_symbol), "Fn(int) -> int");
+    assert_eq!(decl_binding, use_binding);
+    assert_eq!(cx.render_binding_type(decl_binding), "Fn(int) -> int");
 }
 
 #[test]
-fn symbol_at_finds_a_parameter_at_both_its_declaration_and_its_use_in_the_body() {
+fn binding_at_finds_a_parameter_at_both_its_declaration_and_its_use_in_the_body() {
     let source = "fn add_one(x: int) -> int { x }";
     let mut cx = check_all(source);
 
@@ -1618,18 +1688,18 @@ fn symbol_at_finds_a_parameter_at_both_its_declaration_and_its_use_in_the_body()
     let param_use = source.rfind('x').unwrap();
     assert_ne!(param_decl, param_use);
 
-    let decl_symbol = cx
-        .symbol_at(param_decl)
+    let decl_binding = cx
+        .binding_at(param_decl)
         .expect("should resolve at the parameter");
-    let use_symbol = cx
-        .symbol_at(param_use)
+    let use_binding = cx
+        .binding_at(param_use)
         .expect("should resolve at the body reference");
-    assert_eq!(decl_symbol, use_symbol);
-    assert_eq!(cx.render_symbol_type(decl_symbol), "int");
+    assert_eq!(decl_binding, use_binding);
+    assert_eq!(cx.render_binding_type(decl_binding), "int");
 }
 
 #[test]
-fn symbol_at_finds_a_let_bindings_inferred_type() {
+fn binding_at_finds_a_let_bindings_inferred_type() {
     let source = r#"
 fn use_it() {
     let n = 1;
@@ -1637,14 +1707,14 @@ fn use_it() {
 "#;
     let mut cx = check_all(source);
     let offset = source.find("let n").unwrap() + "let ".len();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the let binding");
-    assert_eq!(cx.render_symbol_type(symbol), "int");
+    assert_eq!(cx.render_binding_type(binding), "int");
 }
 
 #[test]
-fn symbol_at_finds_a_struct_name_at_its_declaration_and_in_a_type_annotation() {
+fn binding_at_finds_a_struct_symbol_at_its_declaration_and_in_a_type_annotation() {
     let source = r#"
 struct Point {
     x: int,
@@ -1657,17 +1727,17 @@ fn use_it(p: Point) {}
     let use_offset = source.rfind("Point").unwrap();
     assert_ne!(decl_offset, use_offset);
 
-    let decl_symbol = cx
-        .symbol_at(decl_offset)
+    let decl_binding = cx
+        .binding_at(decl_offset)
         .expect("should resolve at the struct decl");
-    let use_symbol = cx
-        .symbol_at(use_offset)
+    let use_binding = cx
+        .binding_at(use_offset)
         .expect("should resolve at the annotation");
-    assert_eq!(decl_symbol, use_symbol);
+    assert_eq!(decl_binding, use_binding);
 }
 
 #[test]
-fn symbol_at_finds_a_generic_param_at_its_declaration_and_in_the_signature() {
+fn binding_at_finds_a_generic_param_at_its_declaration_and_in_the_signature() {
     let source = "fn identity<T>(x: T) -> T { x }";
     let cx = check_all(source);
 
@@ -1675,50 +1745,52 @@ fn symbol_at_finds_a_generic_param_at_its_declaration_and_in_the_signature() {
     let param_ty_offset = source.find("x: T").unwrap() + 3;
     let ret_ty_offset = source.rfind('T').unwrap();
 
-    let decl_symbol = cx.symbol_at(decl_offset).expect("should resolve at <T>");
-    let param_symbol = cx
-        .symbol_at(param_ty_offset)
+    let decl_binding = cx.binding_at(decl_offset).expect("should resolve at <T>");
+    let param_binding = cx
+        .binding_at(param_ty_offset)
         .expect("should resolve at x: T");
-    let ret_symbol = cx.symbol_at(ret_ty_offset).expect("should resolve at -> T");
-    assert_eq!(decl_symbol, param_symbol);
-    assert_eq!(decl_symbol, ret_symbol);
+    let ret_binding = cx
+        .binding_at(ret_ty_offset)
+        .expect("should resolve at -> T");
+    assert_eq!(decl_binding, param_binding);
+    assert_eq!(decl_binding, ret_binding);
 }
 
 #[test]
-fn symbol_at_is_none_between_identifiers() {
+fn binding_at_is_none_between_identifiers() {
     let source = "fn add_one(x: int) -> int { x }";
     let cx = check_all(source);
     let space_offset = source.find(") ->").unwrap();
-    assert_eq!(cx.symbol_at(space_offset), None);
+    assert_eq!(cx.binding_at(space_offset), None);
 }
 
 #[test]
-fn describe_symbol_a_fn_item_uses_source_declaration_syntax_with_param_names() {
+fn describe_binding_a_fn_item_uses_source_declaration_syntax_with_param_symbols() {
     let source = "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U { f(g(x)) }";
     let mut cx = check_all(source);
     let offset = source.find("compose").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
-        .expect("should resolve at the fn's own name");
+    let binding = cx
+        .binding_at(offset)
+        .expect("should resolve at the fn's own symbol");
     assert_eq!(
-        cx.describe_symbol(symbol),
+        cx.describe_binding(binding),
         "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
     );
 }
 
 #[test]
-fn describe_symbol_a_parameter_is_prefixed_with_its_own_name() {
+fn describe_binding_a_parameter_is_prefixed_with_its_own_symbol() {
     let source = "fn add_one(x: int) -> int { x }";
     let mut cx = check_all(source);
     let offset = source.find("x:").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(cx.describe_symbol(symbol), "x: int");
+    assert_eq!(cx.describe_binding(binding), "x: int");
 }
 
 #[test]
-fn describe_symbol_a_let_binding_is_prefixed_with_let_and_its_own_name() {
+fn describe_binding_a_let_binding_is_prefixed_with_let_and_its_own_symbol() {
     let source = r#"
 fn use_it() {
     let n = 1;
@@ -1726,36 +1798,36 @@ fn use_it() {
 "#;
     let mut cx = check_all(source);
     let offset = source.find("let n").unwrap() + "let ".len();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the let binding");
-    assert_eq!(cx.describe_symbol(symbol), "let n: int");
+    assert_eq!(cx.describe_binding(binding), "let n: int");
 }
 
 #[test]
-fn describe_symbol_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
+fn describe_binding_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
     let source = "fn apply<T, U>(f: Fn(T) -> U, x: T) -> U { f(x) }";
     let mut cx = check_all(source);
     let offset = source.find("f:").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(cx.describe_symbol(symbol), "f: Fn(T) -> U");
+    assert_eq!(cx.describe_binding(binding), "f: Fn(T) -> U");
 }
 
 #[test]
-fn describe_symbol_a_ty_alias_declaration_shows_the_type_keyword() {
+fn describe_binding_a_ty_alias_declaration_shows_the_type_keyword() {
     let source = "type Pair<T, U> = (T, U);";
     let mut cx = check_all(source);
     let offset = source.find("Pair").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
-        .expect("should resolve at the alias's own name");
-    assert_eq!(cx.describe_symbol(symbol), "type Pair<T, U>");
+    let binding = cx
+        .binding_at(offset)
+        .expect("should resolve at the alias's own symbol");
+    assert_eq!(cx.describe_binding(binding), "type Pair<T, U>");
 }
 
 #[test]
-fn describe_symbol_a_ty_alias_reference_also_shows_the_type_keyword() {
+fn describe_binding_a_ty_alias_reference_also_shows_the_type_keyword() {
     let source = r#"
 type Pair<T, U> = (T, U);
 fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
@@ -1764,25 +1836,25 @@ fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
 "#;
     let mut cx = check_all(source);
     let offset = source.rfind("Pair").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the return-type reference");
-    assert_eq!(cx.describe_symbol(symbol), "type Pair<T, U>");
+    assert_eq!(cx.describe_binding(binding), "type Pair<T, U>");
 }
 
 #[test]
-fn describe_symbol_a_mod_declaration_shows_the_mod_keyword() {
+fn describe_binding_a_mod_declaration_shows_the_mod_keyword() {
     let source = "mod example { fn foo() {} }";
     let mut cx = check_all(source);
     let offset = source.find("example").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
-        .expect("should resolve at the module's own name");
-    assert_eq!(cx.describe_symbol(symbol), "mod example");
+    let binding = cx
+        .binding_at(offset)
+        .expect("should resolve at the module's own symbol");
+    assert_eq!(cx.describe_binding(binding), "mod example");
 }
 
 #[test]
-fn describe_symbol_a_mod_reference_also_shows_the_mod_keyword() {
+fn describe_binding_a_mod_reference_also_shows_the_mod_keyword() {
     let source = r#"
 mod outer {
     mod inner {
@@ -1793,14 +1865,14 @@ use outer::inner;
 "#;
     let mut cx = check_all(source);
     let offset = source.rfind("inner").unwrap();
-    let symbol = cx
-        .symbol_at(offset)
+    let binding = cx
+        .binding_at(offset)
         .expect("should resolve at the use path's reference to the module");
-    assert_eq!(cx.describe_symbol(symbol), "mod inner");
+    assert_eq!(cx.describe_binding(binding), "mod inner");
 }
 
 #[test]
-fn type_name_at_finds_every_literal_kinds_own_type() {
+fn type_symbol_at_finds_every_literal_kinds_own_type() {
     let source = r#"
 fn use_it() {
     let a = 1;
@@ -1811,26 +1883,32 @@ fn use_it() {
 }
 "#;
     let cx = check_all(source);
-    assert_eq!(cx.type_name_at(source.find('1').unwrap()), Some("int"));
-    assert_eq!(cx.type_name_at(source.find("1.5").unwrap()), Some("float"));
-    assert_eq!(cx.type_name_at(source.find("'x'").unwrap()), Some("char"));
-    assert_eq!(cx.type_name_at(source.find("true").unwrap()), Some("bool"));
+    assert_eq!(cx.type_symbol_at(source.find('1').unwrap()), Some("int"));
     assert_eq!(
-        cx.type_name_at(source.find("\"hi\"").unwrap()),
+        cx.type_symbol_at(source.find("1.5").unwrap()),
+        Some("float")
+    );
+    assert_eq!(cx.type_symbol_at(source.find("'x'").unwrap()), Some("char"));
+    assert_eq!(
+        cx.type_symbol_at(source.find("true").unwrap()),
+        Some("bool")
+    );
+    assert_eq!(
+        cx.type_symbol_at(source.find("\"hi\"").unwrap()),
         Some("String")
     );
 }
 
 #[test]
-fn type_name_at_finds_a_primitive_name_in_an_ordinary_type_annotation() {
+fn type_symbol_at_finds_a_primitive_symbol_in_an_ordinary_type_annotation() {
     let source = "fn add_one(x: int) -> int { x }";
     let cx = check_all(source);
     let offset = source.find("int").unwrap();
-    assert_eq!(cx.type_name_at(offset), Some("int"));
+    assert_eq!(cx.type_symbol_at(offset), Some("int"));
 }
 
 #[test]
-fn type_name_at_finds_a_primitive_generic_argument_in_a_turbofish() {
+fn type_symbol_at_finds_a_primitive_generic_argument_in_a_turbofish() {
     let source = r#"
 fn identity<T>(x: T) -> T {
     x
@@ -1841,15 +1919,15 @@ fn use_it() {
 "#;
     let cx = check_all(source);
     let offset = source.find("::<int>").unwrap() + "::<".len();
-    assert_eq!(cx.type_name_at(offset), Some("int"));
+    assert_eq!(cx.type_symbol_at(offset), Some("int"));
 }
 
 #[test]
-fn type_name_at_is_none_away_from_any_literal_or_primitive_name() {
+fn type_symbol_at_is_none_away_from_any_literal_or_primitive_symbol() {
     let source = "fn add_one(x: int) -> int { x }";
     let cx = check_all(source);
     let offset = source.find("add_one").unwrap();
-    assert_eq!(cx.type_name_at(offset), None);
+    assert_eq!(cx.type_symbol_at(offset), None);
 }
 
 #[test]
@@ -1931,15 +2009,20 @@ fn use_both() {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let ping_target = path(&mut cx.symbols, &["ping"]);
     let ping = cx
-        .resolve_path_to_value(&path(&["ping"]))
+        .resolve_path_to_value(&ping_target)
         .expect("ping should resolve");
+    let pong_target = path(&mut cx.symbols, &["pong"]);
     let pong = cx
-        .resolve_path_to_value(&path(&["pong"]))
+        .resolve_path_to_value(&pong_target)
         .expect("pong should resolve");
-    assert_eq!(cx.symbol(ping).generics().len(), 1);
-    assert_eq!(cx.symbol(pong).generics().len(), 1);
-    assert_eq!(cx.symbol(ping).generics()[0], cx.symbol(pong).generics()[0]);
+    assert_eq!(cx.binding(ping).generics().len(), 1);
+    assert_eq!(cx.binding(pong).generics().len(), 1);
+    assert_eq!(
+        cx.binding(ping).generics()[0],
+        cx.binding(pong).generics()[0]
+    );
 }
 
 #[test]
@@ -1959,18 +2042,20 @@ fn use_it() {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let helper_target = path(&mut cx.symbols, &["helper"]);
     let helper = cx
-        .resolve_path_to_value(&path(&["helper"]))
+        .resolve_path_to_value(&helper_target)
         .expect("helper should resolve");
+    let caller_target = path(&mut cx.symbols, &["caller"]);
     let caller = cx
-        .resolve_path_to_value(&path(&["caller"]))
+        .resolve_path_to_value(&caller_target)
         .expect("caller should resolve");
-    assert_eq!(cx.symbol(helper).generics().len(), 1);
-    assert_eq!(cx.symbol(caller).generics().len(), 1);
+    assert_eq!(cx.binding(helper).generics().len(), 1);
+    assert_eq!(cx.binding(caller).generics().len(), 1);
 }
 
 #[test]
-fn check_all_a_parameter_shadowing_a_siblings_name_is_not_treated_as_a_call_to_it() {
+fn check_all_a_parameter_shadowing_a_siblings_symbol_is_not_treated_as_a_call_to_it() {
     let source = r#"
 fn apply(f, x) {
     f(x)
@@ -1981,11 +2066,12 @@ fn f(x) {
 "#;
     let mut cx = check_all(source);
 
+    let target = path(&mut cx.symbols, &["apply"]);
     let apply = cx
-        .resolve_path_to_value(&path(&["apply"]))
+        .resolve_path_to_value(&target)
         .expect("apply should resolve");
     assert_eq!(
-        cx.render_symbol_type(apply),
+        cx.render_binding_type(apply),
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
 
@@ -2001,7 +2087,7 @@ fn f(x) {
 }
 
 #[test]
-fn check_all_a_let_binding_shadowing_a_siblings_name_is_not_treated_as_a_call_to_it() {
+fn check_all_a_let_binding_shadowing_a_siblings_symbol_is_not_treated_as_a_call_to_it() {
     let source = r#"
 fn apply(g, x) {
     let f = g;
@@ -2013,11 +2099,12 @@ fn f(x) {
 "#;
     let mut cx = check_all(source);
 
+    let target = path(&mut cx.symbols, &["apply"]);
     let apply = cx
-        .resolve_path_to_value(&path(&["apply"]))
+        .resolve_path_to_value(&target)
         .expect("apply should resolve");
     assert_eq!(
-        cx.render_symbol_type(apply),
+        cx.render_binding_type(apply),
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
 
@@ -2046,10 +2133,11 @@ fn use_it() {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let target = path(&mut cx.symbols, &["identity_rec"]);
     let identity_rec = cx
-        .resolve_path_to_value(&path(&["identity_rec"]))
+        .resolve_path_to_value(&target)
         .expect("identity_rec should resolve");
-    assert_eq!(cx.symbol(identity_rec).generics().len(), 1);
+    assert_eq!(cx.binding(identity_rec).generics().len(), 1);
 }
 
 #[test]
@@ -2072,11 +2160,12 @@ fn use_it() {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
-    for name in ["a", "b", "c"] {
-        let symbol = cx
-            .resolve_path_to_value(&path(&[name]))
-            .unwrap_or_else(|| panic!("{name} should resolve"));
-        assert_eq!(cx.symbol(symbol).generics().len(), 1, "{name}");
+    for symbol in ["a", "b", "c"] {
+        let target = path(&mut cx.symbols, &[symbol]);
+        let binding = cx
+            .resolve_path_to_value(&target)
+            .unwrap_or_else(|| panic!("{symbol} should resolve"));
+        assert_eq!(cx.binding(binding).generics().len(), 1, "{symbol}");
     }
 }
 
@@ -2093,18 +2182,20 @@ fn pong2(y: int) -> int {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let ping2_target = path(&mut cx.symbols, &["ping2"]);
     let ping2 = cx
-        .resolve_path_to_value(&path(&["ping2"]))
+        .resolve_path_to_value(&ping2_target)
         .expect("ping2 should resolve");
+    let pong2_target = path(&mut cx.symbols, &["pong2"]);
     let pong2 = cx
-        .resolve_path_to_value(&path(&["pong2"]))
+        .resolve_path_to_value(&pong2_target)
         .expect("pong2 should resolve");
-    assert_eq!(cx.symbol(ping2).generics().len(), 0);
-    assert_eq!(cx.symbol(pong2).generics().len(), 0);
+    assert_eq!(cx.binding(ping2).generics().len(), 0);
+    assert_eq!(cx.binding(pong2).generics().len(), 0);
 }
 
 #[test]
-fn check_all_a_newly_generalized_param_never_reuses_an_explicit_generics_name() {
+fn check_all_a_newly_generalized_param_never_reuses_an_explicit_generics_symbol() {
     let source = r#"
 fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
     f(g(x))
@@ -2113,23 +2204,24 @@ fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let target = path(&mut cx.symbols, &["compose"]);
     let compose = cx
-        .resolve_path_to_value(&path(&["compose"]))
+        .resolve_path_to_value(&target)
         .expect("compose should resolve");
-    let generics = cx.symbol(compose).generics();
+    let generics = cx.binding(compose).generics();
     assert_eq!(generics.len(), 2, "{generics:?}");
 
     let explicit = generics[0];
     let inferred = generics[1];
     assert_ne!(explicit, inferred, "should be two distinct GenericIds");
 
-    let explicit_name = cx.generic_names.get(&explicit).cloned();
-    let inferred_name = cx.generic_names.get(&inferred).cloned();
-    assert_eq!(explicit_name.as_deref(), Some("T"));
+    let explicit_symbol = cx.generic_names.get(&explicit).cloned();
+    let inferred_symbol = cx.generic_names.get(&inferred).cloned();
+    assert_eq!(explicit_symbol.as_deref(), Some("T"));
     assert_ne!(
-        explicit_name, inferred_name,
+        explicit_symbol, inferred_symbol,
         "the newly-generalized parameter must not render under the \
-             same name as the explicit `<T>`"
+             same symbol as the explicit `<T>`"
     );
 }
 
@@ -2168,17 +2260,18 @@ fn outer() {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let target = path(&mut cx.symbols, &["outer"]);
     let outer = cx
-        .resolve_path_to_value(&path(&["outer"]))
+        .resolve_path_to_value(&target)
         .expect("outer should resolve");
     let outer_scope = fn_body_scope(&cx, outer);
 
-    let ping = declared_symbol(&cx, outer_scope, Namespace::Value, "ping")
+    let ping = declared_binding(&cx, outer_scope, Namespace::Value, "ping")
         .expect("ping should be declared inside outer's body");
-    let pong = declared_symbol(&cx, outer_scope, Namespace::Value, "pong")
+    let pong = declared_binding(&cx, outer_scope, Namespace::Value, "pong")
         .expect("pong should be declared inside outer's body");
-    assert_eq!(cx.symbol(ping).generics().len(), 1);
-    assert_eq!(cx.symbol(pong).generics().len(), 1);
+    assert_eq!(cx.binding(ping).generics().len(), 1);
+    assert_eq!(cx.binding(pong).generics().len(), 1);
 }
 
 #[test]
@@ -2203,20 +2296,22 @@ fn outer_2(x) {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let outer_1_target = path(&mut cx.symbols, &["outer_1"]);
     let outer_1 = cx
-        .resolve_path_to_value(&path(&["outer_1"]))
+        .resolve_path_to_value(&outer_1_target)
         .expect("outer_1 should resolve");
+    let outer_2_target = path(&mut cx.symbols, &["outer_2"]);
     let outer_2 = cx
-        .resolve_path_to_value(&path(&["outer_2"]))
+        .resolve_path_to_value(&outer_2_target)
         .expect("outer_2 should resolve");
-    let inner_1 = declared_symbol(
+    let inner_1 = declared_binding(
         &cx,
         fn_body_scope(&cx, outer_1),
         Namespace::Value,
         "inner_1",
     )
     .expect("inner_1 should be declared inside outer_1's body");
-    let inner_2 = declared_symbol(
+    let inner_2 = declared_binding(
         &cx,
         fn_body_scope(&cx, outer_2),
         Namespace::Value,
@@ -2225,10 +2320,10 @@ fn outer_2(x) {
     .expect("inner_2 should be declared inside outer_2's body");
 
     let expected = "<T, U> Fn(T) -> U";
-    assert_eq!(cx.render_symbol_type(outer_1), expected);
-    assert_eq!(cx.render_symbol_type(outer_2), expected);
-    assert_eq!(cx.render_symbol_type(inner_1), expected);
-    assert_eq!(cx.render_symbol_type(inner_2), expected);
+    assert_eq!(cx.render_binding_type(outer_1), expected);
+    assert_eq!(cx.render_binding_type(outer_2), expected);
+    assert_eq!(cx.render_binding_type(inner_1), expected);
+    assert_eq!(cx.render_binding_type(inner_2), expected);
 }
 
 #[test]
@@ -2247,22 +2342,23 @@ fn compose(f) {
     let mut cx = check_all(source);
     assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 
+    let target = path(&mut cx.symbols, &["compose"]);
     let compose = cx
-        .resolve_path_to_value(&path(&["compose"]))
+        .resolve_path_to_value(&target)
         .expect("compose should resolve");
     let compose_scope = fn_body_scope(&cx, compose);
 
-    let inner = declared_symbol(&cx, compose_scope, Namespace::Value, "inner")
+    let inner = declared_binding(&cx, compose_scope, Namespace::Value, "inner")
         .expect("inner should be declared inside compose's body");
     let inner_scope = fn_body_scope(&cx, inner);
-    let innermost = declared_symbol(&cx, inner_scope, Namespace::Value, "innermost")
+    let innermost = declared_binding(&cx, inner_scope, Namespace::Value, "innermost")
         .expect("innermost should be declared inside inner's body");
 
     assert_eq!(
-        cx.symbol(compose).generics().len(),
+        cx.binding(compose).generics().len(),
         3,
         "{:#?}",
-        cx.symbol(compose).generics()
+        cx.binding(compose).generics()
     );
     // `inner` legitimately generalizes 1 variable of its own: the type shared
     // between `innermost`'s parameter `x` and `inner`'s own parameter `g`'s
@@ -2272,8 +2368,8 @@ fn compose(f) {
     // `compose`. The other 2 variables that stay free at this point (`f`'s
     // domain and codomain) are correctly excluded, and end up on `compose`
     // instead -- which is what this test is actually asserting.
-    assert_eq!(cx.symbol(inner).generics().len(), 1);
-    assert_eq!(cx.symbol(innermost).generics().len(), 0);
+    assert_eq!(cx.binding(inner).generics().len(), 1);
+    assert_eq!(cx.binding(innermost).generics().len(), 0);
 }
 
 #[test]
@@ -2305,11 +2401,12 @@ fn use_it() {
 
 fn check_all_frozen(source: &str) -> CheckedProgram {
     let tokens = lexer::tokenize_all(source).expect("should lex");
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .expect("should parse");
-    CheckedProgram::check(&items)
+    CheckedProgram::check(&items, state.0)
 }
 
 #[test]
@@ -2322,18 +2419,18 @@ fn freeze_diagnostics_survive_the_freeze_unchanged() {
 }
 
 #[test]
-fn freeze_render_symbol_type_a_generic_fn() {
+fn freeze_render_binding_type_a_generic_fn() {
     let source = "fn identity<T>(x: T) -> T { x }";
     let frozen = check_all_frozen(source);
     let offset = source.find("identity").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
-        .expect("should resolve at the fn's own name");
-    assert_eq!(frozen.render_symbol_type(symbol), "<T> Fn(T) -> T");
+    let binding = frozen
+        .binding_at(offset)
+        .expect("should resolve at the fn's own symbol");
+    assert_eq!(frozen.render_binding_type(binding), "<T> Fn(T) -> T");
 }
 
 #[test]
-fn freeze_render_symbol_type_a_struct_parameter() {
+fn freeze_render_binding_type_a_struct_parameter() {
     let source = r#"
 struct Point {
     x: int,
@@ -2342,14 +2439,14 @@ fn use_it(p: Point) {}
 "#;
     let frozen = check_all_frozen(source);
     let offset = source.find("p: Point").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(frozen.render_symbol_type(symbol), "Point");
+    assert_eq!(frozen.render_binding_type(binding), "Point");
 }
 
 #[test]
-fn freeze_render_symbol_type_a_mutually_recursive_pair_generalized_together() {
+fn freeze_render_binding_type_a_mutually_recursive_pair_generalized_together() {
     let source = r#"
 fn apply(f, x) {
     f(x)
@@ -2360,42 +2457,42 @@ fn f(x) {
 "#;
     let frozen = check_all_frozen(source);
     let offset = source.find("apply").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
-        .expect("should resolve at apply's own name");
+    let binding = frozen
+        .binding_at(offset)
+        .expect("should resolve at apply's own symbol");
     assert_eq!(
-        frozen.render_symbol_type(symbol),
+        frozen.render_binding_type(binding),
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
 }
 
 #[test]
-fn freeze_describe_symbol_a_fn_item_uses_source_declaration_syntax_with_param_names() {
+fn freeze_describe_binding_a_fn_item_uses_source_declaration_syntax_with_param_symbols() {
     let source = "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U { f(g(x)) }";
     let frozen = check_all_frozen(source);
     let offset = source.find("compose").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
-        .expect("should resolve at the fn's own name");
+    let binding = frozen
+        .binding_at(offset)
+        .expect("should resolve at the fn's own symbol");
     assert_eq!(
-        frozen.describe_symbol(symbol),
+        frozen.describe_binding(binding),
         "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
     );
 }
 
 #[test]
-fn freeze_describe_symbol_a_parameter_is_prefixed_with_its_own_name() {
+fn freeze_describe_binding_a_parameter_is_prefixed_with_its_own_symbol() {
     let source = "fn add_one(x: int) -> int { x }";
     let frozen = check_all_frozen(source);
     let offset = source.find("x:").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(frozen.describe_symbol(symbol), "x: int");
+    assert_eq!(frozen.describe_binding(binding), "x: int");
 }
 
 #[test]
-fn freeze_describe_symbol_a_let_binding_is_prefixed_with_let_and_its_own_name() {
+fn freeze_describe_binding_a_let_binding_is_prefixed_with_let_and_its_own_symbol() {
     let source = r#"
 fn use_it() {
     let n = 1;
@@ -2403,36 +2500,36 @@ fn use_it() {
 "#;
     let frozen = check_all_frozen(source);
     let offset = source.find("let n").unwrap() + "let ".len();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the let binding");
-    assert_eq!(frozen.describe_symbol(symbol), "let n: int");
+    assert_eq!(frozen.describe_binding(binding), "let n: int");
 }
 
 #[test]
-fn freeze_describe_symbol_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
+fn freeze_describe_binding_a_higher_order_parameter_keeps_the_bare_fn_type_syntax() {
     let source = "fn apply<T, U>(f: Fn(T) -> U, x: T) -> U { f(x) }";
     let frozen = check_all_frozen(source);
     let offset = source.find("f:").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the parameter");
-    assert_eq!(frozen.describe_symbol(symbol), "f: Fn(T) -> U");
+    assert_eq!(frozen.describe_binding(binding), "f: Fn(T) -> U");
 }
 
 #[test]
-fn freeze_describe_symbol_a_ty_alias_declaration_shows_the_type_keyword() {
+fn freeze_describe_binding_a_ty_alias_declaration_shows_the_type_keyword() {
     let source = "type Pair<T, U> = (T, U);";
     let frozen = check_all_frozen(source);
     let offset = source.find("Pair").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
-        .expect("should resolve at the alias's own name");
-    assert_eq!(frozen.describe_symbol(symbol), "type Pair<T, U>");
+    let binding = frozen
+        .binding_at(offset)
+        .expect("should resolve at the alias's own symbol");
+    assert_eq!(frozen.describe_binding(binding), "type Pair<T, U>");
 }
 
 #[test]
-fn freeze_describe_symbol_a_ty_alias_reference_also_shows_the_type_keyword() {
+fn freeze_describe_binding_a_ty_alias_reference_also_shows_the_type_keyword() {
     let source = r#"
 type Pair<T, U> = (T, U);
 fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
@@ -2441,25 +2538,25 @@ fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
 "#;
     let frozen = check_all_frozen(source);
     let offset = source.rfind("Pair").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the return-type reference");
-    assert_eq!(frozen.describe_symbol(symbol), "type Pair<T, U>");
+    assert_eq!(frozen.describe_binding(binding), "type Pair<T, U>");
 }
 
 #[test]
-fn freeze_describe_symbol_a_mod_declaration_shows_the_mod_keyword() {
+fn freeze_describe_binding_a_mod_declaration_shows_the_mod_keyword() {
     let source = "mod example { fn foo() {} }";
     let frozen = check_all_frozen(source);
     let offset = source.find("example").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
-        .expect("should resolve at the module's own name");
-    assert_eq!(frozen.describe_symbol(symbol), "mod example");
+    let binding = frozen
+        .binding_at(offset)
+        .expect("should resolve at the module's own symbol");
+    assert_eq!(frozen.describe_binding(binding), "mod example");
 }
 
 #[test]
-fn freeze_describe_symbol_a_mod_reference_also_shows_the_mod_keyword() {
+fn freeze_describe_binding_a_mod_reference_also_shows_the_mod_keyword() {
     let source = r#"
 mod outer {
     mod inner {
@@ -2470,16 +2567,16 @@ use outer::inner;
 "#;
     let frozen = check_all_frozen(source);
     let offset = source.rfind("inner").unwrap();
-    let symbol = frozen
-        .symbol_at(offset)
+    let binding = frozen
+        .binding_at(offset)
         .expect("should resolve at the use path's reference to the module");
-    assert_eq!(frozen.describe_symbol(symbol), "mod inner");
+    assert_eq!(frozen.describe_binding(binding), "mod inner");
 }
 
 #[test]
-fn freeze_type_name_at_still_finds_a_literals_type() {
+fn freeze_type_symbol_at_still_finds_a_literals_type() {
     let source = "fn use_it() { 1; }";
     let frozen = check_all_frozen(source);
     let offset = source.find('1').unwrap();
-    assert_eq!(frozen.type_name_at(offset), Some("int"));
+    assert_eq!(frozen.type_symbol_at(offset), Some("int"));
 }

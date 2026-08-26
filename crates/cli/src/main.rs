@@ -34,7 +34,11 @@ fn main() -> ExitCode {
         }
     };
 
-    let items = match parser::module().parse(parser::input(tokens)).into_result() {
+    let mut state = parser::State::default();
+    let items = match parser::module()
+        .parse_with_state(parser::input(tokens), &mut state)
+        .into_result()
+    {
         Ok(items) => items,
         Err(errors) => {
             for error in &errors {
@@ -43,9 +47,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let names = state.0.clone();
 
     let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        CheckedProgram::check(&items)
+        CheckedProgram::check(&items, state.0)
     }));
     let frozen = match checked {
         Ok(frozen) => frozen,
@@ -59,7 +64,7 @@ fn main() -> ExitCode {
 
     println!("items in `{path}`:");
     for item in &items {
-        print_item(&frozen, item, 1);
+        print_item(&frozen, &names, item, 1);
     }
 
     let diagnostics = frozen.diagnostics(Locale::EnUs);
@@ -76,37 +81,40 @@ fn main() -> ExitCode {
     }
 }
 
-fn print_item(cx: &CheckedProgram, item: &Item, depth: usize) {
+fn print_item(cx: &CheckedProgram, names: &parser::Interner, item: &Item, depth: usize) {
     let indent = "  ".repeat(depth);
     match &item.kind {
-        ItemKind::Fn(f) => match cx.symbol_at(f.ident.span.start) {
-            Some(symbol) => println!(
+        ItemKind::Fn(f) => match cx.binding_at(f.ident.span.start) {
+            Some(binding) => println!(
                 "{indent}fn {}: {}",
-                f.ident.name,
-                cx.render_symbol_type(symbol)
+                names.resolve(f.ident.symbol),
+                cx.render_binding_type(binding)
             ),
-            None => println!("{indent}fn {} (unresolved)", f.ident.name),
+            None => println!("{indent}fn {} (unresolved)", names.resolve(f.ident.symbol)),
         },
-        ItemKind::TyAlias(alias) => match cx.symbol_at(alias.ident.span.start) {
-            Some(symbol) => println!(
+        ItemKind::TyAlias(alias) => match cx.binding_at(alias.ident.span.start) {
+            Some(binding) => println!(
                 "{indent}type {} = {}",
-                alias.ident.name,
-                cx.render_symbol_type(symbol)
+                names.resolve(alias.ident.symbol),
+                cx.render_binding_type(binding)
             ),
-            None => println!("{indent}type {} (unresolved)", alias.ident.name),
+            None => println!(
+                "{indent}type {} (unresolved)",
+                names.resolve(alias.ident.symbol)
+            ),
         },
-        ItemKind::Struct(ident, ..) => println!("{indent}struct {}", ident.name),
-        ItemKind::Enum(ident, ..) => println!("{indent}enum {}", ident.name),
-        ItemKind::Trait(t) => println!("{indent}trait {}", t.ident.name),
+        ItemKind::Struct(ident, ..) => println!("{indent}struct {}", names.resolve(ident.symbol)),
+        ItemKind::Enum(ident, ..) => println!("{indent}enum {}", names.resolve(ident.symbol)),
+        ItemKind::Trait(t) => println!("{indent}trait {}", names.resolve(t.ident.symbol)),
         ItemKind::Mod(ident, ModKind::Loaded(items)) => {
-            println!("{indent}mod {} {{", ident.name);
+            println!("{indent}mod {} {{", names.resolve(ident.symbol));
             for item in items {
-                print_item(cx, item, depth + 1);
+                print_item(cx, names, item, depth + 1);
             }
             println!("{indent}}}");
         }
         ItemKind::Mod(ident, ModKind::Unloaded) => {
-            println!("{indent}mod {}; (unloaded)", ident.name);
+            println!("{indent}mod {}; (unloaded)", names.resolve(ident.symbol));
         }
         ItemKind::Use(_) => println!("{indent}use ..."),
         ItemKind::Impl(_) => println!("{indent}impl ..."),

@@ -4,7 +4,7 @@ use lexer::Token;
 
 pub fn ident<'src>() -> impl RooParser<'src, Ident> {
     select! {
-        Token::Identifier(name) = e if name != "_" => Ident { name: name.to_owned(), span: span(e) },
+        Token::Identifier(name) = e if name != "_" => Ident { symbol: intern(e, name), span: span(e) },
     }
 }
 
@@ -22,8 +22,12 @@ mod tests {
     #[test]
     fn parses_an_ident_with_its_span() {
         let tokens = tokens("foo");
-        let parsed = ident().parse(tokens).into_result().expect("should parse");
-        assert_eq!(parsed.name, "foo");
+        let mut state = crate::State::default();
+        let parsed = ident()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(state.resolve(parsed.symbol), "foo");
         assert_eq!(parsed.span, ast::Span { start: 0, end: 3 });
     }
 
@@ -36,8 +40,12 @@ mod tests {
     #[test]
     fn parses_a_label() {
         let tokens = tokens("outer:");
-        let parsed = label().parse(tokens).into_result().expect("should parse");
-        assert_eq!(parsed.ident.name, "outer");
+        let mut state = crate::State::default();
+        let parsed = label()
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
+        assert_eq!(state.resolve(parsed.ident.symbol), "outer");
     }
 
     #[test]
@@ -50,5 +58,22 @@ mod tests {
     fn rejects_underscore_as_a_label() {
         let tokens = tokens("_:");
         assert!(label().parse(tokens).into_result().is_err());
+    }
+
+    #[test]
+    fn interns_identifier_names_through_parser_state() {
+        let tokens = tokens("foo foo bar");
+        let mut state = crate::State::default();
+        let ((first, second), third) = ident()
+            .then(ident())
+            .then(ident())
+            .parse_with_state(tokens, &mut state)
+            .into_result()
+            .expect("should parse");
+
+        assert_eq!(first.symbol, second.symbol);
+        assert_ne!(first.symbol, third.symbol);
+        assert_eq!(state.resolve(first.symbol), "foo");
+        assert_eq!(state.resolve(third.symbol), "bar");
     }
 }

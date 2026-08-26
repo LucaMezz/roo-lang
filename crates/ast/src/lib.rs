@@ -11,7 +11,7 @@ pub struct Span {
 
 #[derive(Clone, Debug)]
 pub struct Ident {
-    pub name: String,
+    pub symbol: intern::Symbol,
     pub span: Span,
 }
 

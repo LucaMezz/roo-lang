@@ -165,9 +165,9 @@ fn send_diagnostics(
     Ok(())
 }
 
-fn check_items(items: &[Box<ast::Item>]) -> Option<CheckedProgram> {
+fn check_items(items: &[Box<ast::Item>], names: parser::Interner) -> Option<CheckedProgram> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        CheckedProgram::check(items)
+        CheckedProgram::check(items, names)
     }))
     .ok()
 }
@@ -180,7 +180,11 @@ fn check(text: &str, uri: &Uri) -> Vec<LspDiagnostic> {
         Err(_) => return Vec::new(),
     };
 
-    let items = match parser::module().parse(parser::input(tokens)).into_result() {
+    let mut state = parser::State::default();
+    let items = match parser::module()
+        .parse_with_state(parser::input(tokens), &mut state)
+        .into_result()
+    {
         Ok(items) => items,
         Err(errors) => {
             return errors
@@ -190,7 +194,7 @@ fn check(text: &str, uri: &Uri) -> Vec<LspDiagnostic> {
         }
     };
 
-    let Some(cx) = check_items(&items) else {
+    let Some(cx) = check_items(&items, state.0) else {
         return Vec::new();
     };
 
@@ -202,18 +206,19 @@ fn check(text: &str, uri: &Uri) -> Vec<LspDiagnostic> {
 
 fn hover_at(text: &str, position: Position) -> Option<Hover> {
     let tokens = lexer::tokenize_all(text).ok()?;
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .ok()?;
-    let cx = check_items(&items)?;
+    let cx = check_items(&items, state.0)?;
 
     let index = LineIndex::new(text);
     let offset = index.offset(text, position);
 
-    let ty = match cx.symbol_at(offset) {
-        Some(symbol) => cx.describe_symbol(symbol),
-        None => cx.type_name_at(offset)?.to_owned(),
+    let ty = match cx.binding_at(offset) {
+        Some(symbol) => cx.describe_binding(symbol),
+        None => cx.type_symbol_at(offset)?.to_owned(),
     };
 
     Some(Hover {
@@ -227,11 +232,12 @@ fn hover_at(text: &str, position: Position) -> Option<Hover> {
 
 fn inlay_hints(text: &str, range: Range) -> Option<Vec<InlayHint>> {
     let tokens = lexer::tokenize_all(text).ok()?;
+    let mut state = parser::State::default();
     let items = parser::module()
-        .parse(parser::input(tokens))
+        .parse_with_state(parser::input(tokens), &mut state)
         .into_result()
         .ok()?;
-    let cx = check_items(&items)?;
+    let cx = check_items(&items, state.0)?;
     Some(vec![])
 }
 

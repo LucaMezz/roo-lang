@@ -10,7 +10,7 @@ use crate::errors::{
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{PatDeclKind, SymbolId, SymbolKind, TyId, TypeCheckContext, display_path};
+use crate::{BindingId, BindingKind, PatDeclKind, TyId, TypeCheckContext, display_path};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -273,14 +273,16 @@ impl<'ast> TypeCheckContext<'ast> {
         }
 
         self.resolve_path_to_value(path)
-            .map(|symbol| {
-                self.record_path_reference(path, symbol);
-                self.check_referenced_fn(symbol);
-                self.instantiate_path(symbol, path)
+            .map(|binding| {
+                self.record_path_reference(path, binding);
+                self.check_referenced_fn(binding);
+                self.instantiate_path(binding, path)
             })
             .unwrap_or_else(|| {
-                self.diagnostics
-                    .push(UnresolvedValue::new(path.span, display_path(path)));
+                self.diagnostics.push(UnresolvedValue::new(
+                    path.span,
+                    display_path(path, &self.symbols),
+                ));
                 self.ty(TyKind::Err)
             })
     }
@@ -457,8 +459,8 @@ impl<'ast> TypeCheckContext<'ast> {
         let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
             ExprKind::Path(None, path) => self
                 .resolve_path_to_value(path)
-                .map(|symbol| match &self.symbol(symbol).kind {
-                    SymbolKind::Fn(fn_data) => fn_data.param_spans.clone(),
+                .map(|binding| match &self.binding(binding).kind {
+                    BindingKind::Fn(fn_data) => fn_data.param_spans.clone(),
                     _ => Vec::new(),
                 })
                 .unwrap_or_default(),
@@ -625,7 +627,7 @@ impl<'ast> TypeCheckContext<'ast> {
         decl_kind: PatDeclKind,
     ) -> TyId {
         let ty = self.fresh_var_at(Some(ident.span));
-        self.declare(&ident.name, ident.span, decl_kind.symbol_kind(ty));
+        self.declare(ident.symbol, ident.span, decl_kind.binding_kind(ty));
         let _ = self.inf.unify_because(ty, expected, ident.span);
 
         if let Some(sub) = sub {
@@ -696,28 +698,29 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl<'ast> TypeCheckContext<'ast> {
-    fn resolve_fn_symbol(&mut self, f: &ast::Fn) -> Option<SymbolId> {
-        let name = self.names.id(&f.ident.name);
-        self.with_value_symbol(name, |_, symbol| symbol)
+    fn resolve_fn_binding(&mut self, f: &ast::Fn) -> Option<BindingId> {
+        let name = f.ident.symbol;
+        self.with_value_binding(name, |_, binding| binding)
     }
 
-    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(SymbolId, &'b ast::Fn)> {
+    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(BindingId, &'b ast::Fn)> {
         let ItemKind::Fn(f) = &item.kind else {
             return None;
         };
-        self.resolve_fn_symbol(f).map(|symbol| (symbol, f.as_ref()))
+        self.resolve_fn_binding(f)
+            .map(|binding| (binding, f.as_ref()))
     }
 
     pub(crate) fn check_function(&mut self, f: &'ast ast::Fn) {
-        self.resolve_fn_symbol(f)
-            .and_then(|symbol| self.check_fn_body(symbol, f))
+        self.resolve_fn_binding(f)
+            .and_then(|binding| self.check_fn_body(binding, f))
             .into_iter()
             .for_each(|scc| self.generalize_group(&scc));
     }
 
     pub(crate) fn check_module(&mut self, ident: &Ident, kind: &'ast ModKind) {
-        let name = self.names.id(&ident.name);
-        self.with_mod_scope(name, |this, _symbol| match kind {
+        let name = ident.symbol;
+        self.with_mod_scope(name, |this, _binding| match kind {
             ModKind::Loaded(items) => {
                 this.check_items(items.iter().map(Box::as_ref));
             }
@@ -727,10 +730,10 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn record_edge(
         &mut self,
-        from: SymbolId,
-        to: SymbolId,
-        check: impl FnOnce(&mut Self) -> Option<Vec<SymbolId>>,
-    ) -> Option<Vec<SymbolId>> {
+        from: BindingId,
+        to: BindingId,
+        check: impl FnOnce(&mut Self) -> Option<Vec<BindingId>>,
+    ) -> Option<Vec<BindingId>> {
         if !self.sccc.is_visited(to) {
             let completed = check(self);
             if self.sccc.is_visited(to) {
@@ -746,23 +749,23 @@ impl<'ast> TypeCheckContext<'ast> {
     fn check_nested_functions(
         &mut self,
         items: impl IntoIterator<Item = &'ast Item>,
-        from: SymbolId,
+        from: BindingId,
     ) {
         items
             .into_iter()
             .filter_map(|item| self.resolve_fn(item))
             .collect::<Vec<_>>()
             .into_iter()
-            .for_each(|(symbol, f)| {
-                let scc = self.record_edge(from, symbol, |this| this.check_fn_body(symbol, f));
+            .for_each(|(binding, f)| {
+                let scc = self.record_edge(from, binding, |this| this.check_fn_body(binding, f));
                 if let Some(scc) = scc {
                     self.generalize_group(&scc);
                 }
             });
     }
 
-    fn check_referenced_fn(&mut self, symbol: SymbolId) {
-        let Some(&item) = self.items_by_symbol.get(&symbol) else {
+    fn check_referenced_fn(&mut self, binding: BindingId) {
+        let Some(&item) = self.items_by_binding.get(&binding) else {
             return;
         };
         let ItemKind::Fn(f) = &item.kind else {
@@ -771,31 +774,31 @@ impl<'ast> TypeCheckContext<'ast> {
 
         let scc = match self.current_fn {
             Some(from) => {
-                self.graph.call(from, symbol);
-                self.record_edge(from, symbol, |this| this.check_fn_body(symbol, f))
+                self.graph.call(from, binding);
+                self.record_edge(from, binding, |this| this.check_fn_body(binding, f))
             }
-            None if !self.sccc.is_visited(symbol) => self.check_fn_body(symbol, f),
+            None if !self.sccc.is_visited(binding) => self.check_fn_body(binding, f),
             None => None,
         };
 
         scc.into_iter().for_each(|scc| self.generalize_group(&scc));
     }
 
-    fn check_fn_body(&mut self, symbol: SymbolId, f: &'ast ast::Fn) -> Option<Vec<SymbolId>> {
-        if self.sccc.is_visited(symbol) {
+    fn check_fn_body(&mut self, binding: BindingId, f: &'ast ast::Fn) -> Option<Vec<BindingId>> {
+        if self.sccc.is_visited(binding) {
             return None;
         }
 
-        let scope = self.fn_symbol_scope(symbol)?;
+        let scope = self.fn_binding_scope(binding)?;
         let body = f.body.as_ref()?;
 
-        let symbol_ty = self.symbol(symbol).ty();
-        let (input_tys, output_ty) = self.resolved_fn_parts(symbol_ty)?;
+        let binding_ty = self.binding(binding).ty();
+        let (input_tys, output_ty) = self.resolved_fn_parts(binding_ty)?;
 
-        self.sccc.enter(symbol);
+        self.sccc.enter(binding);
         let parent_fn = self.current_fn;
-        self.current_fn = Some(symbol);
-        self.checking_stack.push(symbol);
+        self.current_fn = Some(binding);
+        self.checking_stack.push(binding);
 
         self.with_scope(scope, |this| {
             f.sig
@@ -812,12 +815,12 @@ impl<'ast> TypeCheckContext<'ast> {
             };
             this.check_block_expecting(body, Some(output_ty), Some(output_span));
 
-            this.check_nested_functions(nested_items(body), symbol);
+            this.check_nested_functions(nested_items(body), binding);
         });
 
         self.checking_stack.pop();
         self.current_fn = parent_fn;
-        self.sccc.exit(symbol)
+        self.sccc.exit(binding)
     }
 }
 
@@ -834,9 +837,9 @@ pub(crate) fn collect_fn_mod_items<'ast>(
 ) {
     items.into_iter().for_each(|item| match &item.kind {
         ItemKind::Fn(f) => {
-            let name = cx.names.id(&f.ident.name);
-            cx.with_fn_scope(name, |cx, symbol| {
-                cx.items_by_symbol.insert(symbol, item);
+            let name = f.ident.symbol;
+            cx.with_fn_scope(name, |cx, binding| {
+                cx.items_by_binding.insert(binding, item);
 
                 let Some(body) = f.body.as_ref() else {
                     return;
@@ -846,9 +849,9 @@ pub(crate) fn collect_fn_mod_items<'ast>(
             });
         }
         ItemKind::Mod(ident, kind) => {
-            let name = cx.names.id(&ident.name);
-            cx.with_mod_scope(name, |cx, symbol| {
-                cx.items_by_symbol.insert(symbol, item);
+            let name = ident.symbol;
+            cx.with_mod_scope(name, |cx, binding| {
+                cx.items_by_binding.insert(binding, item);
 
                 match kind {
                     ModKind::Loaded(items) => {

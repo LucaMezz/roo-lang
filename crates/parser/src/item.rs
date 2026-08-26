@@ -162,7 +162,7 @@ fn self_param<'src>() -> impl RooParser<'src, Param> {
         pat: Box::new(Pat {
             kind: PatKind::Ident(
                 Ident {
-                    name: "self".to_owned(),
+                    symbol: intern(e, "self"),
                     span: span(e),
                 },
                 None,
@@ -348,11 +348,12 @@ mod tests {
     #[test]
     fn parses_a_named_field_with_a_type() {
         let tokens = tokens("x: int");
+        let mut state = crate::State::default();
         let parsed = named_field(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.expect("should have an ident").name, "x");
+        assert_eq!(state.resolve(parsed.ident.expect("should have an ident").symbol), "x");
         assert!(parsed.ty.is_some());
     }
 
@@ -426,11 +427,12 @@ mod tests {
     #[test]
     fn parses_an_enum_variant_with_no_data() {
         let tokens = tokens("None");
+        let mut state = crate::State::default();
         let parsed = variant(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "None");
+        assert_eq!(state.resolve(parsed.ident.symbol), "None");
         assert!(matches!(parsed.data, VariantData::Unit));
     }
 
@@ -474,11 +476,12 @@ mod tests {
     #[test]
     fn parses_a_minimal_trait_associated_type() {
         let tokens = tokens("type Item;");
+        let mut state = crate::State::default();
         let parsed = ty_alias(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "Item");
+        assert_eq!(state.resolve(parsed.ident.symbol), "Item");
         assert!(parsed.ty.is_none());
         assert!(parsed.bounds.is_empty());
     }
@@ -510,11 +513,12 @@ mod tests {
     #[test]
     fn parses_a_fn_item() {
         let tokens = tokens("fn add(a: int, b: int) -> int { a }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
-        assert_eq!(f.ident.name, "add");
+        assert_eq!(state.resolve(f.ident.symbol), "add");
         assert_eq!(f.sig.inputs.len(), 2);
         assert!(matches!(f.sig.output, FnRetTy::Ty(_)));
         assert!(f.body.is_some());
@@ -533,7 +537,8 @@ mod tests {
     #[test]
     fn parses_a_fn_item_with_a_self_param() {
         let tokens = tokens("fn describe(self) -> String { self.name }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -544,7 +549,7 @@ mod tests {
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert_eq!(ident.name, "self");
+        assert_eq!(state.resolve(ident.symbol), "self");
         assert!(matches!(
             f.sig.inputs[0].ty.as_deref().map(|ty| &ty.kind),
             Some(TyKind::ImplicitSelf)
@@ -554,7 +559,8 @@ mod tests {
     #[test]
     fn parses_a_fn_item_with_a_self_param_and_more_params() {
         let tokens = tokens("fn heal(self, amount: int) { self.health += amount; }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Fn(f) = parsed.kind else {
             panic!("expected ItemKind::Fn");
         };
@@ -565,7 +571,7 @@ mod tests {
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert_eq!(ident.name, "self");
+        assert_eq!(state.resolve(ident.symbol), "self");
     }
 
     #[test]
@@ -581,11 +587,12 @@ mod tests {
     #[test]
     fn parses_a_struct_item() {
         let tokens = tokens("struct Point { x: int, y: int }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Struct(ident, generics, data) = parsed.kind else {
             panic!("expected ItemKind::Struct");
         };
-        assert_eq!(ident.name, "Point");
+        assert_eq!(state.resolve(ident.symbol), "Point");
         assert!(generics.params.is_empty());
         assert!(matches!(data, VariantData::Struct(_)));
     }
@@ -600,11 +607,12 @@ mod tests {
     #[test]
     fn parses_an_enum_item() {
         let tokens = tokens("enum Color { Red, Green, Blue }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Enum(ident, _, def) = parsed.kind else {
             panic!("expected ItemKind::Enum");
         };
-        assert_eq!(ident.name, "Color");
+        assert_eq!(state.resolve(ident.symbol), "Color");
         assert_eq!(def.variants.len(), 3);
     }
 
@@ -628,11 +636,12 @@ mod tests {
     #[test]
     fn parses_a_trait_item_with_a_supertrait_bound_and_members() {
         let tokens = tokens("trait Shape: Clone { fn area(self) -> float; type Unit; }");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Trait(t) = parsed.kind else {
             panic!("expected ItemKind::Trait");
         };
-        assert_eq!(t.ident.name, "Shape");
+        assert_eq!(state.resolve(t.ident.symbol), "Shape");
         assert_eq!(t.bounds.len(), 1);
         assert_eq!(t.items.len(), 2);
         assert!(matches!(t.items[0].kind, AssocItemKind::Fn(_)));
@@ -664,11 +673,12 @@ mod tests {
     #[test]
     fn parses_an_unloaded_mod_item() {
         let tokens = tokens("mod foo;");
-        let parsed = item().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = item().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ItemKind::Mod(ident, kind) = parsed.kind else {
             panic!("expected ItemKind::Mod");
         };
-        assert_eq!(ident.name, "foo");
+        assert_eq!(state.resolve(ident.symbol), "foo");
         assert!(matches!(kind, ModKind::Unloaded));
     }
 

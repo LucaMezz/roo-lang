@@ -141,7 +141,7 @@ fn field_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
         select! {
-            Token::Number(NumberKind::Int(digits)) = e => Ident { name: digits.to_owned(), span: span(e) },
+            Token::Number(NumberKind::Int(digits)) = e => Ident { symbol: intern(e, digits), span: span(e) },
         },
     ))
 }
@@ -647,11 +647,12 @@ mod tests {
     #[test]
     fn parses_a_method_call_postfix_on_a_literal_atom() {
         let tokens = tokens("5.foo()");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::MethodCall(call) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
-        assert_eq!(call.seg.ident.name, "foo");
+        assert_eq!(state.resolve(call.seg.ident.symbol), "foo");
         assert!(call.args.is_empty());
         assert!(matches!(call.receiver.kind, ExprKind::Lit(_)));
     }
@@ -659,18 +660,19 @@ mod tests {
     #[test]
     fn parses_chained_method_calls() {
         let tokens = tokens("5.foo().bar()");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::MethodCall(outer) = parsed.kind else {
             panic!("expected ExprKind::MethodCall, got {:?}", parsed.kind);
         };
-        assert_eq!(outer.seg.ident.name, "bar");
+        assert_eq!(state.resolve(outer.seg.ident.symbol), "bar");
         let ExprKind::MethodCall(inner) = &outer.receiver.kind else {
             panic!(
                 "expected the receiver to be a MethodCall, got {:?}",
                 outer.receiver.kind
             );
         };
-        assert_eq!(inner.seg.ident.name, "foo");
+        assert_eq!(state.resolve(inner.seg.ident.symbol), "foo");
         assert!(matches!(inner.receiver.kind, ExprKind::Lit(_)));
     }
 
@@ -750,12 +752,13 @@ mod tests {
     #[test]
     fn parses_a_bare_ident_as_a_single_segment_path() {
         let tokens = tokens("foo");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Path(_, path) = parsed.kind else {
             panic!("expected ExprKind::Path, got {:?}", parsed.kind);
         };
         assert_eq!(path.segments.len(), 1);
-        assert_eq!(path.segments[0].ident.name, "foo");
+        assert_eq!(state.resolve(path.segments[0].ident.symbol), "foo");
     }
 
     #[test]
@@ -837,11 +840,12 @@ mod tests {
     #[test]
     fn parses_a_break_with_a_labeled_target_and_a_value() {
         let tokens = tokens("break outer 5");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Break(label, value) = parsed.kind else {
             panic!("expected ExprKind::Break, got {:?}", parsed.kind);
         };
-        assert_eq!(label.expect("should have a label").ident.name, "outer");
+        assert_eq!(state.resolve(label.expect("should have a label").ident.symbol), "outer");
         assert!(matches!(
             value.expect("should have a value").kind,
             ExprKind::Lit(_)
@@ -851,11 +855,12 @@ mod tests {
     #[test]
     fn parses_a_continue_with_a_label() {
         let tokens = tokens("continue outer");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Continue(label) = parsed.kind else {
             panic!("expected ExprKind::Continue, got {:?}", parsed.kind);
         };
-        assert_eq!(label.expect("should have a label").ident.name, "outer");
+        assert_eq!(state.resolve(label.expect("should have a label").ident.symbol), "outer");
     }
 
     #[test]
@@ -932,12 +937,13 @@ mod tests {
     #[test]
     fn parses_a_labeled_while_let_loop() {
         let tokens = tokens("outer: while let Some(x) = it { }");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::While(cond, _, label) = parsed.kind else {
             panic!("expected ExprKind::While, got {:?}", parsed.kind);
         };
         assert!(matches!(cond.kind, ExprKind::Let(..)));
-        assert_eq!(label.expect("should have a label").ident.name, "outer");
+        assert_eq!(state.resolve(label.expect("should have a label").ident.symbol), "outer");
     }
 
     #[test]
@@ -962,12 +968,13 @@ mod tests {
     #[test]
     fn parses_a_labeled_loop() {
         let tokens = tokens("outer: loop { break; }");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Loop(body, label, _) = parsed.kind else {
             panic!("expected ExprKind::Loop, got {:?}", parsed.kind);
         };
         assert_eq!(body.stmts.len(), 1);
-        assert_eq!(label.expect("should have a label").ident.name, "outer");
+        assert_eq!(state.resolve(label.expect("should have a label").ident.symbol), "outer");
     }
 
     #[test]
@@ -998,14 +1005,15 @@ mod tests {
     #[test]
     fn parses_a_struct_literal_expr_with_shorthand_and_explicit_fields() {
         let tokens = tokens("Point { x: 1, y }");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Struct(s) = parsed.kind else {
             panic!("expected ExprKind::Struct, got {:?}", parsed.kind);
         };
-        assert_eq!(s.path.segments[0].ident.name, "Point");
+        assert_eq!(state.resolve(s.path.segments[0].ident.symbol), "Point");
         assert_eq!(s.fields.len(), 2);
-        assert_eq!(s.fields[0].ident.name, "x");
-        assert_eq!(s.fields[1].ident.name, "y");
+        assert_eq!(state.resolve(s.fields[0].ident.symbol), "x");
+        assert_eq!(state.resolve(s.fields[1].ident.symbol), "y");
         assert!(matches!(s.fields[1].expr.kind, ExprKind::Path(..)));
         assert!(s.rest.is_none());
     }
@@ -1079,23 +1087,25 @@ mod tests {
     #[test]
     fn parses_a_field_access() {
         let tokens = tokens("foo.bar");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!("expected ExprKind::Field, got {:?}", parsed.kind);
         };
         assert!(matches!(receiver.kind, ExprKind::Path(..)));
-        assert_eq!(field.name, "bar");
+        assert_eq!(state.resolve(field.symbol), "bar");
     }
 
     #[test]
     fn parses_a_tuple_index_field_access() {
         let tokens = tokens("foo.0");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!("expected ExprKind::Field, got {:?}", parsed.kind);
         };
         assert!(matches!(receiver.kind, ExprKind::Path(..)));
-        assert_eq!(field.name, "0");
+        assert_eq!(state.resolve(field.symbol), "0");
     }
 
     #[test]
@@ -1129,14 +1139,15 @@ mod tests {
     #[test]
     fn parses_chained_call_field_index_and_try() {
         let tokens = tokens("world.entities[0].get_component(kind)?.value");
-        let parsed = expr().parse(tokens).into_result().expect("should parse");
+        let mut state = crate::State::default();
+        let parsed = expr().parse_with_state(tokens, &mut state).into_result().expect("should parse");
         let ExprKind::Field(receiver, field) = parsed.kind else {
             panic!(
                 "expected the outermost node to be ExprKind::Field, got {:?}",
                 parsed.kind
             );
         };
-        assert_eq!(field.name, "value");
+        assert_eq!(state.resolve(field.symbol), "value");
         assert!(matches!(receiver.kind, ExprKind::Try(_)));
     }
 

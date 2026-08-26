@@ -62,9 +62,9 @@ fn path_segment_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
         select! {
-            Token::SelfLower = e => Ident { name: "self".to_owned(), span: span(e) },
-            Token::SelfUpper = e => Ident { name: "Self".to_owned(), span: span(e) },
-            Token::Super = e => Ident { name: "super".to_owned(), span: span(e) },
+            Token::SelfLower = e => Ident { symbol: intern(e, "self"), span: span(e) },
+            Token::SelfUpper = e => Ident { symbol: intern(e, "Self"), span: span(e) },
+            Token::Super = e => Ident { symbol: intern(e, "super"), span: span(e) },
         },
     ))
 }
@@ -184,25 +184,27 @@ mod tests {
     #[test]
     fn parses_a_single_segment_path() {
         let tokens = tokens("foo");
+        let mut state = crate::State::default();
         let parsed = path(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 1);
-        assert_eq!(parsed.segments[0].ident.name, "foo");
+        assert_eq!(state.resolve(parsed.segments[0].ident.symbol), "foo");
     }
 
     #[test]
     fn parses_a_multi_segment_path() {
         let tokens = tokens("foo::bar::baz");
+        let mut state = crate::State::default();
         let parsed = path(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
             .segments
             .iter()
-            .map(|s| s.ident.name.as_str())
+            .map(|s| state.resolve(s.ident.symbol))
             .collect();
         assert_eq!(names, vec!["foo", "bar", "baz"]);
     }
@@ -216,25 +218,27 @@ mod tests {
     #[test]
     fn parses_self_upper_as_a_bare_path() {
         let tokens = tokens("Self");
+        let mut state = crate::State::default();
         let parsed = path(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 1);
-        assert_eq!(parsed.segments[0].ident.name, "Self");
+        assert_eq!(state.resolve(parsed.segments[0].ident.symbol), "Self");
     }
 
     #[test]
     fn parses_self_upper_qualified_by_an_assoc_item() {
         let tokens = tokens("Self::Output");
+        let mut state = crate::State::default();
         let parsed = path(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
             .segments
             .iter()
-            .map(|s| s.ident.name.as_str())
+            .map(|s| state.resolve(s.ident.symbol))
             .collect();
         assert_eq!(names, vec!["Self", "Output"]);
     }
@@ -242,14 +246,15 @@ mod tests {
     #[test]
     fn parses_a_super_relative_path() {
         let tokens = tokens("super::Foo");
+        let mut state = crate::State::default();
         let parsed = path(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
             .segments
             .iter()
-            .map(|s| s.ident.name.as_str())
+            .map(|s| state.resolve(s.ident.symbol))
             .collect();
         assert_eq!(names, vec!["super", "Foo"]);
     }
@@ -257,22 +262,24 @@ mod tests {
     #[test]
     fn parses_a_path_segment_without_generics() {
         let tokens = tokens("foo");
+        let mut state = crate::State::default();
         let parsed = path_segment(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "foo");
+        assert_eq!(state.resolve(parsed.ident.symbol), "foo");
         assert!(parsed.args.is_none());
     }
 
     #[test]
     fn parses_a_path_segment_with_generics() {
         let tokens = tokens("Vec<int>");
+        let mut state = crate::State::default();
         let parsed = path_segment(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "Vec");
+        assert_eq!(state.resolve(parsed.ident.symbol), "Vec");
         assert_eq!(parsed.args.expect("should have generic args").args.len(), 1);
     }
 
@@ -315,36 +322,39 @@ mod tests {
     #[test]
     fn parses_an_assoc_item_constraint_as_a_generic_arg() {
         let tokens = tokens("Item = int");
+        let mut state = crate::State::default();
         let parsed = generic_arg(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let GenericArg::Constraint(constraint) = parsed else {
             panic!("expected GenericArg::Constraint, got {:?}", parsed);
         };
-        assert_eq!(constraint.ident.name, "Item");
+        assert_eq!(state.resolve(constraint.ident.symbol), "Item");
         assert!(constraint.gen_args.is_none());
     }
 
     #[test]
     fn parses_an_assoc_item_constraint_directly() {
         let tokens = tokens("Item = int");
+        let mut state = crate::State::default();
         let parsed = assoc_item_constraint(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "Item");
+        assert_eq!(state.resolve(parsed.ident.symbol), "Item");
         assert!(matches!(parsed.ty.kind, TyKind::Path(_)));
     }
 
     #[test]
     fn parses_an_assoc_item_constraint_with_its_own_generics() {
         let tokens = tokens("Elem<T> = int");
+        let mut state = crate::State::default();
         let parsed = assoc_item_constraint(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "Elem");
+        assert_eq!(state.resolve(parsed.ident.symbol), "Elem");
         assert_eq!(
             parsed
                 .gen_args
@@ -358,25 +368,27 @@ mod tests {
     #[test]
     fn parses_a_plain_generic_param_with_no_annotations() {
         let tokens = tokens("T");
+        let mut state = crate::State::default();
         let parsed = generic_param()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "T");
+        assert_eq!(state.resolve(parsed.ident.symbol), "T");
         assert!(parsed.annotations.is_empty());
     }
 
     #[test]
     fn parses_an_annotated_generic_param() {
         let tokens = tokens("#[opaque] T");
+        let mut state = crate::State::default();
         let parsed = generic_param()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "T");
+        assert_eq!(state.resolve(parsed.ident.symbol), "T");
         assert_eq!(parsed.annotations.len(), 1);
         assert_eq!(
-            parsed.annotations[0].item.path.segments[0].ident.name,
+            state.resolve(parsed.annotations[0].item.path.segments[0].ident.symbol),
             "opaque"
         );
     }
@@ -497,11 +509,12 @@ mod tests {
     #[test]
     fn parses_a_turbofish_path_segment() {
         let tokens = tokens("Vec::<int>");
+        let mut state = crate::State::default();
         let parsed = path_segment_turbofish(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "Vec");
+        assert_eq!(state.resolve(parsed.ident.symbol), "Vec");
         assert_eq!(parsed.args.expect("should have generic args").args.len(), 1);
     }
 
@@ -519,25 +532,27 @@ mod tests {
     #[test]
     fn parses_a_turbofish_path_segment_with_no_generics() {
         let tokens = tokens("foo");
+        let mut state = crate::State::default();
         let parsed = path_segment_turbofish(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "foo");
+        assert_eq!(state.resolve(parsed.ident.symbol), "foo");
         assert!(parsed.args.is_none());
     }
 
     #[test]
     fn parses_a_multi_segment_turbofish_path_without_generics() {
         let tokens = tokens("foo::bar::baz");
+        let mut state = crate::State::default();
         let parsed = path_turbofish(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let names: Vec<_> = parsed
             .segments
             .iter()
-            .map(|s| s.ident.name.as_str())
+            .map(|s| state.resolve(s.ident.symbol))
             .collect();
         assert_eq!(names, vec!["foo", "bar", "baz"]);
     }
@@ -545,12 +560,13 @@ mod tests {
     #[test]
     fn parses_a_turbofish_path_with_generics_mid_path() {
         let tokens = tokens("Vec::<int>::new");
+        let mut state = crate::State::default();
         let parsed = path_turbofish(ty())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 2);
-        assert_eq!(parsed.segments[0].ident.name, "Vec");
+        assert_eq!(state.resolve(parsed.segments[0].ident.symbol), "Vec");
         assert_eq!(
             parsed.segments[0]
                 .args
@@ -560,7 +576,7 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(parsed.segments[1].ident.name, "new");
+        assert_eq!(state.resolve(parsed.segments[1].ident.symbol), "new");
         assert!(parsed.segments[1].args.is_none());
     }
 }

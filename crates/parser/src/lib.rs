@@ -1,6 +1,7 @@
 use std::ops::Range;
 use std::vec;
 
+use chumsky::extra::SimpleState;
 use chumsky::input::{IterInput, MapExtra};
 use chumsky::prelude::*;
 use lexer::Token;
@@ -47,16 +48,18 @@ pub fn input(tokens: Vec<(Token<'_>, Range<usize>)>) -> ParserInput<'_> {
     IterInput::new(tokens.into_iter(), eoi)
 }
 
-pub(crate) type Extra<'src, 'b> =
-    MapExtra<'src, 'b, ParserInput<'src>, extra::Err<Simple<'src, Token<'src>>>>;
+pub use intern::{Interner, Symbol};
 
-pub trait RooParser<'src, O>:
-    Parser<'src, ParserInput<'src>, O, extra::Err<Simple<'src, Token<'src>>>> + Clone
-{
-}
+pub type State = SimpleState<Interner>;
+
+pub(crate) type ParserExtra<'src> = extra::Full<Simple<'src, Token<'src>>, State, ()>;
+
+pub(crate) type Extra<'src, 'b> = MapExtra<'src, 'b, ParserInput<'src>, ParserExtra<'src>>;
+
+pub trait RooParser<'src, O>: Parser<'src, ParserInput<'src>, O, ParserExtra<'src>> + Clone {}
 
 impl<'src, O, T> RooParser<'src, O> for T where
-    T: Parser<'src, ParserInput<'src>, O, extra::Err<Simple<'src, Token<'src>>>> + Clone
+    T: Parser<'src, ParserInput<'src>, O, ParserExtra<'src>> + Clone
 {
 }
 
@@ -66,6 +69,10 @@ pub(crate) fn span(e: &mut Extra) -> ast::Span {
         start: s.start(),
         end: s.end(),
     }
+}
+
+pub(crate) fn intern(e: &mut Extra, name: &str) -> Symbol {
+    e.state().intern(name)
 }
 
 #[cfg(test)]

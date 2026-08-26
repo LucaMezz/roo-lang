@@ -208,43 +208,46 @@ mod tests {
     #[test]
     fn parses_a_shorthand_pat_field() {
         let tokens = tokens("x");
+        let mut state = crate::State::default();
         let parsed = pat_field(dummy_pat())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "x");
+        assert_eq!(state.resolve(parsed.ident.symbol), "x");
         assert!(parsed.annotations.is_empty());
         let PatKind::Ident(ident, sub) = parsed.pat.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
         };
-        assert_eq!(ident.name, "x");
+        assert_eq!(state.resolve(ident.symbol), "x");
         assert!(sub.is_none());
     }
 
     #[test]
     fn parses_a_named_pat_field() {
         let tokens = tokens("x: y");
+        let mut state = crate::State::default();
         let parsed = pat_field(dummy_pat())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.ident.name, "x");
+        assert_eq!(state.resolve(parsed.ident.symbol), "x");
         let PatKind::Ident(ident, _) = parsed.pat.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.pat.kind);
         };
-        assert_eq!(ident.name, "y");
+        assert_eq!(state.resolve(ident.symbol), "y");
     }
 
     #[test]
     fn parses_an_annotated_pat_field() {
         let tokens = tokens("#[foo] x: y");
+        let mut state = crate::State::default();
         let parsed = pat_field(dummy_pat())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.annotations.len(), 1);
         assert_eq!(
-            parsed.annotations[0].item.path.segments[0].ident.name,
+            state.resolve(parsed.annotations[0].item.path.segments[0].ident.symbol),
             "foo"
         );
     }
@@ -263,15 +266,16 @@ mod tests {
     #[test]
     fn parses_an_empty_struct_pattern() {
         let tokens = tokens("Point {}");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(qself, path, fields, rest) = parsed.kind else {
             panic!("expected PatKind::Struct, got {:?}", parsed.kind);
         };
         assert!(qself.is_none());
-        assert_eq!(path.segments[0].ident.name, "Point");
+        assert_eq!(state.resolve(path.segments[0].ident.symbol), "Point");
         assert!(fields.is_empty());
         assert!(rest.is_none());
     }
@@ -279,16 +283,17 @@ mod tests {
     #[test]
     fn parses_a_struct_pattern_with_shorthand_fields() {
         let tokens = tokens("Point { x, y }");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, _, fields, rest) = parsed.kind else {
             panic!("expected PatKind::Struct, got {:?}", parsed.kind);
         };
         assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0].ident.name, "x");
-        assert_eq!(fields[1].ident.name, "y");
+        assert_eq!(state.resolve(fields[0].ident.symbol), "x");
+        assert_eq!(state.resolve(fields[1].ident.symbol), "y");
         assert!(rest.is_none());
     }
 
@@ -336,16 +341,17 @@ mod tests {
     #[test]
     fn parses_a_nested_struct_pattern() {
         let tokens = tokens("Outer { inner: Inner { x } }");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::Struct(_, outer_path, fields, _) = parsed.kind else {
             panic!("expected PatKind::Struct, got {:?}", parsed.kind);
         };
-        assert_eq!(outer_path.segments[0].ident.name, "Outer");
+        assert_eq!(state.resolve(outer_path.segments[0].ident.symbol), "Outer");
         assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].ident.name, "inner");
+        assert_eq!(state.resolve(fields[0].ident.symbol), "inner");
 
         let PatKind::Struct(_, inner_path, inner_fields, _) = &fields[0].pat.kind else {
             panic!(
@@ -353,9 +359,9 @@ mod tests {
                 fields[0].pat.kind
             );
         };
-        assert_eq!(inner_path.segments[0].ident.name, "Inner");
+        assert_eq!(state.resolve(inner_path.segments[0].ident.symbol), "Inner");
         assert_eq!(inner_fields.len(), 1);
-        assert_eq!(inner_fields[0].ident.name, "x");
+        assert_eq!(state.resolve(inner_fields[0].ident.symbol), "x");
     }
 
     #[test]
@@ -430,28 +436,30 @@ mod tests {
     #[test]
     fn parses_a_plain_binding_pattern() {
         let tokens = tokens("x");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::Ident(ident, sub) = parsed.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.kind);
         };
-        assert_eq!(ident.name, "x");
+        assert_eq!(state.resolve(ident.symbol), "x");
         assert!(sub.is_none());
     }
 
     #[test]
     fn parses_a_captured_pattern() {
         let tokens = tokens("n @ _");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::Ident(ident, sub) = parsed.kind else {
             panic!("expected PatKind::Ident, got {:?}", parsed.kind);
         };
-        assert_eq!(ident.name, "n");
+        assert_eq!(state.resolve(ident.symbol), "n");
         let sub = sub.expect("should have a sub-pattern");
         assert!(matches!(sub.kind, PatKind::Wild));
     }
@@ -469,15 +477,16 @@ mod tests {
     #[test]
     fn parses_a_tuple_struct_pattern() {
         let tokens = tokens("Some(x)");
+        let mut state = crate::State::default();
         let parsed = pat(dummy_expr())
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         let PatKind::TupleStruct(qself, path, elems) = parsed.kind else {
             panic!("expected PatKind::TupleStruct, got {:?}", parsed.kind);
         };
         assert!(qself.is_none());
-        assert_eq!(path.segments[0].ident.name, "Some");
+        assert_eq!(state.resolve(path.segments[0].ident.symbol), "Some");
         assert_eq!(elems.len(), 1);
     }
 

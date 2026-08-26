@@ -12,6 +12,7 @@ categories = ["compilers", "parser-implementations"]
 
 [dependencies]
 walkable-derive = { path = "../walkable-derive" }
+intern = { version = "0.1.0", path = "../intern" }
 
 [lints]
 workspace = true

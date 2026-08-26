@@ -2,46 +2,43 @@ use std::collections::HashMap;
 
 use ast::Item;
 use diagnostics::Diagnostic;
+use intern::Interner;
 
 use crate::errors::{Locale, TypeCheckDiagnostic};
 use crate::position_index::PositionIndex;
 use crate::types::{Type, resolve_type};
-use crate::{FnSymbol, SymbolId, SymbolKind, TypeCheckContext};
+use crate::{BindingId, BindingKind, FnBinding, TypeCheckContext};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Constructs the final result of the type checking stage, which
     /// will be output to the client of this crate.
     ///
     /// The process of freezing the [`TypeCheckContext`] to arrive at
-    /// the final checked program involves converting  all symbols
-    /// within the symbol table into frozen symbols. This replaces
-    /// interned name ids with the actual name strings, converts the
-    /// SymbolKind to a FrozenSymbolKind, and resolves the `Ty`
-    /// representing the type of the symbol to a frozen `Type`.
+    /// the final checked program involves converting  all bindings
+    /// within the binding table into frozen bindings. This replaces
+    /// interned symbol ids with the actual symbol strings, converts the
+    /// BindingKind to a FrozenBindingKind, and resolves the `Ty`
+    /// representing the type of the binding to a frozen `Type`.
     ///
     /// TODO Make the CheckedProgram result produced by the
     /// TypeCheckContext actually preserve the module -> exported
-    /// symbol structure, since the embedding API will need to allow
-    /// for calling / getting symbols of items within modules.
+    /// binding structure, since the embedding API will need to allow
+    /// for calling / getting bindings of items within modules.
     fn freeze(mut self) -> CheckedProgram {
-        let mut symbols = HashMap::with_capacity(self.symbols.len());
-        for (id, symbol) in self.symbols.iter() {
-            let ty = match symbol.kind.ty() {
+        let mut bindings = HashMap::with_capacity(self.bindings.len());
+        for (id, binding) in self.bindings.iter() {
+            let ty = match binding.kind.ty() {
                 Some(ty) => resolve_type(
                     &mut self.inf,
+                    &self.bindings,
                     &self.symbols,
-                    &self.names,
                     &self.generic_names,
                     ty,
                 ),
                 None => Type::Unresolved,
             };
-            let name = self
-                .names
-                .name(symbol.name)
-                .cloned()
-                .unwrap_or_else(|| "_".to_owned());
-            let generics = symbol
+            let symbol = self.symbols.resolve(binding.symbol).to_owned();
+            let generics = binding
                 .generics()
                 .iter()
                 .map(|id| {
@@ -51,24 +48,24 @@ impl<'ast> TypeCheckContext<'ast> {
                         .unwrap_or_else(|| "<generic>".to_owned())
                 })
                 .collect();
-            let kind = match &symbol.kind {
-                SymbolKind::Fn(FnSymbol { param_names, .. }) => FrozenSymbolKind::Fn {
-                    param_names: param_names.clone(),
+            let kind = match &binding.kind {
+                BindingKind::Fn(FnBinding { param_symbols, .. }) => FrozenBindingKind::Fn {
+                    param_symbols: param_symbols.clone(),
                 },
-                SymbolKind::Param(_) => FrozenSymbolKind::Param,
-                SymbolKind::Local(_) => FrozenSymbolKind::Local,
-                SymbolKind::TyAlias(_) => FrozenSymbolKind::TyAlias,
-                SymbolKind::Mod(_) => FrozenSymbolKind::Mod,
-                SymbolKind::Struct
-                | SymbolKind::Enum
-                | SymbolKind::Variant
-                | SymbolKind::Trait
-                | SymbolKind::GenericParam(_) => FrozenSymbolKind::Other,
+                BindingKind::Param(_) => FrozenBindingKind::Param,
+                BindingKind::Local(_) => FrozenBindingKind::Local,
+                BindingKind::TyAlias(_) => FrozenBindingKind::TyAlias,
+                BindingKind::Mod(_) => FrozenBindingKind::Mod,
+                BindingKind::Struct
+                | BindingKind::Enum
+                | BindingKind::Variant
+                | BindingKind::Trait
+                | BindingKind::GenericParam(_) => FrozenBindingKind::Other,
             };
-            symbols.insert(
+            bindings.insert(
                 id,
-                FrozenSymbol {
-                    name,
+                FrozenBinding {
+                    symbol,
                     kind,
                     ty,
                     generics,
@@ -79,20 +76,20 @@ impl<'ast> TypeCheckContext<'ast> {
         CheckedProgram {
             diagnostics: self.diagnostics.into_vec(),
             positions: self.positions,
-            symbols,
+            bindings,
         }
     }
 }
 
-struct FrozenSymbol {
-    name: String,
-    kind: FrozenSymbolKind,
+struct FrozenBinding {
+    symbol: String,
+    kind: FrozenBindingKind,
     ty: Type,
     generics: Vec<String>,
 }
 
-enum FrozenSymbolKind {
-    Fn { param_names: Vec<String> },
+enum FrozenBindingKind {
+    Fn { param_symbols: Vec<String> },
     Param,
     Local,
     TyAlias,
@@ -105,7 +102,7 @@ enum FrozenSymbolKind {
 pub struct CheckedProgram {
     diagnostics: Vec<TypeCheckDiagnostic>,
     positions: PositionIndex,
-    symbols: HashMap<SymbolId, FrozenSymbol>,
+    bindings: HashMap<BindingId, FrozenBinding>,
 }
 
 impl CheckedProgram {
@@ -113,9 +110,9 @@ impl CheckedProgram {
     /// type checking process on the given items. Performs type
     /// inference and confirms all types are compatible, and then
     /// returns the [`CheckedProgram`] containing information
-    /// about the discovered items and their symbols and types.
-    pub fn check(items: &[Box<Item>]) -> CheckedProgram {
-        let mut cx = TypeCheckContext::new();
+    /// about the discovered items and their bindings and types.
+    pub fn check(items: &[Box<Item>], symbols: Interner) -> CheckedProgram {
+        let mut cx = TypeCheckContext::new(symbols);
         cx.resolve(items);
         cx.lower_signatures(items);
         cx.check(items);
@@ -133,28 +130,28 @@ impl CheckedProgram {
         self.diagnostics.iter().map(|d| d.render(catalog)).collect()
     }
 
-    /// Queries the checked program to see if there is a symbol
+    /// Queries the checked program to see if there is a binding
     /// associated with a specific offset in the source file.
-    pub fn symbol_at(&self, offset: usize) -> Option<SymbolId> {
-        self.positions.symbol_at(offset)
+    pub fn binding_at(&self, offset: usize) -> Option<BindingId> {
+        self.positions.binding_at(offset)
     }
 
     /// Queries the checked program to see if there is a concrete
-    /// primitive type name at a certain offset in the source file.
-    pub fn type_name_at(&self, offset: usize) -> Option<&'static str> {
+    /// primitive type symbol at a certain offset in the source file.
+    pub fn type_symbol_at(&self, offset: usize) -> Option<&'static str> {
         self.positions.type_name_at(offset)
     }
 
-    fn symbol(&self, symbol: SymbolId) -> &FrozenSymbol {
-        &self.symbols[&symbol]
+    fn binding(&self, binding: BindingId) -> &FrozenBinding {
+        &self.bindings[&binding]
     }
 
     /// Returns a string representation of the type associated with
-    /// a given symbol.
-    pub fn render_symbol_type(&self, symbol: SymbolId) -> String {
-        let sym = self.symbol(symbol);
-        let rendered = sym.ty.render();
-        let generics_rendered = generics_list(&sym.generics);
+    /// a given binding.
+    pub fn render_binding_type(&self, binding: BindingId) -> String {
+        let bind = self.binding(binding);
+        let rendered = bind.ty.render();
+        let generics_rendered = generics_list(&bind.generics);
         if generics_rendered.is_empty() {
             rendered
         } else {
@@ -162,18 +159,18 @@ impl CheckedProgram {
         }
     }
 
-    /// Returns a string representation of a symbol.
-    pub fn describe_symbol(&self, symbol: SymbolId) -> String {
-        let sym = self.symbol(symbol);
-        match &sym.kind {
-            FrozenSymbolKind::Fn { param_names } => describe_fn_item(sym, param_names),
-            FrozenSymbolKind::Param => format!("{}: {}", sym.name, sym.ty.render()),
-            FrozenSymbolKind::Local => format!("let {}: {}", sym.name, sym.ty.render()),
-            FrozenSymbolKind::TyAlias => {
-                format!("type {}", alias_name_with_generics(sym))
+    /// Returns a string representation of a binding.
+    pub fn describe_binding(&self, binding: BindingId) -> String {
+        let bind = self.binding(binding);
+        match &bind.kind {
+            FrozenBindingKind::Fn { param_symbols } => describe_fn_item(bind, param_symbols),
+            FrozenBindingKind::Param => format!("{}: {}", bind.symbol, bind.ty.render()),
+            FrozenBindingKind::Local => format!("let {}: {}", bind.symbol, bind.ty.render()),
+            FrozenBindingKind::TyAlias => {
+                format!("type {}", alias_symbol_with_generics(bind))
             }
-            FrozenSymbolKind::Mod => format!("mod {}", sym.name),
-            FrozenSymbolKind::Other => self.render_symbol_type(symbol),
+            FrozenBindingKind::Mod => format!("mod {}", bind.symbol),
+            FrozenBindingKind::Other => self.render_binding_type(binding),
         }
     }
 }
@@ -186,33 +183,33 @@ fn generics_list(generics: &[String]) -> String {
     format!("<{}>", generics.join(", "))
 }
 
-/// Returns a string with the symbol name followed by a
-/// generic list of the symbol.
-fn alias_name_with_generics(sym: &FrozenSymbol) -> String {
-    format!("{}{}", sym.name, generics_list(&sym.generics))
+/// Returns a string with the binding symbol followed by a
+/// generic list of the binding.
+fn alias_symbol_with_generics(bind: &FrozenBinding) -> String {
+    format!("{}{}", bind.symbol, generics_list(&bind.generics))
 }
 
 /// Returns a full string representation of the entire signature
 /// of a function.
-fn describe_fn_item(sym: &FrozenSymbol, param_names: &[String]) -> String {
-    let generics_rendered = generics_list(&sym.generics);
-    let Type::Fn(params, output) = &sym.ty else {
-        return sym.ty.render();
+fn describe_fn_item(bind: &FrozenBinding, param_symbols: &[String]) -> String {
+    let generics_rendered = generics_list(&bind.generics);
+    let Type::Fn(params, output) = &bind.ty else {
+        return bind.ty.render();
     };
     let params: Vec<String> = params
         .iter()
         .enumerate()
         .map(|(i, ty)| {
             let rendered = ty.render();
-            match param_names.get(i) {
-                Some(name) => format!("{name}: {rendered}"),
+            match param_symbols.get(i) {
+                Some(symbol) => format!("{symbol}: {rendered}"),
                 None => rendered,
             }
         })
         .collect();
     format!(
         "fn {}{generics_rendered}({}) -> {}",
-        sym.name,
+        bind.symbol,
         params.join(", "),
         output.render()
     )

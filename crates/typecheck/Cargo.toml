@@ -12,6 +12,7 @@ categories = ["compilers"]
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
+intern = { version = "0.1.0", path = "../intern" }
 slotmap = "1.1.1"
 indexmap = "2"
 thiserror = "2.0.20"

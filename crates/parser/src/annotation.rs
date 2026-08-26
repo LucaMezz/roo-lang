@@ -60,22 +60,30 @@ mod tests {
     #[test]
     fn parses_a_word_meta_item() {
         let tokens = tokens("component");
+        let mut state = crate::State::default();
         let parsed = meta_item()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.path.segments[0].ident.name, "component");
+        assert_eq!(
+            state.resolve(parsed.path.segments[0].ident.symbol),
+            "component"
+        );
         assert!(matches!(parsed.kind, MetaItemKind::Word));
     }
 
     #[test]
     fn parses_a_name_value_meta_item() {
         let tokens = tokens(r#"audio_cue = "jump""#);
+        let mut state = crate::State::default();
         let parsed = meta_item()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.path.segments[0].ident.name, "audio_cue");
+        assert_eq!(
+            state.resolve(parsed.path.segments[0].ident.symbol),
+            "audio_cue"
+        );
         let MetaItemKind::NameValue(lit) = parsed.kind else {
             panic!("expected MetaItemKind::NameValue, got {:?}", parsed.kind);
         };
@@ -85,11 +93,15 @@ mod tests {
     #[test]
     fn parses_a_recursively_nested_list_meta_item() {
         let tokens = tokens(r#"replicated(rename = "hp", skip_if(default))"#);
+        let mut state = crate::State::default();
         let parsed = meta_item()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
-        assert_eq!(parsed.path.segments[0].ident.name, "replicated");
+        assert_eq!(
+            state.resolve(parsed.path.segments[0].ident.symbol),
+            "replicated"
+        );
 
         let MetaItemKind::List(items) = parsed.kind else {
             panic!("expected MetaItemKind::List, got {:?}", parsed.kind);
@@ -99,13 +111,19 @@ mod tests {
         let MetaItemInner::MetaItem(rename) = &items[0] else {
             panic!("expected a nested MetaItem, got {:?}", items[0]);
         };
-        assert_eq!(rename.path.segments[0].ident.name, "rename");
+        assert_eq!(
+            state.resolve(rename.path.segments[0].ident.symbol),
+            "rename"
+        );
         assert!(matches!(rename.kind, MetaItemKind::NameValue(_)));
 
         let MetaItemInner::MetaItem(skip_if) = &items[1] else {
             panic!("expected a nested MetaItem, got {:?}", items[1]);
         };
-        assert_eq!(skip_if.path.segments[0].ident.name, "skip_if");
+        assert_eq!(
+            state.resolve(skip_if.path.segments[0].ident.symbol),
+            "skip_if"
+        );
         let MetaItemKind::List(inner_items) = &skip_if.kind else {
             panic!("expected a nested List, got {:?}", skip_if.kind);
         };
@@ -113,30 +131,41 @@ mod tests {
         let MetaItemInner::MetaItem(default_arg) = &inner_items[0] else {
             panic!("expected a nested MetaItem, got {:?}", inner_items[0]);
         };
-        assert_eq!(default_arg.path.segments[0].ident.name, "default");
+        assert_eq!(
+            state.resolve(default_arg.path.segments[0].ident.symbol),
+            "default"
+        );
         assert!(matches!(default_arg.kind, MetaItemKind::Word));
     }
 
     #[test]
     fn parses_an_outer_annotation() {
         let tokens = tokens("#[component]");
+        let mut state = crate::State::default();
         let parsed = annotation()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.style, AnnotationStyle::Outer));
-        assert_eq!(parsed.item.path.segments[0].ident.name, "component");
+        assert_eq!(
+            state.resolve(parsed.item.path.segments[0].ident.symbol),
+            "component"
+        );
     }
 
     #[test]
     fn parses_an_inner_annotation() {
         let tokens = tokens("#![replicated]");
+        let mut state = crate::State::default();
         let parsed = annotation()
-            .parse(tokens)
+            .parse_with_state(tokens, &mut state)
             .into_result()
             .expect("should parse");
         assert!(matches!(parsed.style, AnnotationStyle::Inner));
-        assert_eq!(parsed.item.path.segments[0].ident.name, "replicated");
+        assert_eq!(
+            state.resolve(parsed.item.path.segments[0].ident.symbol),
+            "replicated"
+        );
     }
 
     #[test]
