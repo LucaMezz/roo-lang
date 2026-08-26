@@ -107,16 +107,29 @@ struct Symbol {
     /// The specific kind of symbol that it is.
     kind: SymbolKind,
 
-    /// The ty representing the type associated with this
-    /// symbol.
-    ty: TyId,
-
-    /// The generic parameters associated with this symbol.
-    generics: Vec<GenericId>,
-
     /// The span within the source code that resulted in
     /// the introduction of this symbol.
     declared_at: Span,
+}
+
+impl Symbol {
+    /// The ty representing the type associated with this
+    /// symbol.
+    ///
+    /// Panics if this symbol's kind can never have a ty (e.g.
+    /// [`SymbolKind::Mod`]). Only call this where the kind is
+    /// already known by construction.
+    fn ty(&self) -> TyId {
+        self.kind
+            .ty()
+            .expect("symbol kind does not have a ty")
+    }
+
+    /// The generic parameters associated with this symbol.
+    /// Empty for kinds that can never have generics.
+    fn generics(&self) -> &[GenericId] {
+        self.kind.generics().unwrap_or(&[])
+    }
 }
 
 /// Extra information about a function symbol.
@@ -132,6 +145,26 @@ struct FnSymbol {
     /// The name of each of the parameters as they appear
     /// in the source code.
     param_names: Vec<String>,
+
+    /// The ty representing the type of this function.
+    ty: TyId,
+
+    /// The generic parameters associated with this function.
+    generics: Vec<GenericId>,
+}
+
+/// Extra information about a type alias symbol.
+#[derive(Debug)]
+struct TyAliasSymbol {
+    /// A handle to the scope in which the alias's generic
+    /// parameters live.
+    scope: ScopeId,
+
+    /// The ty representing the aliased type.
+    ty: TyId,
+
+    /// The generic parameters associated with this alias.
+    generics: Vec<GenericId>,
 }
 
 /// The specific kind of [`Symbol`].
@@ -145,14 +178,14 @@ enum SymbolKind {
     /// because they can have generic type parameters which
     /// should only exist during the evaluation of the
     /// type on the right hand side of the alias.
-    TyAlias(ScopeId),
+    TyAlias(TyAliasSymbol),
     /// A module. Here, the [`ScopeId`] is a handle to the
     /// scope of the module body.
     Mod(ScopeId),
     Fn(FnSymbol),
-    Local,
-    Param,
-    GenericParam,
+    Local(TyId),
+    Param(TyId),
+    GenericParam(TyId),
 }
 
 impl SymbolKind {
@@ -168,9 +201,36 @@ impl SymbolKind {
             SymbolKind::TyAlias(_) => "a type alias",
             SymbolKind::Mod(_) => "a module",
             SymbolKind::Fn(_) => "a function",
-            SymbolKind::Local => "a local variable",
-            SymbolKind::Param => "a parameter",
-            SymbolKind::GenericParam => "a generic parameter",
+            SymbolKind::Local(_) => "a local variable",
+            SymbolKind::Param(_) => "a parameter",
+            SymbolKind::GenericParam(_) => "a generic parameter",
+        }
+    }
+
+    /// The ty representing the type of this symbol, if this
+    /// kind of symbol can have one at all.
+    fn ty(&self) -> Option<TyId> {
+        match self {
+            SymbolKind::Fn(fn_data) => Some(fn_data.ty),
+            SymbolKind::TyAlias(alias_data) => Some(alias_data.ty),
+            SymbolKind::Local(ty) | SymbolKind::Param(ty) | SymbolKind::GenericParam(ty) => {
+                Some(*ty)
+            }
+            SymbolKind::Struct
+            | SymbolKind::Enum
+            | SymbolKind::Variant
+            | SymbolKind::Trait
+            | SymbolKind::Mod(_) => None,
+        }
+    }
+
+    /// The generic parameters of this symbol, if this kind of
+    /// symbol can have any at all.
+    fn generics(&self) -> Option<&[GenericId]> {
+        match self {
+            SymbolKind::Fn(fn_data) => Some(&fn_data.generics),
+            SymbolKind::TyAlias(alias_data) => Some(&alias_data.generics),
+            _ => None,
         }
     }
 }
@@ -185,10 +245,10 @@ enum PatDeclKind {
 }
 
 impl PatDeclKind {
-    fn symbol_kind(self) -> SymbolKind {
+    fn symbol_kind(self, ty: TyId) -> SymbolKind {
         match self {
-            PatDeclKind::Param => SymbolKind::Param,
-            PatDeclKind::Let => SymbolKind::Local,
+            PatDeclKind::Param => SymbolKind::Param(ty),
+            PatDeclKind::Let => SymbolKind::Local(ty),
         }
     }
 }
@@ -202,11 +262,12 @@ impl SymbolKind {
             | SymbolKind::Enum
             | SymbolKind::Trait
             | SymbolKind::TyAlias(_)
-            | SymbolKind::GenericParam
+            | SymbolKind::GenericParam(_)
             | SymbolKind::Mod(_) => Namespace::Type,
-            SymbolKind::Variant | SymbolKind::Fn(_) | SymbolKind::Local | SymbolKind::Param => {
-                Namespace::Value
-            }
+            SymbolKind::Variant
+            | SymbolKind::Fn(_)
+            | SymbolKind::Local(_)
+            | SymbolKind::Param(_) => Namespace::Value,
         }
     }
 }
@@ -254,7 +315,7 @@ struct TypeCheckContext<'ast> {
     /// substitutions to ensure two tys are equal. Also
     /// stores a [`Span`] with the reason two tys were
     /// unified.
-    uni_cx: InferenceTable,
+    inf: InferenceTable,
 
     /// Maps all names used throughout the type checking
     /// process to unique name IDs to improve performance.
@@ -322,7 +383,7 @@ impl<'ast> TypeCheckContext<'ast> {
         });
 
         Self {
-            uni_cx: InferenceTable::new(),
+            inf: InferenceTable::new(),
 
             names: NameInterner::new(),
             scopes,
@@ -381,7 +442,7 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn fresh_var_at(&mut self, span: Option<Span>) -> TyId {
-        let var = self.uni_cx.fresh_var();
+        let var = self.inf.fresh_var();
         let ty = self.ty_var(var);
         if let Some(span) = span {
             self.inference_vars.push((var, span));
@@ -398,7 +459,7 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn ty(&mut self, kind: TyKind) -> TyId {
-        self.uni_cx.insert_ty(kind)
+        self.inf.insert_ty(kind)
     }
 
     fn ty_var(&mut self, id: VarId) -> TyId {
@@ -541,7 +602,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn free_variables(&mut self) {
         self.inference_vars
             .iter()
-            .filter(|(v, _)| self.uni_cx.binding(*v).is_none())
+            .filter(|(v, _)| self.inf.binding(*v).is_none())
             .for_each(|(_, span)| {
                 self.diagnostics.push(AnnotationsNeeded::new(*span));
             });
@@ -655,10 +716,10 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn ty_alias_symbol_scope(&self, symbol: SymbolId) -> Option<ScopeId> {
-        let SymbolKind::TyAlias(scope) = &self.symbol(symbol).kind else {
+        let SymbolKind::TyAlias(alias_data) = &self.symbol(symbol).kind else {
             return None;
         };
-        Some(*scope)
+        Some(alias_data.scope)
     }
 
     fn with_fn_symbol<T>(
@@ -743,9 +804,11 @@ impl<'ast> TypeCheckContext<'ast> {
 
     /// Declares a new [`Symbol`] in a scope of a certain kind.
     ///
-    /// Note that a fresh inference variable `?a` is created to
-    /// represent the type of this symbol until something else
-    /// later constrains it.
+    /// Any ty this kind of symbol needs must already be embedded
+    /// in `kind` by the caller (see e.g. [`PatDeclKind::symbol_kind`],
+    /// which requires a fresh inference variable `?a` be created
+    /// up front to represent the type of the symbol until something
+    /// else later constrains it).
     fn declare(&mut self, name: &str, span: Span, kind: SymbolKind) -> SymbolId {
         let namespace = kind.namespace();
         let name = self.names.id(name);
@@ -756,16 +819,13 @@ impl<'ast> TypeCheckContext<'ast> {
         // Everything else -- functions, modules, structs, enums,
         // traits, type aliases, and parameters -- must be uniquely
         // named within a scope.
-        if !matches!(kind, SymbolKind::Local) {
+        if !matches!(kind, SymbolKind::Local(_)) {
             self.check_redeclaration(namespace, name, span);
         }
 
-        let ty = self.fresh_var_at(Some(span));
         let symbol = self.symbols.insert(Symbol {
             name,
             kind,
-            ty,
-            generics: Vec::new(),
             declared_at: span,
         });
         self.insert_in_scope(name, symbol, namespace);
@@ -809,9 +869,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let ty = self.ty(TyKind::Generic(id));
         let symbol = self.symbols.insert(Symbol {
             name,
-            kind: SymbolKind::GenericParam,
-            ty,
-            generics: Vec::new(),
+            kind: SymbolKind::GenericParam(ty),
             declared_at: span,
         });
         self.insert_type_in_scope(name, symbol);
@@ -987,6 +1045,7 @@ impl Visitor for Resolver<'_, '_> {
 impl Resolver<'_, '_> {
     fn resolve_fn_item(&mut self, item: &Item, f: &Fn) {
         let scope = self.new_scope();
+        let ty = self.cx.fresh_var_at(Some(f.ident.span));
         let fn_symbol = self.cx.declare(
             &f.ident.name,
             f.ident.span,
@@ -994,6 +1053,8 @@ impl Resolver<'_, '_> {
                 scope,
                 param_spans: Vec::new(),
                 param_names: Vec::new(),
+                ty,
+                generics: Vec::new(),
             }),
         );
 
@@ -1002,22 +1063,31 @@ impl Resolver<'_, '_> {
             generics = this.cx.declare_generic_params(&f.generics.params);
             item.walk(this);
         });
-        self.cx.symbols[fn_symbol].generics = generics;
+        if let SymbolKind::Fn(fn_data) = &mut self.cx.symbols[fn_symbol].kind {
+            fn_data.generics = generics;
+        }
     }
 
     fn resolve_ty_alias_item(&mut self, alias: &TyAlias) {
         let scope = self.new_scope();
+        let ty = self.cx.fresh_var_at(Some(alias.ident.span));
         let alias_symbol = self.cx.declare(
             &alias.ident.name,
             alias.ident.span,
-            SymbolKind::TyAlias(scope),
+            SymbolKind::TyAlias(TyAliasSymbol {
+                scope,
+                ty,
+                generics: Vec::new(),
+            }),
         );
 
         let mut generics = Vec::new();
         self.with_scope(scope, |this| {
             generics = this.cx.declare_generic_params(&alias.generics.params);
         });
-        self.cx.symbols[alias_symbol].generics = generics;
+        if let SymbolKind::TyAlias(alias_data) = &mut self.cx.symbols[alias_symbol].kind {
+            alias_data.generics = generics;
+        }
     }
 
     fn resolve_enum_item(&mut self, ident: &Ident) {
@@ -1110,11 +1180,11 @@ impl SignatureLowerer<'_, '_> {
 
         self.with_scope(scope, |this| {
             let fn_ty = this.lower_fn_sig(f);
-            let symbol_ty = this.cx.symbol(symbol).ty;
+            let symbol_ty = this.cx.symbol(symbol).ty();
             // Unifies the fresh placeholder inference variable which
             // was created during the previous Resolution stage with the
             // ty created by lowering the function signature.
-            let _ = this.cx.uni_cx.unify(symbol_ty, fn_ty);
+            let _ = this.cx.inf.unify(symbol_ty, fn_ty);
 
             // Collect information about parameter names and spans.
             if let SymbolKind::Fn(fn_data) = &mut this.cx.symbols[symbol].kind {
@@ -1236,7 +1306,7 @@ impl SignatureLowerer<'_, '_> {
         if let (Some((symbol, scope)), Some(ty)) = (resolved, alias.ty.as_ref()) {
             self.with_scope(scope, |this| {
                 let aliased = this.cx.lower_ty(ty);
-                let symbol_ty = this.cx.symbol(symbol).ty;
+                let symbol_ty = this.cx.symbol(symbol).ty();
                 // Unifies the fresh placeholder inference variable which
                 // was created during the previous Resolution stage with the
                 // ty created by lowering the type of the expression being

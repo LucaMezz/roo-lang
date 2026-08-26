@@ -13,7 +13,7 @@ use ast::{GenericArg, Path, Span};
 use crate::errors::GenericArgumentCountMismatch;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
-use crate::{GenericId, SymbolId, TyId, TypeCheckContext, VarId};
+use crate::{GenericId, SymbolId, SymbolKind, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
@@ -25,10 +25,10 @@ impl<'ast> TypeCheckContext<'ast> {
     /// occur in `t` and are not currently bound by the unification
     /// context.
     fn free_vars(&mut self, ty: TyId, out: &mut Vec<VarId>) {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved).cloned() {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved).cloned() {
             Some(TyKind::Var(v)) => {
-                let root = self.uni_cx.find(v);
+                let root = self.inf.find(v);
                 if !out.contains(&root) {
                     out.push(root);
                 }
@@ -45,7 +45,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
         self.checking_stack.clone().into_iter().for_each(|symbol| {
-            let ty = self.symbol(symbol).ty;
+            let ty = self.symbol(symbol).ty();
             self.free_vars(ty, &mut out);
         });
         out.into_iter().collect()
@@ -69,7 +69,7 @@ impl<'ast> TypeCheckContext<'ast> {
         // explicitly specifies its generic type parameter.
         let mut taken: HashSet<String> = self.generic_names.all_names();
         members.iter().for_each(|&symbol| {
-            self.symbol(symbol).generics.iter().for_each(|id| {
+            self.symbol(symbol).generics().iter().for_each(|id| {
                 if let Some(name) = self.generic_names.get(id) {
                     taken.insert(name.clone());
                 }
@@ -88,7 +88,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let per_member_vars: Vec<(SymbolId, Vec<VarId>)> = members
             .iter()
             .map(|&symbol| {
-                let ty = self.symbol(symbol).ty;
+                let ty = self.symbol(symbol).ty();
                 let mut vars = Vec::new();
                 self.free_vars(ty, &mut vars);
                 vars.retain(|v| !enclosing.contains(v));
@@ -106,7 +106,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     let name = self.generic_names.fresh_synthetic(&mut taken);
                     self.generic_names.declare(id, name);
                     let generic_ty = self.ty(TyKind::Generic(id));
-                    self.uni_cx.bind(var, generic_ty);
+                    self.inf.bind(var, generic_ty);
                     entry.insert(id);
                 }
             });
@@ -117,7 +117,9 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.into_iter().for_each(|(symbol, vars)| {
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
-                self.symbols[symbol].generics.push(id);
+                if let SymbolKind::Fn(fn_data) = &mut self.symbols[symbol].kind {
+                    fn_data.generics.push(id);
+                }
             });
         });
     }
@@ -139,18 +141,18 @@ impl<'ast> TypeCheckContext<'ast> {
     ///
     /// See [`Self::instantiate_ty`] for more information.
     fn instantiate_with(&mut self, symbol: SymbolId, explicit: &[(TyId, Span)]) -> TyId {
-        let ty = self.symbol(symbol).ty;
-        if self.symbol(symbol).generics.is_empty() {
+        let ty = self.symbol(symbol).ty();
+        if self.symbol(symbol).generics().is_empty() {
             return ty;
         }
-        let generics = self.symbol(symbol).generics.clone();
+        let generics = self.symbol(symbol).generics().to_vec();
         let mut subst = HashMap::new();
         generics
             .iter()
             .zip(explicit)
             .for_each(|(&id, &(ty, span))| {
                 let var_ty = self.fresh_var();
-                let _ = self.uni_cx.unify_because(var_ty, ty, span);
+                let _ = self.inf.unify_because(var_ty, ty, span);
                 subst.insert(id, var_ty);
             });
         self.instantiate_ty(ty, &mut subst)
@@ -186,8 +188,8 @@ impl<'ast> TypeCheckContext<'ast> {
     /// This allows us to resolve the type of `add::<int>` to the function
     /// `Fn<int>(int, int) -> int`.
     fn instantiate_ty(&mut self, ty: TyId, subst: &mut HashMap<GenericId, TyId>) -> TyId {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved).cloned() {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved).cloned() {
             // The ty is just some inference variable `?a`. Nothing to do.
             Some(TyKind::Var(_)) => resolved,
             // The ty is a generic type parameter `T`. If there is a mapping
@@ -238,7 +240,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     })
                     .collect();
 
-                let max = self.symbol(symbol).generics.len();
+                let max = self.symbol(symbol).generics().len();
                 let actual = arg_tys.len();
                 if actual != max {
                     self.diagnostics.push(GenericArgumentCountMismatch {

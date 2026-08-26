@@ -47,7 +47,7 @@ impl<'ast> TypeCheckContext<'ast> {
     // process is completed.
     pub(crate) fn resolved(&mut self, ty: TyId) -> Type {
         resolve_type(
-            &mut self.uni_cx,
+            &mut self.inf,
             &self.symbols,
             &self.names,
             &self.generic_names,
@@ -125,14 +125,14 @@ impl diagnostics::ToArgValue for Type {
 /// its own without needing to have access to names, symbols,
 /// generics, or the unification context.
 pub(crate) fn resolve_type(
-    uni_cx: &mut InferenceTable,
+    inf: &mut InferenceTable,
     symbols: &SlotMap<SymbolId, Symbol>,
     names: &NameInterner,
     generic_names: &GenericNames,
     ty: TyId,
 ) -> Type {
-    let resolved = uni_cx.resolve(ty);
-    let Some(kind) = uni_cx.ty(resolved).cloned() else {
+    let resolved = inf.resolve(ty);
+    let Some(kind) = inf.ty(resolved).cloned() else {
         return Type::Unresolved;
     };
 
@@ -147,7 +147,7 @@ pub(crate) fn resolve_type(
         TyKind::Str => Type::Str,
         TyKind::Err => Type::Err,
         TyKind::Array(elem) => Type::Array(Box::new(resolve_type(
-            uni_cx,
+            inf,
             symbols,
             names,
             generic_names,
@@ -155,15 +155,15 @@ pub(crate) fn resolve_type(
         ))),
         TyKind::Tuple(args) => Type::Tuple(
             args.iter()
-                .map(|&arg| resolve_type(uni_cx, symbols, names, generic_names, arg))
+                .map(|&arg| resolve_type(inf, symbols, names, generic_names, arg))
                 .collect(),
         ),
         TyKind::Fn(params, output) => {
             let params = params
                 .iter()
-                .map(|&arg| resolve_type(uni_cx, symbols, names, generic_names, arg))
+                .map(|&arg| resolve_type(inf, symbols, names, generic_names, arg))
                 .collect();
-            let output = Box::new(resolve_type(uni_cx, symbols, names, generic_names, output));
+            let output = Box::new(resolve_type(inf, symbols, names, generic_names, output));
             Type::Fn(params, output)
         }
         TyKind::Struct(symbol) | TyKind::Enum(symbol) => {

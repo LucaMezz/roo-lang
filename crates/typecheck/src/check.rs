@@ -64,8 +64,8 @@ impl<'ast> TypeCheckContext<'ast> {
     /// Returns the name of a generic parameter, if such a generic
     /// parameter exists.
     fn generic_name_of(&mut self, ty: TyId) -> Option<String> {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved)? {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved)? {
             TyKind::Generic(id) => self.generic_names.get(id).cloned(),
             _ => None,
         }
@@ -73,10 +73,10 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn first_provenance(&mut self, candidates: &[(TyId, &'static str, &Type)]) -> Option<Related> {
         for &(ty, side, kind) in candidates {
-            let Some(TyKind::Var(v)) = self.uni_cx.ty(ty).cloned() else {
+            let Some(TyKind::Var(v)) = self.inf.ty(ty).cloned() else {
                 continue;
             };
-            if let Some(span) = self.uni_cx.provenance(v) {
+            if let Some(span) = self.inf.provenance(v) {
                 return Some(provenance(span, side, kind));
             }
         }
@@ -357,16 +357,16 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn resolved_array(&mut self, ty: TyId) -> Option<TyId> {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved) {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved) {
             Some(&TyKind::Array(elem)) => Some(elem),
             _ => None,
         }
     }
 
     fn resolved_tuple(&mut self, ty: TyId) -> Option<Vec<TyId>> {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved) {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved) {
             Some(TyKind::Tuple(args)) => Some(args.clone()),
             _ => None,
         }
@@ -377,15 +377,15 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn resolved_fn_parts(&mut self, ty: TyId) -> Option<(Vec<TyId>, TyId)> {
-        let resolved = self.uni_cx.resolve(ty);
-        match self.uni_cx.ty(resolved) {
+        let resolved = self.inf.resolve(ty);
+        match self.inf.ty(resolved) {
             Some(TyKind::Fn(params, ret)) => Some((params.clone(), *ret)),
             _ => None,
         }
     }
 
     pub(crate) fn unify_or_report_cycle(&mut self, expected: TyId, found: TyId, span: Span) {
-        if let Err(UnifyError::OccursCheck(_)) = self.uni_cx.unify_because(expected, found, span) {
+        if let Err(UnifyError::OccursCheck(_)) = self.inf.unify_because(expected, found, span) {
             let expected_ty = self.resolved(expected);
             let found_ty = self.resolved(found);
             self.diagnostics
@@ -401,7 +401,7 @@ impl<'ast> TypeCheckContext<'ast> {
         reason: Span,
         extras: TypeMismatchExtras,
     ) -> Result<(), TyId> {
-        let Err(err) = self.uni_cx.unify_because(expected, found, reason) else {
+        let Err(err) = self.inf.unify_because(expected, found, reason) else {
             return Ok(());
         };
 
@@ -465,7 +465,7 @@ impl<'ast> TypeCheckContext<'ast> {
             _ => Vec::new(),
         };
 
-        let resolved_callee = self.uni_cx.resolve(callee_ty);
+        let resolved_callee = self.inf.resolve(callee_ty);
         if let Some((input_tys, output_ty)) = self.resolved_fn_parts(callee_ty) {
             let expected = input_tys.len();
             let actual = args.len();
@@ -503,7 +503,7 @@ impl<'ast> TypeCheckContext<'ast> {
             });
 
             output_ty
-        } else if matches!(self.uni_cx.ty(resolved_callee), None | Some(TyKind::Var(_))) {
+        } else if matches!(self.inf.ty(resolved_callee), None | Some(TyKind::Var(_))) {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg, None)).collect();
             let ret_ty = self.fresh_var();
             let fn_ty = self.ty(TyKind::Fn(arg_tys, ret_ty));
@@ -559,8 +559,8 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn is_never(&mut self, ty: TyId) -> bool {
-        let resolved = self.uni_cx.resolve(ty);
-        matches!(self.uni_cx.ty(resolved), Some(TyKind::Never))
+        let resolved = self.inf.resolve(ty);
+        matches!(self.inf.ty(resolved), Some(TyKind::Never))
     }
 
     pub(crate) fn check_local(&mut self, local: &Local) {
@@ -593,7 +593,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     pub(crate) fn check_pat(&mut self, pat: &Pat, expected: TyId, decl_kind: PatDeclKind) -> TyId {
         let actual = self.check_pat_kind(&pat.kind, expected, decl_kind);
-        let _ = self.uni_cx.unify_because(actual, expected, pat.span);
+        let _ = self.inf.unify_because(actual, expected, pat.span);
         actual
     }
 
@@ -624,10 +624,9 @@ impl<'ast> TypeCheckContext<'ast> {
         expected: TyId,
         decl_kind: PatDeclKind,
     ) -> TyId {
-        let symbol = self.declare(&ident.name, ident.span, decl_kind.symbol_kind());
-        let _ = self
-            .uni_cx
-            .unify_because(self.symbol(symbol).ty, expected, ident.span);
+        let ty = self.fresh_var_at(Some(ident.span));
+        self.declare(&ident.name, ident.span, decl_kind.symbol_kind(ty));
+        let _ = self.inf.unify_because(ty, expected, ident.span);
 
         if let Some(sub) = sub {
             self.check_pat(sub, expected, decl_kind);
@@ -790,7 +789,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let scope = self.fn_symbol_scope(symbol)?;
         let body = f.body.as_ref()?;
 
-        let symbol_ty = self.symbol(symbol).ty;
+        let symbol_ty = self.symbol(symbol).ty();
         let (input_tys, output_ty) = self.resolved_fn_parts(symbol_ty)?;
 
         self.sccc.enter(symbol);

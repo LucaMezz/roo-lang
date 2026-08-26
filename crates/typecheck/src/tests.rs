@@ -99,8 +99,8 @@ fn local(source: &str) -> Local {
 }
 
 fn resolved_kind(cx: &mut TypeCheckContext<'_>, ty: TyId) -> Option<TyKind> {
-    let resolved = cx.uni_cx.resolve(ty);
-    cx.uni_cx.ty(resolved).cloned()
+    let resolved = cx.inf.resolve(ty);
+    cx.inf.ty(resolved).cloned()
 }
 
 fn declared_symbol(
@@ -268,16 +268,16 @@ fn lower_ty_fn_with_no_return_type_defaults_to_a_fresh_unbound_var() {
     let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, t) else {
         panic!("should be a Fn ty");
     };
-    let resolved = cx.uni_cx.resolve(ret);
-    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
+    let resolved = cx.inf.resolve(ret);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
 fn lower_ty_infer_produces_a_fresh_unbound_var() {
     let mut cx = TypeCheckContext::new();
     let t = cx.lower_ty(&ty("_"));
-    let resolved = cx.uni_cx.resolve(t);
-    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
+    let resolved = cx.inf.resolve(t);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
     };
     let err_ty = cx.lower_ty(&err_ty);
     let int_ty = cx.ty(TyKind::Int);
-    assert!(cx.uni_cx.unify(err_ty, int_ty).is_ok());
+    assert!(cx.inf.unify(err_ty, int_ty).is_ok());
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn check_expr_unifies_the_result_against_the_expected_type() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let never_ty = cx.ty(TyKind::Never);
     cx.check_expr(&expr("foo"), Some(never_ty));
@@ -459,7 +459,7 @@ fn check_expr_path_resolves_to_the_symbols_type() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let t = cx.check_expr(&expr("foo"), None);
     assert_eq!(t, symbol_ty);
@@ -485,7 +485,7 @@ fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     cx.check_expr(&expr("foo()"), None);
 
@@ -503,7 +503,7 @@ fn check_expr_call_checks_arguments_against_the_signature() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
         panic!("should be a Fn ty");
@@ -641,7 +641,7 @@ fn apply(f, x) {
         .resolve_path_to_value(&path(&["apply"]))
         .expect("apply should resolve");
     assert_eq!(
-        cx.symbol(apply).generics.len(),
+        cx.symbol(apply).generics().len(),
         2,
         "<T, U> Fn(Fn(T) -> U, T) -> U"
     );
@@ -698,8 +698,8 @@ fn check_all_a_generic_ty_alias_referencing_only_its_own_params_is_not_cyclic() 
 fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
     let mut cx = resolve("fn foo() {}");
     let t = cx.check_expr(&expr("foo()"), None);
-    let resolved = cx.uni_cx.resolve(t);
-    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
+    let resolved = cx.inf.resolve(t);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -721,7 +721,7 @@ fn never_is_a_wildcard_that_unifies_with_anything() {
     let mut cx = TypeCheckContext::new();
     let never_ty = cx.ty(TyKind::Never);
     let int_ty = cx.ty(TyKind::Int);
-    assert!(cx.uni_cx.unify(never_ty, int_ty).is_ok());
+    assert!(cx.inf.unify(never_ty, int_ty).is_ok());
 }
 
 #[test]
@@ -825,7 +825,7 @@ fn check_pat_ident_binds_the_locals_type_to_expected() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
 }
 
@@ -851,8 +851,8 @@ fn check_pat_tuple_declares_one_local_per_position() {
         .expect("a should be declared");
     let b = declared_symbol(&cx, cx.current_scope, Namespace::Value, "b")
         .expect("b should be declared");
-    let a_ty = cx.symbol(a).ty;
-    let b_ty = cx.symbol(b).ty;
+    let a_ty = cx.symbol(a).ty();
+    let b_ty = cx.symbol(b).ty();
     assert_eq!(resolved_kind(&mut cx, a_ty), Some(TyKind::Never));
     assert_eq!(resolved_kind(&mut cx, b_ty), Some(TyKind::Int));
 }
@@ -875,7 +875,7 @@ fn check_local_declares_the_pattern_with_the_initializers_type() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
 }
 
@@ -886,7 +886,7 @@ fn check_local_with_no_initializer_uses_the_ascription() {
 
     let symbol = declared_symbol(&cx, cx.current_scope, Namespace::Value, "x")
         .expect("x should be declared");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Never));
 }
 
@@ -899,7 +899,7 @@ fn check_local_ascription_constrains_the_initializer() {
 
     cx.check_local(&local("let x: ! = foo();"));
 
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
         panic!("should be a Fn ty");
     };
@@ -912,7 +912,7 @@ fn lower_signatures_fn_with_typed_params_and_return() {
     let symbol = cx
         .resolve_path_to_value(&path(&["add"]))
         .expect("add should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let Some(TyKind::Fn(input_args, ret)) = resolved_kind(&mut cx, symbol_ty) else {
         panic!("should be a Fn ty");
@@ -928,13 +928,13 @@ fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, symbol_ty) else {
         panic!("should be a Fn ty");
     };
-    let resolved = cx.uni_cx.resolve(ret);
-    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
+    let resolved = cx.inf.resolve(ret);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -943,13 +943,13 @@ fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, symbol_ty) else {
         panic!("should be a Fn ty");
     };
-    let resolved = cx.uni_cx.resolve(input_args[0]);
-    assert!(matches!(cx.uni_cx.ty(resolved), Some(TyKind::Var(_))));
+    let resolved = cx.inf.resolve(input_args[0]);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
 }
 
 #[test]
@@ -958,7 +958,7 @@ fn lower_signatures_ty_alias() {
     let symbol = cx
         .resolve_path_to_type(&path(&["MyInt"]))
         .expect("MyInt should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert_eq!(resolved_kind(&mut cx, symbol_ty), Some(TyKind::Int));
 }
 
@@ -972,7 +972,7 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
         .expect("outer's body should have a child scope");
     let symbol = declared_symbol(&cx, body_scope, Namespace::Value, "inner")
         .expect("inner should be declared");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert!(matches!(
         resolved_kind(&mut cx, symbol_ty),
         Some(TyKind::Fn(..))
@@ -992,7 +992,7 @@ fn lower_signatures_recurses_into_a_mod() {
 
     let symbol =
         declared_symbol(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
     assert!(matches!(
         resolved_kind(&mut cx, symbol_ty),
         Some(TyKind::Fn(..))
@@ -1063,7 +1063,7 @@ fn lower_signatures_makes_the_declared_signature_authoritative() {
     let symbol = cx
         .resolve_path_to_value(&path(&["foo"]))
         .expect("foo should resolve");
-    let symbol_ty = cx.symbol(symbol).ty;
+    let symbol_ty = cx.symbol(symbol).ty();
 
     cx.check_expr(&expr("foo(\"wrong\")"), None);
 
@@ -1112,7 +1112,7 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
 }
 
 struct Renderer<'a> {
-    uni_cx: &'a mut InferenceTable,
+    inf: &'a mut InferenceTable,
     symbols: &'a SlotMap<SymbolId, Symbol>,
     names: &'a NameInterner,
     generic_names: &'a GenericNames,
@@ -1121,7 +1121,7 @@ struct Renderer<'a> {
 impl<'ast> TypeCheckContext<'ast> {
     fn renderer(&mut self) -> Renderer<'_> {
         Renderer {
-            uni_cx: &mut self.uni_cx,
+            inf: &mut self.inf,
             symbols: &self.symbols,
             names: &self.names,
             generic_names: &self.generic_names,
@@ -1151,15 +1151,15 @@ impl Renderer<'_> {
         highlight: Option<TyId>,
     ) -> Option<Range<usize>> {
         if let Some(highlight) = highlight {
-            if self.uni_cx.resolve(ty) == self.uni_cx.resolve(highlight) {
+            if self.inf.resolve(ty) == self.inf.resolve(highlight) {
                 let start = buf.len();
                 buf.push_str(&self.render_ty(ty));
                 return Some(start..buf.len());
             }
         }
 
-        let resolved = self.uni_cx.resolve(ty);
-        let Some(kind) = self.uni_cx.ty(resolved).cloned() else {
+        let resolved = self.inf.resolve(ty);
+        let Some(kind) = self.inf.ty(resolved).cloned() else {
             buf.push_str("<error>");
             return None;
         };
@@ -1256,10 +1256,10 @@ impl Renderer<'_> {
     }
 
     fn render_symbol_type(&mut self, symbol: SymbolId) -> String {
-        let ty = self.symbols[symbol].ty;
+        let ty = self.symbols[symbol].ty();
         let rendered = self.render_ty(ty);
-        let generics = self.symbols[symbol].generics.clone();
-        let generics_rendered = generics_list(self.generic_names, &generics);
+        let generics = self.symbols[symbol].generics();
+        let generics_rendered = generics_list(self.generic_names, generics);
         if generics_rendered.is_empty() {
             rendered
         } else {
@@ -1270,12 +1270,12 @@ impl Renderer<'_> {
     fn describe_symbol(&mut self, symbol: SymbolId) -> String {
         match &self.symbols[symbol].kind {
             SymbolKind::Fn(_) => self.describe_fn_item(symbol),
-            SymbolKind::Param => {
+            SymbolKind::Param(_) => {
                 let name = self.symbol_display_name(symbol);
                 let ty = self.render_symbol_type(symbol);
                 format!("{name}: {ty}")
             }
-            SymbolKind::Local => {
+            SymbolKind::Local(_) => {
                 let name = self.symbol_display_name(symbol);
                 let ty = self.render_symbol_type(symbol);
                 format!("let {name}: {ty}")
@@ -1288,7 +1288,7 @@ impl Renderer<'_> {
             | SymbolKind::Enum
             | SymbolKind::Variant
             | SymbolKind::Trait
-            | SymbolKind::GenericParam => self.render_symbol_type(symbol),
+            | SymbolKind::GenericParam(_) => self.render_symbol_type(symbol),
         }
     }
 
@@ -1302,8 +1302,8 @@ impl Renderer<'_> {
 
     fn alias_name_with_generics(&mut self, symbol: SymbolId) -> String {
         let name = self.symbol_display_name(symbol);
-        let generics = self.symbols[symbol].generics.clone();
-        let generics_rendered = generics_list(self.generic_names, &generics);
+        let generics = self.symbols[symbol].generics();
+        let generics_rendered = generics_list(self.generic_names, generics);
         format!("{name}{generics_rendered}")
     }
 
@@ -1315,17 +1315,17 @@ impl Renderer<'_> {
             .cloned()
             .unwrap_or_else(|| "<unknown>".to_owned());
 
-        let generics = self.symbols[symbol].generics.clone();
-        let generics_rendered = generics_list(self.generic_names, &generics);
+        let generics = self.symbols[symbol].generics();
+        let generics_rendered = generics_list(self.generic_names, generics);
 
         let SymbolKind::Fn(FnSymbol { param_names, .. }) = &self.symbols[symbol].kind else {
             unreachable!("describe_fn_item is only ever called for a SymbolKind::Fn symbol");
         };
         let param_names = param_names.clone();
 
-        let ty = self.symbols[symbol].ty;
-        let resolved = self.uni_cx.resolve(ty);
-        let Some(TyKind::Fn(param_types, output)) = self.uni_cx.ty(resolved).cloned() else {
+        let ty = self.symbols[symbol].ty();
+        let resolved = self.inf.resolve(ty);
+        let Some(TyKind::Fn(param_types, output)) = self.inf.ty(resolved).cloned() else {
             return self.render_symbol_type(symbol);
         };
 
@@ -1359,7 +1359,7 @@ fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type()
 
     let x_symbol = declared_symbol(&cx, body_scope, Namespace::Value, "x")
         .expect("x should be declared as a param");
-    let x_ty = cx.symbol(x_symbol).ty;
+    let x_ty = cx.symbol(x_symbol).ty();
     assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
@@ -1377,7 +1377,7 @@ fn check_all_recurses_into_a_nested_fns_body() {
 
     let x_symbol = declared_symbol(&cx, inner_scope, Namespace::Value, "x")
         .expect("x should be declared as inner's param");
-    let x_ty = cx.symbol(x_symbol).ty;
+    let x_ty = cx.symbol(x_symbol).ty();
     assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
 }
 
@@ -1937,9 +1937,9 @@ fn use_both() {
     let pong = cx
         .resolve_path_to_value(&path(&["pong"]))
         .expect("pong should resolve");
-    assert_eq!(cx.symbol(ping).generics.len(), 1);
-    assert_eq!(cx.symbol(pong).generics.len(), 1);
-    assert_eq!(cx.symbol(ping).generics[0], cx.symbol(pong).generics[0]);
+    assert_eq!(cx.symbol(ping).generics().len(), 1);
+    assert_eq!(cx.symbol(pong).generics().len(), 1);
+    assert_eq!(cx.symbol(ping).generics()[0], cx.symbol(pong).generics()[0]);
 }
 
 #[test]
@@ -1965,8 +1965,8 @@ fn use_it() {
     let caller = cx
         .resolve_path_to_value(&path(&["caller"]))
         .expect("caller should resolve");
-    assert_eq!(cx.symbol(helper).generics.len(), 1);
-    assert_eq!(cx.symbol(caller).generics.len(), 1);
+    assert_eq!(cx.symbol(helper).generics().len(), 1);
+    assert_eq!(cx.symbol(caller).generics().len(), 1);
 }
 
 #[test]
@@ -2049,7 +2049,7 @@ fn use_it() {
     let identity_rec = cx
         .resolve_path_to_value(&path(&["identity_rec"]))
         .expect("identity_rec should resolve");
-    assert_eq!(cx.symbol(identity_rec).generics.len(), 1);
+    assert_eq!(cx.symbol(identity_rec).generics().len(), 1);
 }
 
 #[test]
@@ -2076,7 +2076,7 @@ fn use_it() {
         let symbol = cx
             .resolve_path_to_value(&path(&[name]))
             .unwrap_or_else(|| panic!("{name} should resolve"));
-        assert_eq!(cx.symbol(symbol).generics.len(), 1, "{name}");
+        assert_eq!(cx.symbol(symbol).generics().len(), 1, "{name}");
     }
 }
 
@@ -2099,8 +2099,8 @@ fn pong2(y: int) -> int {
     let pong2 = cx
         .resolve_path_to_value(&path(&["pong2"]))
         .expect("pong2 should resolve");
-    assert_eq!(cx.symbol(ping2).generics.len(), 0);
-    assert_eq!(cx.symbol(pong2).generics.len(), 0);
+    assert_eq!(cx.symbol(ping2).generics().len(), 0);
+    assert_eq!(cx.symbol(pong2).generics().len(), 0);
 }
 
 #[test]
@@ -2116,7 +2116,7 @@ fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
     let compose = cx
         .resolve_path_to_value(&path(&["compose"]))
         .expect("compose should resolve");
-    let generics = cx.symbol(compose).generics.clone();
+    let generics = cx.symbol(compose).generics();
     assert_eq!(generics.len(), 2, "{generics:?}");
 
     let explicit = generics[0];
@@ -2177,8 +2177,8 @@ fn outer() {
         .expect("ping should be declared inside outer's body");
     let pong = declared_symbol(&cx, outer_scope, Namespace::Value, "pong")
         .expect("pong should be declared inside outer's body");
-    assert_eq!(cx.symbol(ping).generics.len(), 1);
-    assert_eq!(cx.symbol(pong).generics.len(), 1);
+    assert_eq!(cx.symbol(ping).generics().len(), 1);
+    assert_eq!(cx.symbol(pong).generics().len(), 1);
 }
 
 #[test]
@@ -2259,10 +2259,10 @@ fn compose(f) {
         .expect("innermost should be declared inside inner's body");
 
     assert_eq!(
-        cx.symbol(compose).generics.len(),
+        cx.symbol(compose).generics().len(),
         3,
         "{:#?}",
-        cx.symbol(compose).generics
+        cx.symbol(compose).generics()
     );
     // `inner` legitimately generalizes 1 variable of its own: the type shared
     // between `innermost`'s parameter `x` and `inner`'s own parameter `g`'s
@@ -2272,8 +2272,8 @@ fn compose(f) {
     // `compose`. The other 2 variables that stay free at this point (`f`'s
     // domain and codomain) are correctly excluded, and end up on `compose`
     // instead -- which is what this test is actually asserting.
-    assert_eq!(cx.symbol(inner).generics.len(), 1);
-    assert_eq!(cx.symbol(innermost).generics.len(), 0);
+    assert_eq!(cx.symbol(inner).generics().len(), 1);
+    assert_eq!(cx.symbol(innermost).generics().len(), 0);
 }
 
 #[test]

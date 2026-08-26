@@ -16,7 +16,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// the final checked program involves converting  all symbols
     /// within the symbol table into frozen symbols. This replaces
     /// interned name ids with the actual name strings, converts the
-    /// SymbolKind to a FrozenSymbolKind, and resolves the `Term`
+    /// SymbolKind to a FrozenSymbolKind, and resolves the `Ty`
     /// representing the type of the symbol to a frozen `Type`.
     ///
     /// TODO Make the CheckedProgram result produced by the
@@ -26,20 +26,23 @@ impl<'ast> TypeCheckContext<'ast> {
     fn freeze(mut self) -> CheckedProgram {
         let mut symbols = HashMap::with_capacity(self.symbols.len());
         for (id, symbol) in self.symbols.iter() {
-            let ty = resolve_type(
-                &mut self.uni_cx,
-                &self.symbols,
-                &self.names,
-                &self.generic_names,
-                symbol.ty,
-            );
+            let ty = match symbol.kind.ty() {
+                Some(ty) => resolve_type(
+                    &mut self.inf,
+                    &self.symbols,
+                    &self.names,
+                    &self.generic_names,
+                    ty,
+                ),
+                None => Type::Unresolved,
+            };
             let name = self
                 .names
                 .name(symbol.name)
                 .cloned()
                 .unwrap_or_else(|| "_".to_owned());
             let generics = symbol
-                .generics
+                .generics()
                 .iter()
                 .map(|id| {
                     self.generic_names
@@ -52,15 +55,15 @@ impl<'ast> TypeCheckContext<'ast> {
                 SymbolKind::Fn(FnSymbol { param_names, .. }) => FrozenSymbolKind::Fn {
                     param_names: param_names.clone(),
                 },
-                SymbolKind::Param => FrozenSymbolKind::Param,
-                SymbolKind::Local => FrozenSymbolKind::Local,
+                SymbolKind::Param(_) => FrozenSymbolKind::Param,
+                SymbolKind::Local(_) => FrozenSymbolKind::Local,
                 SymbolKind::TyAlias(_) => FrozenSymbolKind::TyAlias,
                 SymbolKind::Mod(_) => FrozenSymbolKind::Mod,
                 SymbolKind::Struct
                 | SymbolKind::Enum
                 | SymbolKind::Variant
                 | SymbolKind::Trait
-                | SymbolKind::GenericParam => FrozenSymbolKind::Other,
+                | SymbolKind::GenericParam(_) => FrozenSymbolKind::Other,
             };
             symbols.insert(
                 id,
