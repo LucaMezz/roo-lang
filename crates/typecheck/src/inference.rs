@@ -246,7 +246,6 @@ impl InferenceTable {
                     | (TyKind::Int, TyKind::Int)
                     | (TyKind::Float, TyKind::Float)
                     | (TyKind::Bool, TyKind::Bool)
-                    | (TyKind::Char, TyKind::Char)
                     | (TyKind::Str, TyKind::Str)
                     | (TyKind::Err, TyKind::Err) => Ok(()),
                     (TyKind::Array(a), TyKind::Array(b)) => self.unify_impl(a, b, reason),
@@ -329,7 +328,6 @@ pub(crate) fn child_tys(kind: TyKind) -> Vec<TyId> {
         | TyKind::Int
         | TyKind::Float
         | TyKind::Bool
-        | TyKind::Char
         | TyKind::Str
         | TyKind::Err
         | TyKind::Struct(_)

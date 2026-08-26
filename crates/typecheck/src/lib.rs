@@ -974,7 +974,6 @@ const PRIMITIVE_TYPES: &[(&str, TyKind)] = &[
     ("bool", TyKind::Bool),
     ("int", TyKind::Int),
     ("float", TyKind::Float),
-    ("char", TyKind::Char),
     ("String", TyKind::Str),
     ("any", TyKind::Any),
 ];

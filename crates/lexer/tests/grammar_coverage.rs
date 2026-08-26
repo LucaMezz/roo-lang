@@ -379,7 +379,7 @@ mod numeric_literals {
     }
 }
 
-mod string_and_char_literals {
+mod string_literals {
     use super::*;
 
     #[test]
@@ -425,44 +425,6 @@ mod string_and_char_literals {
     #[test]
     fn unterminated_string_is_a_lex_error() {
         assert_lex_error("\"never closed", LexError::UnterminatedString);
-    }
-
-    #[test]
-    fn char_ascii() {
-        assert_single("'a'", Token::CharLiteral("'a'"));
-    }
-
-    #[test]
-    fn char_escapes() {
-        for c in [
-            "'\\n'", "'\\r'", "'\\t'", "'\\\\'", "'\\0'", "'\\\"'", "'\\''",
-        ] {
-            assert_single(c, Token::CharLiteral(c));
-        }
-    }
-
-    #[test]
-    fn char_unicode_escape() {
-        assert_single("'\\u{1F980}'", Token::CharLiteral("'\\u{1F980}'"));
-        assert_single("'\\u{0}'", Token::CharLiteral("'\\u{0}'"));
-    }
-
-    #[test]
-    fn char_multibyte_literal() {
-        assert_single("'🦀'", Token::CharLiteral("'🦀'"));
-        assert_single("'é'", Token::CharLiteral("'é'"));
-    }
-
-    #[test]
-    fn unterminated_char_is_a_lex_error() {
-        assert_lex_error("'a", LexError::UnterminatedChar);
-        assert_lex_error("'\\n", LexError::UnterminatedChar);
-    }
-
-    #[test]
-    fn malformed_unicode_escape_is_a_lex_error() {
-        assert_lex_error("'\\u{}'", LexError::UnterminatedChar);
-        assert_lex_error("'\\u{FFFF'", LexError::UnterminatedChar);
     }
 
     #[test]

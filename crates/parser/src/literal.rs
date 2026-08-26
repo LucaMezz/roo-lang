@@ -35,16 +35,6 @@ fn process_escape<'src>(chars: &mut impl Iterator<Item = char>) -> char {
     }
 }
 
-fn process_char<'src>(text: &'src str) -> char {
-    let mut chars = text.chars().skip(1).peekable();
-
-    if let Some('\\') = chars.peek() {
-        process_escape(&mut chars)
-    } else {
-        chars.next().unwrap()
-    }
-}
-
 fn process_string<'src>(text: &'src str) -> String {
     let mut chars = text.chars().skip(1).peekable();
     let mut result = String::new();
@@ -96,7 +86,6 @@ fn process_number<'src>(lit: NumberKind<'src>) -> LitKind {
 
 pub fn literal<'src>() -> impl RooParser<'src, Lit> {
     select! {
-        Token::CharLiteral(lit) = e => Lit { kind: LitKind::Char(process_char(lit)), span: span(e) },
         Token::StringLiteral(lit) = e => Lit { kind: LitKind::Str(process_string(lit)), span: span(e) },
         Token::RawStringLiteral(lit) = e => Lit { kind: LitKind::Str(process_raw_string(lit)), span: span(e) },
         Token::Number(lit) = e => Lit { kind: process_number(lit), span: span(e) },
@@ -109,28 +98,6 @@ pub fn literal<'src>() -> impl RooParser<'src, Lit> {
 mod tests {
     use super::*;
     use crate::test_util::tokens;
-
-    #[test]
-    fn parses_a_plain_char_literal() {
-        let tokens = tokens("'a'");
-        let parsed = literal().parse(tokens).into_result().expect("should parse");
-        assert_eq!(parsed.kind, LitKind::Char('a'));
-        assert_eq!(parsed.span, ast::Span { start: 0, end: 3 });
-    }
-
-    #[test]
-    fn parses_a_char_literal_with_a_simple_escape() {
-        let tokens = tokens(r"'\n'");
-        let parsed = literal().parse(tokens).into_result().expect("should parse");
-        assert_eq!(parsed.kind, LitKind::Char('\n'));
-    }
-
-    #[test]
-    fn parses_a_char_literal_with_a_unicode_escape() {
-        let tokens = tokens(r"'\u{1F980}'");
-        let parsed = literal().parse(tokens).into_result().expect("should parse");
-        assert_eq!(parsed.kind, LitKind::Char('🦀'));
-    }
 
     #[test]
     fn parses_a_plain_string_literal() {

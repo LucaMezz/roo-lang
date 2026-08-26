@@ -3,7 +3,6 @@ pub enum LexError {
     #[default]
     InvalidToken,
     UnterminatedString,
-    UnterminatedChar,
     UnterminatedBlockComment,
     UnterminatedRawString,
     InvalidUnicodeEscape,

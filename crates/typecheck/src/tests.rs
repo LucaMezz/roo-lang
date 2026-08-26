@@ -314,7 +314,6 @@ fn lower_ty_path_resolves_primitive_symbols() {
         ("bool", TyKind::Bool),
         ("int", TyKind::Int),
         ("float", TyKind::Float),
-        ("char", TyKind::Char),
         ("String", TyKind::Str),
     ];
     for (src, expected) in cases {
@@ -405,14 +404,6 @@ fn check_expr_str_literal() {
     let expr_val = expr(&mut cx.symbols, "\"hi\"");
     let t = cx.check_expr(&expr_val, None);
     assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Str));
-}
-
-#[test]
-fn check_expr_char_literal() {
-    let mut cx = TypeCheckContext::new(Interner::new());
-    let expr_val = expr(&mut cx.symbols, "'a'");
-    let t = cx.check_expr(&expr_val, None);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Char));
 }
 
 #[test]
@@ -1268,10 +1259,6 @@ impl Renderer<'_> {
                 buf.push_str("bool");
                 None
             }
-            TyKind::Char => {
-                buf.push_str("char");
-                None
-            }
             TyKind::Str => {
                 buf.push_str("String");
                 None
@@ -1864,7 +1851,6 @@ fn type_symbol_at_finds_every_literal_kinds_own_type() {
 fn use_it() {
     let a = 1;
     let b = 1.5;
-    let c = 'x';
     let d = true;
     let e = "hi";
 }
@@ -1875,7 +1861,6 @@ fn use_it() {
         cx.type_symbol_at(source.find("1.5").unwrap()),
         Some("float")
     );
-    assert_eq!(cx.type_symbol_at(source.find("'x'").unwrap()), Some("char"));
     assert_eq!(
         cx.type_symbol_at(source.find("true").unwrap()),
         Some("bool")

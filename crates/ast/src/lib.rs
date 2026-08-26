@@ -116,7 +116,6 @@ pub struct Lit {
 #[derive(Clone, Debug, PartialEq, Walkable)]
 pub enum LitKind {
     Str(String),
-    Char(char),
     Int(u128),
     Float(String),
     Bool(bool),

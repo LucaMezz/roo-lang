@@ -97,7 +97,6 @@ impl<'ast> TypeCheckContext<'ast> {
         if let ExprKind::Lit(lit) = &expr.kind {
             let name = match lit.kind {
                 LitKind::Bool(_) => "bool",
-                LitKind::Char(_) => "char",
                 LitKind::Int(_) => "int",
                 LitKind::Float(_) => "float",
                 LitKind::Str(_) => "String",
@@ -284,7 +283,6 @@ impl<'ast> TypeCheckContext<'ast> {
     fn check_lit_expr(&mut self, lit: &Lit) -> TyId {
         match lit.kind {
             LitKind::Bool(_) => self.ty(TyKind::Bool),
-            LitKind::Char(_) => self.ty(TyKind::Char),
             LitKind::Int(_) => self.ty(TyKind::Int),
             LitKind::Float(_) => self.ty(TyKind::Float),
             LitKind::Str(_) => self.ty(TyKind::Str),

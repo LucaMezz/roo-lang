@@ -81,9 +81,6 @@ pub enum Token<'src> {
     #[regex(r"[0-9][0-9_]*", lex_decimal_number)]
     Number(NumberKind<'src>),
 
-    #[token("'", lex_char)]
-    CharLiteral(&'src str),
-
     #[token("\"", lex_string)]
     StringLiteral(&'src str),
 
@@ -252,61 +249,6 @@ fn lex_decimal_number<'src>(lex: &mut Lexer<'src, Token<'src>>) -> NumberKind<'s
     } else {
         NumberKind::Int(lex.slice())
     }
-}
-
-fn utf8_len(b: u8) -> usize {
-    if b & 0b1000_0000 == 0 {
-        1
-    } else if b & 0b1110_0000 == 0b1100_0000 {
-        2
-    } else if b & 0b1111_0000 == 0b1110_0000 {
-        3
-    } else if b & 0b1111_1000 == 0b1111_0000 {
-        4
-    } else {
-        1
-    }
-}
-
-fn consume_char_body(bytes: &[u8], mut i: usize) -> Option<usize> {
-    match bytes.get(i)? {
-        b'\\' => {
-            i += 1;
-            match *bytes.get(i)? {
-                b'u' => {
-                    i += 1;
-                    if bytes.get(i) != Some(&b'{') {
-                        return None;
-                    }
-                    i += 1;
-                    let hex_start = i;
-                    while bytes.get(i).is_some_and(u8::is_ascii_hexdigit) {
-                        i += 1;
-                    }
-                    if i == hex_start || bytes.get(i) != Some(&b'}') {
-                        return None;
-                    }
-                    i += 1;
-                }
-                _ => i += 1,
-            }
-        }
-        &b => i += utf8_len(b),
-    }
-    Some(i)
-}
-
-fn lex_char<'src>(lex: &mut Lexer<'src, Token<'src>>) -> Result<&'src str, LexError> {
-    let remainder = lex.remainder();
-    let bytes = remainder.as_bytes();
-
-    let after_body = consume_char_body(bytes, 0).ok_or(LexError::UnterminatedChar)?;
-    if bytes.get(after_body) != Some(&b'\'') {
-        return Err(LexError::UnterminatedChar);
-    }
-
-    lex.bump(after_body + 1);
-    Ok(lex.slice())
 }
 
 fn lex_string<'src>(lex: &mut Lexer<'src, Token<'src>>) -> Result<&'src str, LexError> {
