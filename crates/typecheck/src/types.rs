@@ -9,7 +9,27 @@ use slotmap::SlotMap;
 use unify::{Term, UnificationContext};
 
 use crate::generic_names::GenericNames;
-use crate::{NameInterner, Symbol, SymbolId, TermId, TyCon, TypeCheckContext};
+use crate::inference::{TyId as InferTyId, VarId as InferVarId};
+use crate::{GenericId, NameInterner, Symbol, SymbolId, TermId, TyCon, TypeCheckContext};
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TyKind {
+    Var(InferVarId),
+    Any,
+    Never,
+    Int,
+    Float,
+    Bool,
+    Char,
+    Str,
+    Err,
+    Array(InferTyId),
+    Tuple(Vec<InferTyId>),
+    Fn(Vec<InferTyId>, InferTyId),
+    Struct(SymbolId),
+    Enum(SymbolId),
+    Generic(GenericId),
+}
 
 // Helper to convert a pattern into a string.
 //

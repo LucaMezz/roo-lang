@@ -23,6 +23,7 @@ mod check;
 mod checked_program;
 mod errors;
 mod generic_names;
+mod inference;
 mod polymorphism;
 mod position_index;
 mod types;

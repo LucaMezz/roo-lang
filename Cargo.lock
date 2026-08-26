@@ -872,6 +872,7 @@ dependencies = [
  "slotmap",
  "thiserror 2.0.20",
  "unify",
+ "union-find",
 ]
 
 [[package]]
