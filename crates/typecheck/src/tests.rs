@@ -1239,10 +1239,6 @@ impl Renderer<'_> {
                 buf.push('_');
                 None
             }
-            TyKind::Any => {
-                buf.push_str("any");
-                None
-            }
             TyKind::Never => {
                 buf.push('!');
                 None

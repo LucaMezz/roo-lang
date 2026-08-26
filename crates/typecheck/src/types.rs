@@ -15,7 +15,6 @@ use crate::{Def, DefId, GenericId, TypeCheckContext};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
     Var(VarId),
-    Any,
     Never,
     Int,
     Float,
@@ -67,7 +66,6 @@ impl<'ast> TypeCheckContext<'ast> {
 /// process is complete.
 #[derive(Debug, Clone)]
 pub(crate) enum Type {
-    Any,
     Never,
     Int,
     Float,
@@ -86,7 +84,6 @@ impl Type {
     /// A string representation of the type.
     pub(crate) fn render(&self) -> String {
         match self {
-            Type::Any => "any".to_owned(),
             Type::Never => "!".to_owned(),
             Type::Int => "int".to_owned(),
             Type::Float => "float".to_owned(),
@@ -136,7 +133,6 @@ pub(crate) fn resolve_type(
 
     match kind {
         TyKind::Var(_) => Type::Unresolved,
-        TyKind::Any => Type::Any,
         TyKind::Never => Type::Never,
         TyKind::Int => Type::Int,
         TyKind::Float => Type::Float,

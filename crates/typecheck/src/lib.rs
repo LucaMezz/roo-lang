@@ -975,7 +975,6 @@ const PRIMITIVE_TYPES: &[(&str, TyKind)] = &[
     ("int", TyKind::Int),
     ("float", TyKind::Float),
     ("String", TyKind::Str),
-    ("any", TyKind::Any),
 ];
 
 /// The AST Visitor that performs the Resolution stage of the

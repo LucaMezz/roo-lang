@@ -241,8 +241,7 @@ impl InferenceTable {
                     return Ok(());
                 }
                 match (k1, k2) {
-                    (TyKind::Any, TyKind::Any)
-                    | (TyKind::Never, TyKind::Never)
+                    (TyKind::Never, TyKind::Never)
                     | (TyKind::Int, TyKind::Int)
                     | (TyKind::Float, TyKind::Float)
                     | (TyKind::Bool, TyKind::Bool)
@@ -317,13 +316,12 @@ impl Default for InferenceTable {
 }
 
 fn is_wildcard(kind: &TyKind) -> bool {
-    matches!(kind, TyKind::Any | TyKind::Err | TyKind::Never)
+    matches!(kind, TyKind::Err | TyKind::Never)
 }
 
 pub(crate) fn child_tys(kind: TyKind) -> Vec<TyId> {
     match kind {
         TyKind::Var(_)
-        | TyKind::Any
         | TyKind::Never
         | TyKind::Int
         | TyKind::Float
