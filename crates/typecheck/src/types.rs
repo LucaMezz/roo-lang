@@ -24,8 +24,8 @@ pub(crate) enum TyKind {
     Array(TyId),
     Tuple(Vec<TyId>),
     Fn(Vec<TyId>, TyId),
-    Struct(DefId),
-    Enum(DefId),
+    Struct(DefId, Vec<TyId>),
+    Enum(DefId, Vec<TyId>),
     Generic(GenericId),
 }
 
@@ -76,7 +76,7 @@ pub(crate) enum Type {
     Array(Box<Type>),
     Tuple(Vec<Type>),
     Fn(Vec<Type>, Box<Type>),
-    Named(String),
+    Named(String, Vec<Type>),
     Generic(String),
 }
 
@@ -91,7 +91,12 @@ impl Type {
             Type::Str => "String".to_owned(),
             Type::Err => "<error>".to_owned(),
             Type::Unresolved => "_".to_owned(),
-            Type::Named(name) | Type::Generic(name) => name.clone(),
+            Type::Generic(name) => name.clone(),
+            Type::Named(name, args) if args.is_empty() => name.clone(),
+            Type::Named(name, args) => {
+                let args: Vec<String> = args.iter().map(Type::render).collect();
+                format!("{}<{}>", name, args.join(", "))
+            }
             Type::Array(elem) => format!("[{}]", elem.render()),
             Type::Tuple(elems) => {
                 let elems: Vec<String> = elems.iter().map(Type::render).collect();
@@ -159,9 +164,13 @@ pub(crate) fn resolve_type(
             let output = Box::new(resolve_type(inf, defs, names, generic_names, output));
             Type::Fn(params, output)
         }
-        TyKind::Struct(def) | TyKind::Enum(def) => {
+        TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
             let name = defs[def].symbol;
-            Type::Named(names.resolve(name).to_owned())
+            let args = args
+                .iter()
+                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
+                .collect();
+            Type::Named(names.resolve(name).to_owned(), args)
         }
         TyKind::Generic(id) => {
             let text = generic_names

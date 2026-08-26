@@ -2,7 +2,7 @@
 #[allow(unused)]
 struct Vector2<T> {
     x: T,
-    y: float,
+    y,
 }
 
 #[extern(no)]
@@ -11,11 +11,13 @@ struct Unit;
 struct Handle(int, Vector2);
 
 fn main() {
-    
-    let zero: Vector2<float> = Vector2::<bool> { x: true, y: 0.0 };
+    let x;
+    let zero: Vector2 = Vector2 { x, y: 0.0 };
     let zilch: float = 0.0;
-    let y = 10 as float;
-    let coord: Vector2<bool> = Vector2 { x: 10.2, y };
+    let y = 10;
+    let coord: Vector2 = Vector2 { x: 10.2, y };
+
+    let example = Vector2 { x: true, y: false };
 
     let sample: Unit = Unit;
 

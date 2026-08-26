@@ -8,7 +8,7 @@
 //!     1.
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
@@ -907,6 +907,13 @@ impl<'ast> TypeCheckContext<'ast> {
             .collect()
     }
 
+    fn declare_synthetic_generic_param(&mut self, taken: &mut HashSet<String>) -> GenericId {
+        let id = self.generic_ids.insert(());
+        let name = self.generic_names.fresh_synthetic(taken);
+        self.generic_names.declare(id, name);
+        id
+    }
+
     /// Inserts a def into the current [`Scope`] via its
     /// handle.
     fn insert_in_scope(&mut self, symbol: Symbol, def: DefId, namespace: Namespace) {
@@ -989,8 +996,12 @@ impl<'ast> TypeCheckContext<'ast> {
             .map(|def| {
                 self.record_path_reference(path, def);
                 match &self.def(def).kind {
-                    DefKind::Struct(_) => self.ty(TyKind::Struct(def)),
-                    DefKind::Enum(_) => self.ty(TyKind::Enum(def)),
+                    DefKind::Struct(_) => {
+                        let generics = self.def(def).generics().to_vec();
+                        let args = self.instantiate_struct_args(&generics, path);
+                        self.ty(TyKind::Struct(def, args))
+                    }
+                    DefKind::Enum(_) => self.ty(TyKind::Enum(def, Vec::new())),
                     _ => self.instantiate_path(def, path),
                 }
             })
@@ -1410,18 +1421,31 @@ impl SignatureLowerer<'_, '_> {
         }
     }
 
-    fn lower_variant_data_field_tys(&mut self, data: &VariantData) -> Vec<Option<TyId>> {
+    fn lower_variant_data_field_tys(&mut self, data: &VariantData) -> (Vec<TyId>, Vec<GenericId>) {
         let fields = match data {
-            VariantData::Unit => return vec![],
+            VariantData::Unit => return (vec![], vec![]),
             VariantData::Tuple(fields) | VariantData::Struct(fields) => fields,
         };
-        fields
+        let mut taken = self.cx.generic_names.all_names();
+        let mut synthesized = Vec::new();
+        let tys = fields
             .iter()
-            .map(|field| field.ty.as_ref().map(|ty| self.cx.lower_ty(ty)))
-            .collect()
+            .map(|field| {
+                field
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.cx.lower_ty(ty))
+                    .unwrap_or_else(|| {
+                        let id = self.cx.declare_synthetic_generic_param(&mut taken);
+                        synthesized.push(id);
+                        self.cx.ty(TyKind::Generic(id))
+                    })
+            })
+            .collect();
+        (tys, synthesized)
     }
 
-    fn unify_variant_field_tys(&mut self, def: DefId, lowered: &[Option<TyId>]) {
+    fn unify_variant_field_tys(&mut self, def: DefId, lowered: &[TyId]) {
         let (DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant)) =
             &self.cx.defs[def].kind
         else {
@@ -1429,19 +1453,11 @@ impl SignatureLowerer<'_, '_> {
         };
         let field_tys: Vec<TyId> = variant.fields.iter().map(|field| field.ty).collect();
         for (field_ty, lowered_ty) in field_tys.into_iter().zip(lowered) {
-            if let Some(lowered_ty) = lowered_ty {
-                let _ = self.cx.inf.unify(field_ty, *lowered_ty);
-            }
+            let _ = self.cx.inf.unify(field_ty, *lowered_ty);
         }
     }
 
-    fn unify_ctor_ty(
-        &mut self,
-        def: DefId,
-        self_ty: TyKind,
-        data: &VariantData,
-        lowered: &[Option<TyId>],
-    ) {
+    fn unify_ctor_ty(&mut self, def: DefId, self_ty: TyKind, data: &VariantData, lowered: &[TyId]) {
         let placeholder = match &self.cx.defs[def].kind {
             DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
                 variant.ctor_ty
@@ -1455,10 +1471,7 @@ impl SignatureLowerer<'_, '_> {
         let self_ty = self.cx.ty(self_ty);
         let ctor_ty = match data {
             VariantData::Tuple(_) => {
-                let params = lowered
-                    .iter()
-                    .map(|ty| ty.expect("tuple fields always have an explicit type"))
-                    .collect();
+                let params = lowered.into();
                 self.cx.ty(TyKind::Fn(params, self_ty))
             }
             VariantData::Unit | VariantData::Struct(_) => self_ty,
@@ -1467,22 +1480,32 @@ impl SignatureLowerer<'_, '_> {
     }
 
     fn lower_struct_item(&mut self, ident: &Ident, data: &VariantData) {
-        let Some((def, scope)) = self.cx.with_struct_def(ident.symbol, |_, def, scope| (def, scope))
+        let Some((def, scope)) = self
+            .cx
+            .with_struct_def(ident.symbol, |_, def, scope| (def, scope))
         else {
             return;
         };
         self.with_scope(scope, |this| {
-            let lowered = this.lower_variant_data_field_tys(data);
+            let (lowered, synthesized) = this.lower_variant_data_field_tys(data);
+            if let DefKind::Struct(StructDef { variant, .. }) = &mut this.cx.defs[def].kind {
+                variant.generics.extend(synthesized);
+            }
             this.unify_variant_field_tys(def, &lowered);
-            this.unify_ctor_ty(def, TyKind::Struct(def), data, &lowered);
+            let generics = this.cx.def(def).generics().to_vec();
+            let placeholder_args = generics
+                .iter()
+                .map(|&id| this.cx.ty(TyKind::Generic(id)))
+                .collect();
+            this.unify_ctor_ty(def, TyKind::Struct(def, placeholder_args), data, &lowered);
         });
     }
 
     fn lower_enum_item(&mut self, ident: &Ident, def: &AstEnumDef) {
-        let lowered: Vec<Vec<Option<TyId>>> = def
+        let lowered: Vec<Vec<TyId>> = def
             .variants
             .iter()
-            .map(|v| self.lower_variant_data_field_tys(&v.data))
+            .map(|v| self.lower_variant_data_field_tys(&v.data).0)
             .collect();
 
         let Some(enum_def) = self.cx.with_type_def(ident.symbol, |_, def| def) else {
@@ -1498,7 +1521,7 @@ impl SignatureLowerer<'_, '_> {
             self.unify_variant_field_tys(variant, &lowered_fields);
             self.unify_ctor_ty(
                 variant,
-                TyKind::Enum(enum_def),
+                TyKind::Enum(enum_def, Vec::new()),
                 &ast_variant.data,
                 &lowered_fields,
             );

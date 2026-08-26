@@ -276,8 +276,18 @@ impl InferenceTable {
                         }
                         self.unify_impl(r1, r2, reason)
                     }
-                    (TyKind::Struct(s1), TyKind::Struct(s2)) if s1 == s2 => Ok(()),
-                    (TyKind::Enum(s1), TyKind::Enum(s2)) if s1 == s2 => Ok(()),
+                    (TyKind::Struct(s1, a1), TyKind::Struct(s2, a2)) if s1 == s2 => {
+                        for (x, y) in a1.into_iter().zip(a2) {
+                            self.unify_impl(x, y, reason)?;
+                        }
+                        Ok(())
+                    }
+                    (TyKind::Enum(s1, a1), TyKind::Enum(s2, a2)) if s1 == s2 => {
+                        for (x, y) in a1.into_iter().zip(a2) {
+                            self.unify_impl(x, y, reason)?;
+                        }
+                        Ok(())
+                    }
                     (TyKind::Generic(g1), TyKind::Generic(g2)) if g1 == g2 => Ok(()),
                     (k1, k2) => Err(UnifyError::ConstructorMismatch { t1, k1, t2, k2 }),
                 }
@@ -328,11 +338,10 @@ pub(crate) fn child_tys(kind: TyKind) -> Vec<TyId> {
         | TyKind::Bool
         | TyKind::Str
         | TyKind::Err
-        | TyKind::Struct(_)
-        | TyKind::Enum(_)
         | TyKind::Generic(_) => Vec::new(),
         TyKind::Array(elem) => vec![elem],
         TyKind::Tuple(elems) => elems,
+        TyKind::Struct(_, args) | TyKind::Enum(_, args) => args,
         TyKind::Fn(mut params, ret) => {
             params.push(ret);
             params
@@ -344,6 +353,8 @@ pub(crate) fn map_children(kind: TyKind, mut f: impl FnMut(TyId) -> TyId) -> TyK
     match kind {
         TyKind::Array(elem) => TyKind::Array(f(elem)),
         TyKind::Tuple(args) => TyKind::Tuple(args.into_iter().map(&mut f).collect()),
+        TyKind::Struct(def, args) => TyKind::Struct(def, args.into_iter().map(&mut f).collect()),
+        TyKind::Enum(def, args) => TyKind::Enum(def, args.into_iter().map(&mut f).collect()),
         TyKind::Fn(params, ret) => {
             let params = params.into_iter().map(&mut f).collect();
             let ret = f(ret);

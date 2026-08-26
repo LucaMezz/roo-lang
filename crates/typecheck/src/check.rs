@@ -241,7 +241,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
         self.record_path_reference(&expr.path, def);
 
-        let instantiated = self.instantiate_struct_fields(&generics, &expr.path, &field_tys);
+        let (instantiated, args) = self.instantiate_struct_fields(&generics, &expr.path, &field_tys);
         let declared_fields: Vec<(Symbol, TyId)> =
             field_names.into_iter().zip(instantiated).collect();
 
@@ -262,7 +262,7 @@ impl<'ast> TypeCheckContext<'ast> {
             }
         }
 
-        let ty = self.ty(TyKind::Struct(def));
+        let ty = self.ty(TyKind::Struct(def, args));
 
         if let Some(rest) = &expr.rest {
             self.check_expr(rest, Some(ty));

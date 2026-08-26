@@ -334,7 +334,7 @@ fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
 
     let ty_val = ty(&mut cx.symbols, "Foo");
     let t = cx.lower_ty(&ty_val);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def, vec![])));
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn lower_ty_path_resolves_a_declared_enum_by_nominal_identity() {
 
     let ty_val = ty(&mut cx.symbols, "Foo");
     let t = cx.lower_ty(&ty_val);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Enum(def)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Enum(def, vec![])));
 }
 
 #[test]
@@ -368,7 +368,7 @@ fn lower_ty_path_walks_through_a_module() {
 
     let ty_val = ty(&mut cx.symbols, "m::Foo");
     let t = cx.lower_ty(&ty_val);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def)));
+    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def, vec![])));
 }
 
 #[test]
@@ -1295,9 +1295,19 @@ impl Renderer<'_> {
                 let output_range = self.render_ty_into(buf, output, highlight);
                 inputs_range.or(output_range)
             }
-            TyKind::Struct(def) | TyKind::Enum(def) => {
+            TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
                 let symbol = self.defs[def].symbol;
                 buf.push_str(self.symbols.resolve(symbol));
+                if !args.is_empty() {
+                    buf.push('<');
+                    for (i, arg) in args.into_iter().enumerate() {
+                        if i > 0 {
+                            buf.push_str(", ");
+                        }
+                        self.render_ty_into(buf, arg, highlight);
+                    }
+                    buf.push('>');
+                }
                 None
             }
             TyKind::Generic(id) => {

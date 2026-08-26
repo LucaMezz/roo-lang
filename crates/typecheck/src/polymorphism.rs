@@ -102,9 +102,7 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.iter().for_each(|(_, vars)| {
             vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
-                    let id = self.generic_ids.insert(());
-                    let name = self.generic_names.fresh_synthetic(&mut taken);
-                    self.generic_names.declare(id, name);
+                    let id = self.declare_synthetic_generic_param(&mut taken);
                     let generic_ty = self.ty(TyKind::Generic(id));
                     self.inf.bind(var, generic_ty);
                     entry.insert(id);
@@ -122,23 +120,6 @@ impl<'ast> TypeCheckContext<'ast> {
                 }
             });
         });
-    }
-
-    /// Instantiates the given def's type for use at a single call site.
-    /// Any `explitit` generic type arguments provided via turbofish first
-    /// constrain the fresh inference variable introduced for that generic
-    /// parameter. instantiate_ty will fill in the rest with fresh
-    /// inference variables.
-    ///
-    /// See [`Self::instantiate_ty`] for more information.
-    fn instantiate_with(&mut self, def: DefId, explicit: &[(TyId, Span)]) -> TyId {
-        let ty = self.def(def).ty();
-        let generics = self.def(def).generics().to_vec();
-        if generics.is_empty() {
-            return ty;
-        }
-        let mut subst = self.build_subst(&generics, explicit);
-        self.instantiate_ty(ty, &mut subst)
     }
 
     fn build_subst(
@@ -255,9 +236,40 @@ impl<'ast> TypeCheckContext<'ast> {
     /// the concrete type `int`, giving `identity::<int>` the type
     /// `Fn(int) -> int`.
     pub(crate) fn instantiate_path(&mut self, def: DefId, path: &Path) -> TyId {
+        let ty = self.def(def).ty();
         let generics = self.def(def).generics().to_vec();
-        let explicit = self.explicit_generic_args(path, &generics);
-        self.instantiate_with(def, &explicit)
+        if generics.is_empty() {
+            return ty;
+        }
+        let mut subst = self.subst_for(&generics, path);
+        self.instantiate_ty(ty, &mut subst)
+    }
+
+    fn subst_for(&mut self, generics: &[GenericId], path: &Path) -> HashMap<GenericId, TyId> {
+        let explicit = self.explicit_generic_args(path, generics);
+        self.build_subst(generics, &explicit)
+    }
+
+    fn args_from_subst(
+        &mut self,
+        generics: &[GenericId],
+        subst: &mut HashMap<GenericId, TyId>,
+    ) -> Vec<TyId> {
+        generics
+            .iter()
+            .map(|&id| {
+                let placeholder = self.ty(TyKind::Generic(id));
+                self.instantiate_ty(placeholder, subst)
+            })
+            .collect()
+    }
+
+    pub(crate) fn instantiate_struct_args(&mut self, generics: &[GenericId], path: &Path) -> Vec<TyId> {
+        if generics.is_empty() {
+            return Vec::new();
+        }
+        let mut subst = self.subst_for(generics, path);
+        self.args_from_subst(generics, &mut subst)
     }
 
     pub(crate) fn instantiate_struct_fields(
@@ -265,17 +277,18 @@ impl<'ast> TypeCheckContext<'ast> {
         generics: &[GenericId],
         path: &Path,
         field_tys: &[TyId],
-    ) -> Vec<TyId> {
+    ) -> (Vec<TyId>, Vec<TyId>) {
         if generics.is_empty() {
-            return field_tys.to_vec();
+            return (field_tys.to_vec(), Vec::new());
         }
 
-        let explicit = self.explicit_generic_args(path, generics);
-        let mut subst = self.build_subst(generics, &explicit);
-
-        field_tys
+        let mut subst = self.subst_for(generics, path);
+        let fields = field_tys
             .iter()
             .map(|&ty| self.instantiate_ty(ty, &mut subst))
-            .collect()
+            .collect();
+        let args = self.args_from_subst(generics, &mut subst);
+
+        (fields, args)
     }
 }
