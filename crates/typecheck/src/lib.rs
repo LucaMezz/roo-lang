@@ -1616,19 +1616,13 @@ impl SignatureLowerer<'_, '_> {
                 .generics
                 .extend(synthesised.iter().flatten());
 
+            let generics = this.cx.enum_def_mut(id).generics.clone();
             let variants = this.cx.enum_def_mut(id).variants.clone();
-            for (((variant, lowered_fields), synthesized), ast_variant) in variants
-                .into_iter()
-                .zip(lowered)
-                .zip(synthesised)
-                .zip(&def.variants)
+            for ((variant, lowered_fields), ast_variant) in
+                variants.into_iter().zip(lowered).zip(&def.variants)
             {
-                this.cx
-                    .variant_def_mut(variant)
-                    .generics
-                    .extend(synthesized);
+                this.cx.variant_def_mut(variant).generics = generics.clone();
                 this.unify_variant_field_tys(variant, &lowered_fields);
-                let generics = this.cx.def(variant).generics().to_vec();
                 let placeholder_args = generics
                     .iter()
                     .map(|&id| this.cx.ty(TyKind::Generic(id)))
