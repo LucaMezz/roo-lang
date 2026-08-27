@@ -1,4 +1,9 @@
 
+enum Expr<T> {
+    Add(Expr<T>, Expr<T>),
+    Int
+}
+
 #[allow(unused)]
 struct Vector2<T> {
     x: T,
@@ -18,7 +23,6 @@ enum Option<T> {
 }
 
 use Option::*;
-use Option::T;
 
 fn main() {
     let x;
@@ -33,8 +37,8 @@ fn main() {
 
     let standard: Handle = Handle(1, zero);
 
-    let result: Option = None;
+    let result = None;
     let result2 = Some("Hello");
-    let result3 = Multi { x: "Hello", y: 10 };
+    let result3 = Option::Multi { x: "Hello", y: 10 };
     let result4 = Option::Fixed(10);
 }

@@ -243,6 +243,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let generics = variant.generics.clone();
         let field_names: Vec<Symbol> = variant.fields.iter().map(|f| f.name).collect();
         let field_tys: Vec<TyId> = variant.fields.iter().map(|f| f.ty).collect();
+        let parent = variant.parent;
 
         self.record_path_reference(&expr.path, def);
 
@@ -268,7 +269,10 @@ impl<'ast> TypeCheckContext<'ast> {
             }
         }
 
-        let ty = self.ty(TyKind::Struct(def, args));
+        let ty = match parent {
+            Some(enum_def) => self.ty(TyKind::Enum(enum_def, args)),
+            None => self.ty(TyKind::Struct(def, args)),
+        };
 
         if let Some(rest) = &expr.rest {
             self.check_expr(rest, Some(ty));

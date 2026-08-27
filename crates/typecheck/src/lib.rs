@@ -186,6 +186,7 @@ struct VariantDef {
     ctor_ty: Option<TyId>,
     /// The generic parameters associated with this variant.
     generics: Vec<GenericId>,
+    parent: Option<DefId>,
 }
 
 impl VariantDef {
@@ -1229,11 +1230,26 @@ impl Resolver<'_, '_> {
         let generics = self.with_scope(scope, |this| {
             this.cx.declare_generic_params(&generics.params)
         });
+        let enum_def = self.cx.declare(
+            ident.symbol,
+            ident.span,
+            DefKind::Enum(EnumDef {
+                variants: Vec::new(),
+                generics: generics.clone(),
+                scope,
+            }),
+        );
         let variants = def
             .variants
             .iter()
             .map(|v| {
-                self.resolve_variant_data(v.ident.symbol, v.ident.span, &v.data, generics.clone())
+                self.resolve_variant_data(
+                    v.ident.symbol,
+                    v.ident.span,
+                    &v.data,
+                    generics.clone(),
+                    Some(enum_def),
+                )
             })
             .collect::<Vec<_>>();
         let variants = self.with_scope(scope, |this| {
@@ -1242,13 +1258,7 @@ impl Resolver<'_, '_> {
                 .map(|v| this.cx.declare(v.name, v.span, DefKind::Variant(v)))
                 .collect::<Vec<_>>()
         });
-        let def = EnumDef {
-            variants,
-            generics,
-            scope,
-        };
-        self.cx
-            .declare(ident.symbol, ident.span, DefKind::Enum(def));
+        self.cx.enum_def_mut(enum_def).variants = variants;
     }
 
     fn resolve_variant_data(
@@ -1257,6 +1267,7 @@ impl Resolver<'_, '_> {
         span: Span,
         data: &VariantData,
         generics: Vec<GenericId>,
+        parent: Option<DefId>,
     ) -> VariantDef {
         let ctor_ty = match data {
             VariantData::Struct(_) => None,
@@ -1269,6 +1280,7 @@ impl Resolver<'_, '_> {
                 fields: vec![],
                 ctor_ty,
                 generics,
+                parent,
             },
             VariantData::Tuple(fields) => VariantDef {
                 name,
@@ -1283,6 +1295,7 @@ impl Resolver<'_, '_> {
                     .collect(),
                 ctor_ty,
                 generics,
+                parent,
             },
             VariantData::Struct(fields) => VariantDef {
                 name,
@@ -1296,6 +1309,7 @@ impl Resolver<'_, '_> {
                     .collect(),
                 ctor_ty,
                 generics,
+                parent,
             },
         }
     }
@@ -1305,7 +1319,7 @@ impl Resolver<'_, '_> {
         let generics = self.with_scope(scope, |this| {
             this.cx.declare_generic_params(&generics.params)
         });
-        let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics);
+        let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics, None);
         let def = self.cx.declare(
             ident.symbol,
             ident.span,
