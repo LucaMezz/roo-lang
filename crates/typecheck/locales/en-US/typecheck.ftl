@@ -44,3 +44,12 @@ already-defined-original = previously defined here
 unknown-field = struct `{$struct_name}` has no field named `{$name}`
 
 missing-field = missing field `{$name}` in initializer of `{$struct_name}`
+
+invalid-tuple-index = no field `{$name}` on type `{$found}`
+
+tuple-index-out-of-bounds = index out of bounds: the tuple `{$found}` has { $len ->
+    [one] {$len} element
+   *[other] {$len} elements
+} but the index is {$index}
+
+invalid-field-access = expected a struct or tuple, found `{$found}`

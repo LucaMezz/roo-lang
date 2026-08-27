@@ -255,6 +255,50 @@ impl MissingField {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 14, level = "error")]
+pub struct InvalidTupleIndex {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub found: Type,
+}
+
+impl InvalidTupleIndex {
+    pub fn new(span: Span, name: String, found: Type) -> Self {
+        Self { span, name, found }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 15, level = "error")]
+pub struct TupleIndexOutOfBounds {
+    #[diagnose(span)]
+    pub span: Span,
+    pub index: usize,
+    pub len: usize,
+    pub found: Type,
+}
+
+impl TupleIndexOutOfBounds {
+    pub fn new(span: Span, index: usize, len: usize, found: Type) -> Self {
+        Self {
+            span,
+            index,
+            len,
+            found,
+        }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 16, level = "error")]
+pub struct InvalidFieldAccess {
+    #[diagnose(span)]
+    pub span: Span,
+    pub found: Type,
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -270,6 +314,9 @@ diagnostics::catalog! {
         AlreadyDefined,
         UnknownField,
         MissingField,
+        InvalidTupleIndex,
+        TupleIndexOutOfBounds,
+        InvalidFieldAccess,
     }
 }
 

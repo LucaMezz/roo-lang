@@ -10,6 +10,12 @@ struct Vector2<T> {
     y,
 }
 
+impl<T> Vector2<T> {
+    fn zero() -> Self {
+        Self { x: 0, y: 0 }
+    }
+}
+
 #[extern(no)]
 struct Unit;
 
@@ -22,7 +28,15 @@ enum Option<T> {
     Fixed(int)
 }
 
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+type Res<T> = Result<T, String>;
+
 use Option::*;
+use Result::*;
 
 fn main() {
     let x;
@@ -41,4 +55,7 @@ fn main() {
     let result2 = Some("Hello");
     let result3 = Option::Multi { x: "Hello", y: 10 };
     let result4 = Option::Fixed(10);
+
+    let outcome = Ok(Unit);
+    let outcome2 = Err::<Unit, _>("Failed");
 }

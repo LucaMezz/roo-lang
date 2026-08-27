@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ast::{
     Block, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind, ModKind,
     Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
@@ -6,13 +8,15 @@ use diagnostics::Related;
 use intern::Symbol;
 
 use crate::errors::{
-    ArgumentCountMismatch, CyclicType, MissingField, NotCallable, TypeMismatch, UnknownField,
-    UnresolvedType, UnresolvedValue, expected_because_of, expected_due_to, generic_note,
-    provenance,
+    ArgumentCountMismatch, CyclicType, InvalidFieldAccess, InvalidTupleIndex, MissingField,
+    NotCallable, TupleIndexOutOfBounds, TypeMismatch, UnknownField, UnresolvedType,
+    UnresolvedValue, expected_because_of, expected_due_to, generic_note, provenance,
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{CxExt, DefId, DefKind, PatDeclKind, TyId, TypeCheckContext, display_path};
+use crate::{
+    CxExt, DefId, DefKind, GenericId, PatDeclKind, StructDef, TyId, TypeCheckContext, display_path,
+};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -152,7 +156,7 @@ impl<'ast> TypeCheckContext<'ast> {
             ExprKind::Match(..) => self.check_match_expr(),
             ExprKind::Closure(..) => self.check_closure_expr(),
             ExprKind::AssignOp(..) => self.check_assign_op_expr(),
-            ExprKind::Field(..) => self.check_field_expr(),
+            ExprKind::Field(expr, index) => self.check_field_expr(expr, index),
             ExprKind::Index(..) => self.check_index_expr(),
             ExprKind::Range(..) => self.check_range_expr(),
             ExprKind::Underscore => self.check_underscore_expr(),
@@ -203,8 +207,75 @@ impl<'ast> TypeCheckContext<'ast> {
         unimplemented!()
     }
 
-    fn check_field_expr(&mut self) -> TyId {
-        unimplemented!()
+    fn check_field_expr(&mut self, expr: &Expr, ident: &Ident) -> TyId {
+        let expr_ty = self.check_expr(expr, None);
+        let resolved_ty = self.inf.resolve(expr_ty);
+        let kind = self.inf.ty(resolved_ty).cloned().expect("valid TyId");
+
+        match kind {
+            TyKind::Struct(def, generics) => self.struct_field_ty(expr_ty, def, generics, ident),
+            TyKind::Tuple(types) => self.tuple_field_ty(expr_ty, types, ident),
+            _ => self.invalid_field_access(expr.span, expr_ty),
+        }
+    }
+
+    fn struct_field_ty(
+        &mut self,
+        _expr_ty: TyId,
+        def: DefId,
+        generics: Vec<TyId>,
+        ident: &Ident,
+    ) -> TyId {
+        let (field_ty, struct_generics, struct_name) = match &self.def(def).kind {
+            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => (
+                variant.field(ident.symbol).map(|field| field.ty),
+                variant.generics.clone(),
+                variant.name,
+            ),
+            _ => unreachable!("TyKind::Struct must resolve to a struct or variant def"),
+        };
+
+        let Some(field_ty) = field_ty else {
+            let name = self.symbols.resolve(ident.symbol).to_owned();
+            let struct_name = self.symbols.resolve(struct_name).to_owned();
+            self.diagnostics
+                .push(UnknownField::new(ident.span, name, struct_name));
+            return self.ty(TyKind::Err);
+        };
+
+        let mut subst: HashMap<GenericId, TyId> =
+            struct_generics.into_iter().zip(generics).collect();
+        self.instantiate_ty(field_ty, &mut subst)
+    }
+
+    fn tuple_field_ty(&mut self, expr_ty: TyId, types: Vec<TyId>, ident: &Ident) -> TyId {
+        let name = self.symbols.resolve(ident.symbol).to_owned();
+
+        let Ok(index) = name.parse::<usize>() else {
+            let found = self.resolved(expr_ty);
+            self.diagnostics
+                .push(InvalidTupleIndex::new(ident.span, name, found));
+            return self.ty(TyKind::Err);
+        };
+
+        let Some(&field_ty) = types.get(index) else {
+            let found = self.resolved(expr_ty);
+            self.diagnostics.push(TupleIndexOutOfBounds::new(
+                ident.span,
+                index,
+                types.len(),
+                found,
+            ));
+            return self.ty(TyKind::Err);
+        };
+
+        field_ty
+    }
+
+    fn invalid_field_access(&mut self, span: Span, expr_ty: TyId) -> TyId {
+        let found = self.resolved(expr_ty);
+        self.diagnostics.push(InvalidFieldAccess { span, found });
+        self.ty(TyKind::Err)
     }
 
     fn check_index_expr(&mut self) -> TyId {
