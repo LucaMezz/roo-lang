@@ -13,7 +13,7 @@ use ast::{GenericArg, Path, Span};
 use crate::errors::GenericArgumentCountMismatch;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
-use crate::{DefId, DefKind, GenericId, TyId, TypeCheckContext, VarId};
+use crate::{DefId, GenericId, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
@@ -115,9 +115,7 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.into_iter().for_each(|(def, vars)| {
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
-                if let DefKind::Fn(fn_data) = &mut self.defs[def].kind {
-                    fn_data.generics.push(id);
-                }
+                self.fn_def_mut(def).generics.push(id);
             });
         });
     }
@@ -194,7 +192,11 @@ impl<'ast> TypeCheckContext<'ast> {
     /// the substitution map made of the single substitution `T |-> int`.
     /// This allows us to resolve the type of `add::<int>` to the function
     /// `Fn<int>(int, int) -> int`.
-    pub(crate) fn instantiate_ty(&mut self, ty: TyId, subst: &mut HashMap<GenericId, TyId>) -> TyId {
+    pub(crate) fn instantiate_ty(
+        &mut self,
+        ty: TyId,
+        subst: &mut HashMap<GenericId, TyId>,
+    ) -> TyId {
         let resolved = self.inf.resolve(ty);
         match self.inf.ty(resolved).cloned() {
             // The ty is just some inference variable `?a`. Nothing to do.
@@ -264,7 +266,11 @@ impl<'ast> TypeCheckContext<'ast> {
             .collect()
     }
 
-    pub(crate) fn instantiate_struct_args(&mut self, generics: &[GenericId], path: &Path) -> Vec<TyId> {
+    pub(crate) fn instantiate_adt_args(
+        &mut self,
+        generics: &[GenericId],
+        path: &Path,
+    ) -> Vec<TyId> {
         if generics.is_empty() {
             return Vec::new();
         }

@@ -12,7 +12,7 @@ use crate::errors::{
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{DefId, DefKind, PatDeclKind, TyId, TypeCheckContext, display_path};
+use crate::{CxExt, DefId, DefKind, PatDeclKind, TyId, TypeCheckContext, display_path};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -228,7 +228,12 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_struct_expr(&mut self, expr: &StructExpr) -> TyId {
-        let Some((def, variant)) = self.resolve_path_to_struct(&expr.path) else {
+        let resolved = self.resolve_path_to_struct(&expr.path);
+        let resolved = match resolved {
+            Some(resolved) => Some(resolved),
+            None => self.resolve_path_to_variant(&expr.path),
+        };
+        let Some((def, variant)) = resolved else {
             self.diagnostics.push(UnresolvedType::new(
                 expr.path.span,
                 display_path(&expr.path, &self.symbols),
@@ -241,7 +246,8 @@ impl<'ast> TypeCheckContext<'ast> {
 
         self.record_path_reference(&expr.path, def);
 
-        let (instantiated, args) = self.instantiate_struct_fields(&generics, &expr.path, &field_tys);
+        let (instantiated, args) =
+            self.instantiate_struct_fields(&generics, &expr.path, &field_tys);
         let declared_fields: Vec<(Symbol, TyId)> =
             field_names.into_iter().zip(instantiated).collect();
 

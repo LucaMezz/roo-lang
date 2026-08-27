@@ -10,6 +10,16 @@ struct Unit;
 
 struct Handle(int, Vector2);
 
+enum Option<T> {
+    Some(T),
+    Multi { x: T, y },
+    None,
+    Fixed(int)
+}
+
+use Option::*;
+use Option::T;
+
 fn main() {
     let x;
     let zero: Vector2 = Vector2 { x, y: 0.0 };
@@ -17,9 +27,14 @@ fn main() {
     let y = 10;
     let coord: Vector2 = Vector2 { x: 10.2, y };
 
-    let example = Vector2 { x: true, y: false };
+    let example: Vector2<bool, bool> = Vector2 { x: true, y: false };
 
     let sample: Unit = Unit;
 
     let standard: Handle = Handle(1, zero);
+
+    let result: Option = None;
+    let result2 = Some("Hello");
+    let result3 = Multi { x: "Hello", y: 10 };
+    let result4 = Option::Fixed(10);
 }
