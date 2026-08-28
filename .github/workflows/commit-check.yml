@@ -9,7 +9,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install cocogitto
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://github.com/cocogitto/cocogitto/releases/download/7.0.0/cocogitto-7.0.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz --strip-components=1 -C "$HOME/.local/bin" x86_64-unknown-linux-musl/cog
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Conventional commits check
-        uses: cocogitto/cocogitto-action@v3
-        with:
-          check-latest-tag-only: true
+        run: cog check --from-latest-tag
