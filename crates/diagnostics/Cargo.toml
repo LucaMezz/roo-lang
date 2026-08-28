@@ -11,7 +11,7 @@ categories = ["compilers"]
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
-fluent-bundle = "0.15"
+fluent-bundle = "0.16"
 unic-langid = "0.9"
 
 [lints]
