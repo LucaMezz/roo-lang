@@ -1,5 +1,9 @@
 # roo-lang
 
+[![CI](https://github.com/LucaMezz/roo-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/LucaMezz/roo-lang/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/LucaMezz/roo-lang)](LICENSE)
+[![codecov](https://codecov.io/gh/LucaMezz/roo-lang/branch/main/graph/badge.svg)](https://codecov.io/gh/LucaMezz/roo-lang)
+
 An embeddable, statically-typed scripting language with a 
 Hindley-Milner-like type system written in
 Rust. Roo is heavily inspired by Rust, but aims to be more light-weight. 
