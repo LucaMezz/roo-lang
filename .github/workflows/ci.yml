@@ -62,7 +62,7 @@ jobs:
         run: cargo tarpaulin --workspace --out xml --fail-under 70
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
