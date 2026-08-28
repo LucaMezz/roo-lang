@@ -1,0 +1,64 @@
+from_latest_tag = true
+ignore_merge_commits = true
+ignore_fixup_commits = true
+disable_changelog = false
+disable_bump_commit = false
+generate_mono_repository_global_tag = true
+generate_mono_repository_package_tags = true
+branch_whitelist = ["main"]
+scopes = ["book", "examples", "lexer", "parser", "ast", "typeck", "lsp", "codegen", "runtime", "vm", "diagnostics", "cli", "intern", "lang"]
+pre = "alpha.*"
+tag_prefix = "v"
+skip_ci = "[skip ci]"
+skip_untracked = false
+pre_bump_hooks = [
+    "cargo test --workspace",
+    "./scripts/sync-cargo-version.sh {{version}} crates/ast crates/lexer crates/parser crates/typecheck crates/intern crates/diagnostics crates/diagnostics-derive crates/walkable-derive",
+]
+post_bump_hooks = []
+pre_package_bump_hooks = []
+post_package_bump_hooks = []
+
+[git_hooks]
+
+[git_hooks.commit-msg]
+script = """#!/bin/sh
+cog verify --file $1
+"""
+
+[git_hooks.pre-push]
+script = """#!/bin/sh
+set -e
+cog check
+cargo fmt --check
+cargo clippy --workspace --all-targets
+"""
+
+[commit_types]
+
+[changelog]
+path = "CHANGELOG.md"
+authors = [{ signature = "Luca Mezzavilla", username = "LucaMezz" }]
+remote = "github.com"
+owner = "LucaMezz"
+repository = "roo-lang"
+template = "remote"
+package_template = "package_remote"
+
+[bump_profiles]
+
+[monorepo]
+
+[monorepo.packages.lsp]
+path = "crates/lsp"
+public_api = false
+pre_bump_hooks = ["../../scripts/sync-cargo-version.sh {{version}} ."]
+
+[monorepo.packages.cli]
+path = "crates/cli"
+public_api = false
+pre_bump_hooks = ["../../scripts/sync-cargo-version.sh {{version}} ."]
+
+[monorepo.packages.book]
+path = "book"
+public_api = false
