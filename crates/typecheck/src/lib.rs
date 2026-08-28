@@ -14,7 +14,7 @@ use ast::visit::{Visitor, Walkable};
 use ast::{
     AssocItemKind, EnumDef as AstEnumDef, Fn, FnRetTy, FnTy, GenericParam, Generics, Ident, Impl,
     Item, ItemKind, ModKind, Path, Span, Trait, Ty, TyAlias, TyKind as AstTyKind, UseTree,
-    UseTreeKind, Variant, VariantData,
+    UseTreeKind, VariantData,
 };
 use intern::{Interner, Symbol};
 use slotmap::SlotMap;
@@ -543,12 +543,6 @@ impl<'ast> TypeCheckContext<'ast> {
     fn lower_signatures(&mut self, items: &[Box<Item>]) {
         let mut lowerer = SignatureLowerer { cx: self };
         items.iter().for_each(|item| lowerer.visit_item(item));
-
-        for (target, impls) in &self.impls_by_target {
-            if !impls.is_empty() {
-                dbg!(target, impls);
-            }
-        }
     }
 
     /// Performs type checking of function bodies.
@@ -1481,8 +1475,7 @@ impl SignatureLowerer<'_, '_> {
             .and_then(|path| self.with_scope(scope, |this| this.cx.resolve_path_to_type(path)));
 
         if let Some(target) = target {
-            self.cx
-                .register_impl_for(target, scope, of_trait, generics);
+            self.cx.register_impl_for(target, scope, of_trait, generics);
         }
     }
 
