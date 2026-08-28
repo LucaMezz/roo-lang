@@ -12,9 +12,9 @@ use std::collections::{HashMap, HashSet};
 
 use ast::visit::{Visitor, Walkable};
 use ast::{
-    EnumDef as AstEnumDef, Fn, FnRetTy, FnTy, GenericParam, Generics, Ident, Item, ItemKind,
-    ModKind, Path, Span, Trait, Ty, TyAlias, TyKind as AstTyKind, UseTree, UseTreeKind, Variant,
-    VariantData,
+    AssocItemKind, EnumDef as AstEnumDef, Fn, FnRetTy, FnTy, GenericParam, Generics, Ident, Impl,
+    Item, ItemKind, ModKind, Path, Span, Trait, Ty, TyAlias, TyKind as AstTyKind, UseTree,
+    UseTreeKind, Variant, VariantData,
 };
 use intern::{Interner, Symbol};
 use slotmap::SlotMap;
@@ -201,6 +201,37 @@ struct FieldDef {
     ty: TyId,
 }
 
+#[derive(Debug)]
+struct ImplInfo {
+    scope: ScopeId,
+    of_trait: Option<DefId>,
+    generics: Vec<GenericId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ImplTarget {
+    Adt(DefId),
+    Int,
+    Float,
+    Bool,
+    Str,
+    Array,
+    Tuple(usize),
+}
+
+fn impl_target_of(kind: &TyKind) -> Option<ImplTarget> {
+    match kind {
+        TyKind::Struct(def, _) | TyKind::Enum(def, _) => Some(ImplTarget::Adt(*def)),
+        TyKind::Int => Some(ImplTarget::Int),
+        TyKind::Float => Some(ImplTarget::Float),
+        TyKind::Bool => Some(ImplTarget::Bool),
+        TyKind::Str => Some(ImplTarget::Str),
+        TyKind::Array(_) => Some(ImplTarget::Array),
+        TyKind::Tuple(elems) => Some(ImplTarget::Tuple(elems.len())),
+        _ => None,
+    }
+}
+
 /// The specific kind of [`Def`].
 #[derive(Debug)]
 enum DefKind {
@@ -360,6 +391,8 @@ struct TypeCheckContext<'ast> {
 
     items_by_def: HashMap<DefId, &'ast Item>,
 
+    impls_by_target: HashMap<ImplTarget, Vec<ImplInfo>>,
+
     current_fn: Option<DefId>,
 
     checking_stack: Vec<DefId>,
@@ -392,6 +425,7 @@ impl<'ast> TypeCheckContext<'ast> {
             graph: CallGraph::new(),
             sccc: SCCCollector::new(),
             items_by_def: HashMap::new(),
+            impls_by_target: HashMap::new(),
             current_fn: None,
             checking_stack: Vec::new(),
         }
@@ -509,6 +543,12 @@ impl<'ast> TypeCheckContext<'ast> {
     fn lower_signatures(&mut self, items: &[Box<Item>]) {
         let mut lowerer = SignatureLowerer { cx: self };
         items.iter().for_each(|item| lowerer.visit_item(item));
+
+        for (target, impls) in &self.impls_by_target {
+            if !impls.is_empty() {
+                dbg!(target, impls);
+            }
+        }
     }
 
     /// Performs type checking of function bodies.
@@ -777,6 +817,23 @@ impl<'ast> TypeCheckContext<'ast> {
             DefKind::Variant(v) => v,
             _ => unreachable!("{def:?} must be a variant"),
         }
+    }
+
+    fn register_impl_for(
+        &mut self,
+        target: ImplTarget,
+        scope: ScopeId,
+        of_trait: Option<DefId>,
+        generics: Vec<GenericId>,
+    ) {
+        self.impls_by_target
+            .entry(target)
+            .or_default()
+            .push(ImplInfo {
+                scope,
+                of_trait,
+                generics,
+            });
     }
 
     /// Recursively searches the current scope and enclosing
@@ -1166,7 +1223,7 @@ impl<'ast> CxExt<'ast> for Resolver<'_, 'ast> {
 impl Visitor for Resolver<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
-            ItemKind::Fn(f) => self.resolve_fn_item(item, f),
+            ItemKind::Fn(f) => self.resolve_fn_item(f),
             ItemKind::TyAlias(alias) => self.resolve_ty_alias_item(alias),
             ItemKind::Enum(ident, generics, def) => self.resolve_enum_item(ident, generics, def),
             ItemKind::Struct(ident, generics, data) => {
@@ -1182,7 +1239,7 @@ impl Visitor for Resolver<'_, '_> {
 }
 
 impl Resolver<'_, '_> {
-    fn resolve_fn_item(&mut self, item: &Item, f: &Fn) {
+    fn resolve_fn_item(&mut self, f: &Fn) {
         let scope = self.new_scope();
         let ty = self.cx.fresh_var_at(Some(f.ident.span));
         let fn_def = self.cx.declare(
@@ -1200,7 +1257,7 @@ impl Resolver<'_, '_> {
         let mut generics = Vec::new();
         self.with_scope(scope, |this| {
             generics = this.cx.declare_generic_params(&f.generics.params);
-            item.walk(this);
+            f.walk(this);
         });
         self.cx.fn_def_mut(fn_def).generics = generics;
     }
@@ -1390,7 +1447,46 @@ impl SignatureLowerer<'_, '_> {
 }
 
 impl SignatureLowerer<'_, '_> {
-    fn lower_fn_item(&mut self, item: &Item, f: &Fn) {
+    fn lower_trait_item(&mut self, _trt: &Trait) {
+        unimplemented!()
+    }
+
+    fn lower_impl_item(&mut self, imp: &Impl) {
+        let mut resolver = Resolver { cx: self.cx };
+        let scope = resolver.new_scope();
+        let generics = resolver.with_scope(scope, |this| {
+            this.cx.declare_generic_params(&imp.generics.params)
+        });
+        resolver.with_scope(scope, |this| {
+            imp.items.iter().for_each(|item| match &item.kind {
+                AssocItemKind::Fn(f) => this.resolve_fn_item(f),
+                AssocItemKind::Type(alias) => this.resolve_ty_alias_item(alias),
+            });
+        });
+
+        self.with_scope(scope, |this| {
+            imp.items.iter().for_each(|item| match &item.kind {
+                AssocItemKind::Fn(f) => this.lower_fn_item(f),
+                AssocItemKind::Type(alias) => this.lower_ty_alias_item(alias),
+            });
+        });
+
+        let self_ty = self.with_scope(scope, |this| this.cx.lower_ty(&imp.self_ty));
+        let resolved = self.cx.inf.resolve(self_ty);
+        let target = self.cx.inf.ty(resolved).and_then(impl_target_of);
+
+        let of_trait = imp
+            .of_trait
+            .as_ref()
+            .and_then(|path| self.with_scope(scope, |this| this.cx.resolve_path_to_type(path)));
+
+        if let Some(target) = target {
+            self.cx
+                .register_impl_for(target, scope, of_trait, generics);
+        }
+    }
+
+    fn lower_fn_item(&mut self, f: &Fn) {
         let symbol = f.ident.symbol;
         self.with_fn_scope(symbol, |this, def| {
             let fn_ty = this.lower_fn_sig(f);
@@ -1415,7 +1511,7 @@ impl SignatureLowerer<'_, '_> {
                 .map(|p| p.ty.as_ref().map(|ty| ty.span))
                 .collect();
             fn_data.param_symbols = param_symbols;
-            item.walk(this);
+            f.walk(this);
         });
     }
 
@@ -1473,7 +1569,7 @@ impl SignatureLowerer<'_, '_> {
             unreachable!("A path should always have a valid symbol");
         };
         let symbol = ident.symbol;
-        let namespace = self.cx.defs[sid].kind.namespace();
+        let namespace = self.cx().def(sid).kind.namespace();
         self.cx.insert_in_scope(symbol, sid, namespace);
     }
 
@@ -1482,7 +1578,7 @@ impl SignatureLowerer<'_, '_> {
             self.cx.diagnostics.push(InvalidGlobTarget::new(
                 span,
                 display_path(&tree.prefix, &self.cx.symbols),
-                self.cx.defs[sid].kind.describe().to_string(),
+                self.cx.def(sid).kind.describe().to_string(),
             ));
             return;
         };
@@ -1653,12 +1749,14 @@ fn display_path(path: &Path, symbols: &Interner) -> String {
 impl Visitor for SignatureLowerer<'_, '_> {
     fn visit_item(&mut self, item: &Item) {
         match &item.kind {
-            ItemKind::Fn(f) => self.lower_fn_item(item, f),
+            ItemKind::Fn(f) => self.lower_fn_item(f),
             ItemKind::TyAlias(alias) => self.lower_ty_alias_item(alias),
             ItemKind::Struct(ident, _generics, data) => self.lower_struct_item(ident, data),
             ItemKind::Enum(ident, _generics, def) => self.lower_enum_item(ident, def),
             ItemKind::Mod(ident, kind) => self.lower_mod_item(ident, kind, item),
             ItemKind::Use(tree) => self.lower_use_tree(tree, None),
+            ItemKind::Trait(trt) => self.lower_trait_item(trt),
+            ItemKind::Impl(imp) => self.lower_impl_item(imp),
             _ => {}
         }
     }

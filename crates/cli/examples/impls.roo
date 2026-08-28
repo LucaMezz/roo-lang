@@ -1,0 +1,10 @@
+
+impl int {
+    fn zero() -> int {
+        0
+    }
+}
+
+fn main() {
+    int::zero()
+}

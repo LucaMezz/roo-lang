@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use ast::{
-    Block, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind, ModKind,
-    Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
+    Block, Closure, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind,
+    ModKind, Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
 };
 use diagnostics::Related;
 use intern::Symbol;
@@ -154,7 +154,7 @@ impl<'ast> TypeCheckContext<'ast> {
             ExprKind::ForLoop { .. } => self.check_for_loop_expr(),
             ExprKind::Loop(..) => self.check_loop_expr(),
             ExprKind::Match(..) => self.check_match_expr(),
-            ExprKind::Closure(..) => self.check_closure_expr(),
+            ExprKind::Closure(closure) => self.check_closure_expr(closure),
             ExprKind::AssignOp(..) => self.check_assign_op_expr(),
             ExprKind::Field(expr, index) => self.check_field_expr(expr, index),
             ExprKind::Index(..) => self.check_index_expr(),
@@ -199,7 +199,7 @@ impl<'ast> TypeCheckContext<'ast> {
         unimplemented!()
     }
 
-    fn check_closure_expr(&mut self) -> TyId {
+    fn check_closure_expr(&mut self, _closure: &Closure) -> TyId {
         unimplemented!()
     }
 
@@ -287,7 +287,7 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_underscore_expr(&mut self) -> TyId {
-        unimplemented!()
+        self.fresh_var()
     }
 
     fn check_break_expr(&mut self) -> TyId {
