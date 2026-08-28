@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in the lexer, parser, type checker, LSP, or CLI isn't behaving correctly.
+labels: ["bug"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Checked for duplicates
+      options:
+        - label: I searched existing issues and didn't find one already open for this.
+          required: true
+
+  - type: dropdown
+    attributes:
+      label: Affected area
+      options:
+        - Lexer
+        - Parser
+        - Type checker
+        - LSP
+        - CLI
+        - Book / docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: A clear description of the incorrect behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Minimal reproduction
+      description: The smallest `.roo` snippet (or CLI invocation) that reproduces the issue.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: roo-lang version or commit
+      description: Output of `cog get-version`, a release tag, or the commit hash you're on.
+    validations:
+      required: false
+
+  - type: input
+    attributes:
+      label: OS / environment
+    validations:
+      required: false

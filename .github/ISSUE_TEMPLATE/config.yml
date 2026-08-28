@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Language documentation
+    url: https://github.com/LucaMezz/roo-lang/tree/main/book/src
+    about: Check the book source for existing documentation before filing a question as an issue.

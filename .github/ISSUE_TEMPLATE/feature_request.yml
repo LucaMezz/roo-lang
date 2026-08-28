@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new language feature, API, or tooling improvement.
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Checked for duplicates
+      options:
+        - label: I searched existing issues and didn't find one already open for this.
+          required: true
+
+  - type: dropdown
+    attributes:
+      label: Affected area
+      options:
+        - Lexer
+        - Parser
+        - Type checker
+        - Embedding API
+        - LSP
+        - CLI
+        - Book / docs
+        - Tooling (cog, CI, etc.)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: What problem does this solve?
+      description: What's missing or awkward today that this would address?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: What would you like to see, e.g. syntax, API shape, behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
