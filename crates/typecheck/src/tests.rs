@@ -7,6 +7,25 @@ use intern::Interner;
 
 use crate::defs::FnDef;
 
+impl<'ast> TypeCheckContext<'ast> {
+    fn diagnostics(&self) -> Vec<Diagnostic> {
+        let catalog = errors::catalog(errors::Locale::EnUs);
+        self.diagnostics
+            .as_slice()
+            .iter()
+            .map(|d| d.render(catalog))
+            .collect()
+    }
+
+    fn def_at(&self, offset: usize) -> Option<DefId> {
+        self.positions.def_at(offset)
+    }
+
+    fn type_symbol_at(&self, offset: usize) -> Option<&'static str> {
+        self.positions.type_name_at(offset)
+    }
+}
+
 fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let mut state = parser::State::default();
@@ -1041,18 +1060,8 @@ struct Second { value }
         .resolve_path_to_type(&second_path)
         .expect("Second should resolve");
 
-    let first_field_ty = cx
-        .def(first)
-        .variant()
-        .expect("First is a struct")
-        .fields[0]
-        .ty;
-    let second_field_ty = cx
-        .def(second)
-        .variant()
-        .expect("Second is a struct")
-        .fields[0]
-        .ty;
+    let first_field_ty = cx.def(first).variant().expect("First is a struct").fields[0].ty;
+    let second_field_ty = cx.def(second).variant().expect("Second is a struct").fields[0].ty;
 
     assert_eq!(cx.renderer().render_ty(first_field_ty), "T");
     assert_eq!(cx.renderer().render_ty(second_field_ty), "T");
@@ -1085,8 +1094,18 @@ enum Either {
     let variants: Vec<DefId> = variants.iter().map(|v| v.id()).collect();
     assert_eq!(variants.len(), 2);
 
-    let a_field_ty = cx.def(variants[0]).variant().expect("A is a variant").fields[0].ty;
-    let b_field_ty = cx.def(variants[1]).variant().expect("B is a variant").fields[0].ty;
+    let a_field_ty = cx
+        .def(variants[0])
+        .variant()
+        .expect("A is a variant")
+        .fields[0]
+        .ty;
+    let b_field_ty = cx
+        .def(variants[1])
+        .variant()
+        .expect("B is a variant")
+        .fields[0]
+        .ty;
 
     assert_eq!(cx.renderer().render_ty(a_field_ty), "T");
     assert_eq!(cx.renderer().render_ty(b_field_ty), "U");

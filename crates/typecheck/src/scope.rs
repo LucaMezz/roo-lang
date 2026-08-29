@@ -151,13 +151,15 @@ impl ScopeTree {
             .map(|(&symbol, &def)| (symbol, def))
             .collect()
     }
+}
 
+#[cfg(test)]
+impl ScopeTree {
     /// Returns a handle to a direct child scope of the given scope,
     /// if one exists. Used in tests, where the id of a scope
     /// created for a nested construct (e.g. a mod or fn body) is
     /// not otherwise reachable except by knowing which scope
     /// encloses it.
-    #[cfg(test)]
     pub(crate) fn child_of(&self, parent: ScopeId) -> Option<ScopeId> {
         self.scopes
             .iter()

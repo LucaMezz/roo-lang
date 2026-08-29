@@ -346,8 +346,16 @@ impl Diagnostics {
     pub(crate) fn into_vec(self) -> Vec<TypeCheckDiagnostic> {
         self.0
     }
+}
 
-    #[cfg(test)]
+// Test-only: reads the tuple field private to this module, so it
+// can't live in `tests.rs` itself. Kept in its own impl block, out of
+// the production API above, so it reads as test support rather than
+// part of `Diagnostics`'s real interface. Used by
+// `TypeCheckContext::diagnostics` (in `tests.rs`) to read diagnostics
+// off a `TypeCheckContext` non-destructively, unlike `into_vec`.
+#[cfg(test)]
+impl Diagnostics {
     pub(crate) fn as_slice(&self) -> &[TypeCheckDiagnostic] {
         &self.0
     }

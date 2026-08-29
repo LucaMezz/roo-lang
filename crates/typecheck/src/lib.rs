@@ -179,31 +179,11 @@ impl<'ast> TypeCheckContext<'ast> {
         self.defs.get(def)
     }
 
-    #[cfg(test)]
-    pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
-        let catalog = errors::catalog(errors::Locale::EnUs);
-        self.diagnostics
-            .as_slice()
-            .iter()
-            .map(|d| d.render(catalog))
-            .collect()
-    }
-
     /// Updates the [`PositionIndex`] to include a newly found path.
     fn record_path_reference(&mut self, path: &Path, def: DefId) {
         if let Some(segment) = path.segments.last() {
             self.positions.record_def(segment.ident.span, def);
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn def_at(&self, offset: usize) -> Option<DefId> {
-        self.positions.def_at(offset)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn type_symbol_at(&self, offset: usize) -> Option<&'static str> {
-        self.positions.type_name_at(offset)
     }
 
     fn fresh_var_at(&mut self, span: Option<Span>) -> TyId {

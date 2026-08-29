@@ -375,11 +375,6 @@ impl Defs {
         self.defs.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.defs.is_empty()
-    }
-
     pub(crate) fn iter(&self) -> impl Iterator<Item = (DefId, &Def)> {
         self.defs.iter()
     }
@@ -417,5 +412,12 @@ impl Defs {
             DefKind::Variant(v) => v,
             _ => unreachable!("Typed<VariantDef> guarantees a variant def"),
         }
+    }
+}
+
+#[cfg(test)]
+impl Defs {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.defs.is_empty()
     }
 }
