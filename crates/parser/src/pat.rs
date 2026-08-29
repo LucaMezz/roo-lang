@@ -10,7 +10,7 @@ pub fn pat_field<'src>(pat: impl RooParser<'src, Pat> + 'src) -> impl RooParser<
 
     let shorthand = ident().map_with(|ident, e| {
         let pat = Box::new(Pat {
-            kind: PatKind::Ident(ident.clone(), None),
+            kind: PatKind::Ident(ident, None),
             span: span(e),
         });
         (ident, pat)

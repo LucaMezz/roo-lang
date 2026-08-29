@@ -14,7 +14,7 @@ fn expr_field<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'
                         None,
                         Path {
                             segments: vec![PathSegment {
-                                ident: ident.clone(),
+                                ident,
                                 args: None,
                             }],
                             span: ident.span,

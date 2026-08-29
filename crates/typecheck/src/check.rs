@@ -228,11 +228,8 @@ impl<'ast> TypeCheckContext<'ast> {
             .def(def)
             .variant()
             .expect("TyKind::Struct must resolve to a struct or variant def");
-        let (field_ty, struct_generics, struct_name) = (
-            variant.field(ident.symbol).map(|field| field.ty),
-            variant.generics.clone(),
-            variant.name,
-        );
+        let field_ty = variant.field(ident.symbol).map(|field| field.ty);
+        let struct_name = variant.name;
 
         let Some(field_ty) = field_ty else {
             let name = self.symbols.resolve(ident.symbol).to_owned();
@@ -243,7 +240,7 @@ impl<'ast> TypeCheckContext<'ast> {
         };
 
         let mut subst: HashMap<GenericId, TyId> =
-            struct_generics.into_iter().zip(generics).collect();
+            variant.generics.iter().copied().zip(generics).collect();
         self.instantiate_ty(field_ty, &mut subst)
     }
 

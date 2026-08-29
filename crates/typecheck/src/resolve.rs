@@ -172,7 +172,7 @@ impl Resolver<'_, '_> {
                 fields: fields
                     .iter()
                     .map(|field| FieldDef {
-                        name: field.ident.clone().unwrap().symbol,
+                        name: field.ident.unwrap().symbol,
                         ty: self.cx.fresh_var_at(Some(field.span)),
                     })
                     .collect(),

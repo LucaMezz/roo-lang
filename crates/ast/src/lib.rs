@@ -9,7 +9,7 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Ident {
     pub symbol: intern::Symbol,
     pub span: Span,
