@@ -34,7 +34,7 @@ mod scope;
 mod types;
 
 use check::collect_fn_mod_items;
-use defs::{Def, DefKind, Defs, EnumDef, VariantDef};
+use defs::{Def, DefKind, Defs, EnumDef, FnDef, IntoDefKind, StructDef, TyAliasDef, Typed, VariantDef};
 use errors::Diagnostics;
 use generics::{GenericId, GenericRegistry};
 use lower_signatures::SignatureLowerer;
@@ -394,7 +394,9 @@ impl<'ast> TypeCheckContext<'ast> {
         )?;
 
         segments.try_fold(first_def, |def, (i, segment)| {
-            let scope = self.mod_def_scope(def).or(self.enum_def_scope(def))?;
+            let scope = self
+                .mod_def_scope(def)
+                .or_else(|| self.enum_def_scope(def).map(|(_, scope)| scope))?;
             let symbol = segment.ident.symbol;
             self.scopes
                 .lookup(scope, symbol, segment_namespace(i, last, namespace))
@@ -473,18 +475,18 @@ impl<'ast> TypeCheckContext<'ast> {
         self.with_def_in_scope(symbol, Namespace::Value, f)
     }
 
-    fn fn_def_scope(&self, def: DefId) -> Option<ScopeId> {
+    fn fn_def_scope(&self, def: DefId) -> Option<(Typed<FnDef>, ScopeId)> {
         let DefKind::Fn(fn_data) = &self.def(def).kind else {
             return None;
         };
-        Some(fn_data.scope)
+        Some((Typed::new_unchecked(def), fn_data.scope))
     }
 
-    fn struct_def_scope(&self, def: DefId) -> Option<ScopeId> {
-        let DefKind::Struct(def) = &self.def(def).kind else {
+    fn struct_def_scope(&self, def: DefId) -> Option<(Typed<StructDef>, ScopeId)> {
+        let DefKind::Struct(struct_data) = &self.def(def).kind else {
             return None;
         };
-        Some(def.scope)
+        Some((Typed::new_unchecked(def), struct_data.scope))
     }
 
     fn mod_def_scope(&self, def: DefId) -> Option<ScopeId> {
@@ -494,18 +496,18 @@ impl<'ast> TypeCheckContext<'ast> {
         Some(scope)
     }
 
-    fn enum_def_scope(&self, def: DefId) -> Option<ScopeId> {
+    fn enum_def_scope(&self, def: DefId) -> Option<(Typed<EnumDef>, ScopeId)> {
         let DefKind::Enum(EnumDef { scope, .. }) = self.def(def).kind else {
             return None;
         };
-        Some(scope)
+        Some((Typed::new_unchecked(def), scope))
     }
 
-    fn ty_alias_def_scope(&self, def: DefId) -> Option<ScopeId> {
+    fn ty_alias_def_scope(&self, def: DefId) -> Option<(Typed<TyAliasDef>, ScopeId)> {
         let DefKind::TyAlias(alias_data) = &self.def(def).kind else {
             return None;
         };
-        Some(alias_data.scope)
+        Some((Typed::new_unchecked(def), alias_data.scope))
     }
 
     fn register_impl_for(
@@ -553,6 +555,19 @@ impl<'ast> TypeCheckContext<'ast> {
         self.insert_in_scope(symbol, def, namespace);
         self.positions.record_def(span, def);
         def
+    }
+
+    /// Declares a new [`Def`] exactly like [`Self::declare`], but
+    /// returns a [`Typed`] handle carrying the def's kind, determined
+    /// statically by the type of `data` (see [`IntoDefKind`]).
+    ///
+    /// Prefer this over [`Self::declare`] whenever the payload is one
+    /// of the kinds with its own [`Defs`] accessor (`FnDef`,
+    /// `StructDef`, `EnumDef`, `TyAliasDef`, `VariantDef`), so that
+    /// accessor can be called without a runtime kind check.
+    fn declare_typed<T: IntoDefKind>(&mut self, symbol: Symbol, span: Span, data: T) -> Typed<T> {
+        let id = self.declare(symbol, span, data.into_def_kind());
+        Typed::new_unchecked(id)
     }
 
     /// If a def already exists with the given symbol in the given
@@ -728,13 +743,11 @@ pub(crate) trait CxExt<'ast> {
     fn with_fn_def<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId, ScopeId) -> T,
+        f: impl FnOnce(&mut Self, Typed<FnDef>, ScopeId) -> T,
     ) -> Option<T> {
         let (def, scope) = self
             .cx()
-            .with_value_def(symbol, |cx, def| {
-                cx.fn_def_scope(def).map(|scope| (def, scope))
-            })
+            .with_value_def(symbol, |cx, def| cx.fn_def_scope(def))
             .flatten()?;
         Some(f(self, def, scope))
     }
@@ -742,7 +755,7 @@ pub(crate) trait CxExt<'ast> {
     fn with_fn_scope<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId) -> T,
+        f: impl FnOnce(&mut Self, Typed<FnDef>) -> T,
     ) -> Option<T> {
         self.with_fn_def(symbol, |this, def, scope| {
             this.with_scope(scope, |this| f(this, def))
@@ -752,13 +765,11 @@ pub(crate) trait CxExt<'ast> {
     fn with_struct_def<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId, ScopeId) -> T,
+        f: impl FnOnce(&mut Self, Typed<StructDef>, ScopeId) -> T,
     ) -> Option<T> {
         let (def, scope) = self
             .cx()
-            .with_type_def(symbol, |cx, def| {
-                cx.struct_def_scope(def).map(|scope| (def, scope))
-            })
+            .with_type_def(symbol, |cx, def| cx.struct_def_scope(def))
             .flatten()?;
         Some(f(self, def, scope))
     }
@@ -766,7 +777,7 @@ pub(crate) trait CxExt<'ast> {
     fn with_struct_scope<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId) -> T,
+        f: impl FnOnce(&mut Self, Typed<StructDef>) -> T,
     ) -> Option<T> {
         self.with_struct_def(symbol, |this, def, scope| {
             this.with_scope(scope, |this| f(this, def))
@@ -776,13 +787,11 @@ pub(crate) trait CxExt<'ast> {
     fn with_enum_def<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId, ScopeId) -> T,
+        f: impl FnOnce(&mut Self, Typed<EnumDef>, ScopeId) -> T,
     ) -> Option<T> {
         let (def, scope) = self
             .cx()
-            .with_type_def(symbol, |cx, def| {
-                cx.enum_def_scope(def).map(|scope| (def, scope))
-            })
+            .with_type_def(symbol, |cx, def| cx.enum_def_scope(def))
             .flatten()?;
         Some(f(self, def, scope))
     }
@@ -790,7 +799,7 @@ pub(crate) trait CxExt<'ast> {
     fn with_enum_scope<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId) -> T,
+        f: impl FnOnce(&mut Self, Typed<EnumDef>) -> T,
     ) -> Option<T> {
         self.with_enum_def(symbol, |this, def, scope| {
             this.with_scope(scope, |this| f(this, def))
@@ -824,13 +833,11 @@ pub(crate) trait CxExt<'ast> {
     fn with_ty_alias_def<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId, ScopeId) -> T,
+        f: impl FnOnce(&mut Self, Typed<TyAliasDef>, ScopeId) -> T,
     ) -> Option<T> {
         let (def, scope) = self
             .cx()
-            .with_type_def(symbol, |cx, def| {
-                cx.ty_alias_def_scope(def).map(|scope| (def, scope))
-            })
+            .with_type_def(symbol, |cx, def| cx.ty_alias_def_scope(def))
             .flatten()?;
         Some(f(self, def, scope))
     }
@@ -838,7 +845,7 @@ pub(crate) trait CxExt<'ast> {
     fn with_ty_alias_scope<T>(
         &mut self,
         symbol: Symbol,
-        f: impl FnOnce(&mut Self, DefId) -> T,
+        f: impl FnOnce(&mut Self, Typed<TyAliasDef>) -> T,
     ) -> Option<T> {
         self.with_ty_alias_def(symbol, |this, def, scope| {
             this.with_scope(scope, |this| f(this, def))

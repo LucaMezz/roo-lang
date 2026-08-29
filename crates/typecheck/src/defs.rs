@@ -2,12 +2,96 @@
 //! per-kind payload of each kind of def — and [`Defs`], the def
 //! table containing every [`Def`] in the program.
 
+use std::marker::PhantomData;
+
 use ast::Span;
 use intern::Symbol;
 use slotmap::SlotMap;
 
 use crate::inference::TyId;
 use crate::{DefId, GenericId, Namespace, ScopeId};
+
+pub(crate) struct Typed<K>(DefId, PhantomData<K>);
+
+impl<K> Typed<K> {
+    /// Wraps a `DefId` as a `Typed<K>`. Only call this at the moment
+    /// `K` is actually established, either because the `DefKind`
+    /// being constructed or matched is statically known to be `K`'s
+    /// def kind.
+    pub(crate) fn new_unchecked(id: DefId) -> Self {
+        Self(id, PhantomData)
+    }
+
+    /// Discards the kind information, recovering the underlying
+    /// untyped [`DefId`].
+    pub(crate) fn id(self) -> DefId {
+        self.0
+    }
+}
+
+// Manual impls: a derive would add a spurious `K: Trait` bound, but
+// `K` is a zero-sized marker that never actually appears in `self`.
+impl<K> Clone for Typed<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K> Copy for Typed<K> {}
+
+impl<K> std::fmt::Debug for Typed<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Typed").field(&self.0).finish()
+    }
+}
+
+impl<K> PartialEq for Typed<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<K> Eq for Typed<K> {}
+
+/// Ties a def payload type to the [`DefKind`] variant it belongs in,
+/// so [`TypeCheckContext::declare_typed`](crate::TypeCheckContext::declare_typed)
+/// can mint a `Typed<Self>` without a runtime check: the payload type
+/// being constructed *is* the proof of which kind it is, so it can
+/// double as `Typed`'s own phantom tag — no separate marker type
+/// needed.
+pub(crate) trait IntoDefKind: Sized {
+    fn into_def_kind(self) -> DefKind;
+}
+
+impl IntoDefKind for FnDef {
+    fn into_def_kind(self) -> DefKind {
+        DefKind::Fn(self)
+    }
+}
+
+impl IntoDefKind for StructDef {
+    fn into_def_kind(self) -> DefKind {
+        DefKind::Struct(self)
+    }
+}
+
+impl IntoDefKind for EnumDef {
+    fn into_def_kind(self) -> DefKind {
+        DefKind::Enum(self)
+    }
+}
+
+impl IntoDefKind for TyAliasDef {
+    fn into_def_kind(self) -> DefKind {
+        DefKind::TyAlias(self)
+    }
+}
+
+impl IntoDefKind for VariantDef {
+    fn into_def_kind(self) -> DefKind {
+        DefKind::Variant(self)
+    }
+}
 
 /// A def within a def table.
 #[derive(Debug)]
@@ -89,7 +173,7 @@ pub(crate) struct TyAliasDef {
 
 #[derive(Debug)]
 pub(crate) struct EnumDef {
-    pub(crate) variants: Vec<DefId>,
+    pub(crate) variants: Vec<Typed<VariantDef>>,
     /// The generic parameters associated with this enum.
     pub(crate) generics: Vec<GenericId>,
 
@@ -285,38 +369,38 @@ impl Defs {
         self.defs.iter()
     }
 
-    pub(crate) fn struct_mut(&mut self, def: DefId) -> &mut StructDef {
-        match &mut self.defs[def].kind {
+    pub(crate) fn struct_mut(&mut self, def: Typed<StructDef>) -> &mut StructDef {
+        match &mut self.defs[def.id()].kind {
             DefKind::Struct(s) => s,
-            _ => unreachable!("{def:?} must be a struct"),
+            _ => unreachable!("Typed<StructDef> guarantees a struct def"),
         }
     }
 
-    pub(crate) fn enum_mut(&mut self, def: DefId) -> &mut EnumDef {
-        match &mut self.defs[def].kind {
+    pub(crate) fn enum_mut(&mut self, def: Typed<EnumDef>) -> &mut EnumDef {
+        match &mut self.defs[def.id()].kind {
             DefKind::Enum(e) => e,
-            _ => unreachable!("{def:?} must be an enum"),
+            _ => unreachable!("Typed<EnumDef> guarantees an enum def"),
         }
     }
 
-    pub(crate) fn fn_mut(&mut self, def: DefId) -> &mut FnDef {
-        match &mut self.defs[def].kind {
+    pub(crate) fn fn_mut(&mut self, def: Typed<FnDef>) -> &mut FnDef {
+        match &mut self.defs[def.id()].kind {
             DefKind::Fn(f) => f,
-            _ => unreachable!("{def:?} must be a function"),
+            _ => unreachable!("Typed<FnDef> guarantees a function def"),
         }
     }
 
-    pub(crate) fn ty_alias_mut(&mut self, def: DefId) -> &mut TyAliasDef {
-        match &mut self.defs[def].kind {
+    pub(crate) fn ty_alias_mut(&mut self, def: Typed<TyAliasDef>) -> &mut TyAliasDef {
+        match &mut self.defs[def.id()].kind {
             DefKind::TyAlias(a) => a,
-            _ => unreachable!("{def:?} must be a type alias"),
+            _ => unreachable!("Typed<TyAliasDef> guarantees a type alias def"),
         }
     }
 
-    pub(crate) fn variant_mut(&mut self, def: DefId) -> &mut VariantDef {
-        match &mut self.defs[def].kind {
+    pub(crate) fn variant_mut(&mut self, def: Typed<VariantDef>) -> &mut VariantDef {
+        match &mut self.defs[def.id()].kind {
             DefKind::Variant(v) => v,
-            _ => unreachable!("{def:?} must be a variant"),
+            _ => unreachable!("Typed<VariantDef> guarantees a variant def"),
         }
     }
 }

@@ -55,16 +55,16 @@ impl Resolver<'_, '_> {
     pub(crate) fn resolve_fn_item(&mut self, f: &Fn) {
         let scope = self.new_scope();
         let ty = self.cx.fresh_var_at(Some(f.ident.span));
-        let fn_def = self.cx.declare(
+        let fn_def = self.cx.declare_typed(
             f.ident.symbol,
             f.ident.span,
-            DefKind::Fn(FnDef {
+            FnDef {
                 scope,
                 param_spans: Vec::new(),
                 param_symbols: Vec::new(),
                 ty,
                 generics: Vec::new(),
-            }),
+            },
         );
 
         let mut generics = Vec::new();
@@ -78,14 +78,14 @@ impl Resolver<'_, '_> {
     pub(crate) fn resolve_ty_alias_item(&mut self, alias: &TyAlias) {
         let scope = self.new_scope();
         let ty = self.cx.fresh_var_at(Some(alias.ident.span));
-        let alias_def = self.cx.declare(
+        let alias_def = self.cx.declare_typed(
             alias.ident.symbol,
             alias.ident.span,
-            DefKind::TyAlias(TyAliasDef {
+            TyAliasDef {
                 scope,
                 ty,
                 generics: Vec::new(),
-            }),
+            },
         );
 
         let mut generics = Vec::new();
@@ -100,14 +100,14 @@ impl Resolver<'_, '_> {
         let generics = self.with_scope(scope, |this| {
             this.cx.declare_generic_params(&generics.params)
         });
-        let enum_def = self.cx.declare(
+        let enum_def = self.cx.declare_typed(
             ident.symbol,
             ident.span,
-            DefKind::Enum(EnumDef {
+            EnumDef {
                 variants: Vec::new(),
                 generics: generics.clone(),
                 scope,
-            }),
+            },
         );
         let variants = def
             .variants
@@ -118,14 +118,14 @@ impl Resolver<'_, '_> {
                     v.ident.span,
                     &v.data,
                     generics.clone(),
-                    Some(enum_def),
+                    Some(enum_def.id()),
                 )
             })
             .collect::<Vec<_>>();
         let variants = self.with_scope(scope, |this| {
             variants
                 .into_iter()
-                .map(|v| this.cx.declare(v.name, v.span, DefKind::Variant(v)))
+                .map(|v| this.cx.declare_typed(v.name, v.span, v))
                 .collect::<Vec<_>>()
         });
         self.cx.defs.enum_mut(enum_def).variants = variants;
@@ -190,16 +190,14 @@ impl Resolver<'_, '_> {
             this.cx.declare_generic_params(&generics.params)
         });
         let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics, None);
-        let def = self.cx.declare(
-            ident.symbol,
-            ident.span,
-            DefKind::Struct(StructDef { variant, scope }),
-        );
+        let def = self
+            .cx
+            .declare_typed(ident.symbol, ident.span, StructDef { variant, scope });
         if !matches!(data, VariantData::Struct(_)) {
             let symbol = ident.symbol;
             self.cx
                 .check_redeclaration(Namespace::Value, symbol, ident.span);
-            self.cx.insert_value_in_scope(symbol, def);
+            self.cx.insert_value_in_scope(symbol, def.id());
         }
     }
 

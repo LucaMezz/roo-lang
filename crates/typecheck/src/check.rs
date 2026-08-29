@@ -912,7 +912,7 @@ impl<'ast> TypeCheckContext<'ast> {
             return None;
         }
 
-        let scope = self.fn_def_scope(def)?;
+        let (_, scope) = self.fn_def_scope(def)?;
         let body = f.body.as_ref()?;
 
         let def_ty = self.def(def).ty();
@@ -957,7 +957,7 @@ pub(crate) fn collect_fn_mod_items<'ast>(
         ItemKind::Fn(f) => {
             let name = f.ident.symbol;
             cx.with_fn_scope(name, |cx, def| {
-                cx.items_by_def.insert(def, item);
+                cx.items_by_def.insert(def.id(), item);
 
                 let Some(body) = f.body.as_ref() else {
                     return;

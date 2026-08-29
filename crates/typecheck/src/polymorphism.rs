@@ -113,9 +113,16 @@ impl<'ast> TypeCheckContext<'ast> {
         // For each function, append all new generics synthesised from
         // generalisation to its def.
         per_member_vars.into_iter().for_each(|(def, vars)| {
+            // `def` comes from an SCC of the call graph, which only
+            // ever contains function defs (see `RecursionTracker`,
+            // driven exclusively from `check_fn_body`).
+            let fn_def = self
+                .fn_def_scope(def)
+                .map(|(fn_def, _)| fn_def)
+                .expect("SCC members are always function defs");
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
-                self.defs.fn_mut(def).generics.push(id);
+                self.defs.fn_mut(fn_def).generics.push(id);
             });
         });
     }

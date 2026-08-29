@@ -90,7 +90,7 @@ impl SignatureLowerer<'_, '_> {
         let symbol = f.ident.symbol;
         self.with_fn_scope(symbol, |this, def| {
             let fn_ty = this.lower_fn_sig(f);
-            let def_ty = this.cx.def(def).ty();
+            let def_ty = this.cx.def(def.id()).ty();
             // Unifies the fresh placeholder inference variable which
             // was created during the previous Resolution stage with the
             // ty created by lowering the function signature.
@@ -174,7 +174,11 @@ impl SignatureLowerer<'_, '_> {
     }
 
     fn lower_use_tree_glob(&mut self, tree: &UseTree, sid: DefId, span: Span) {
-        let Some(scope) = self.cx.mod_def_scope(sid).or(self.cx.enum_def_scope(sid)) else {
+        let Some(scope) = self
+            .cx
+            .mod_def_scope(sid)
+            .or_else(|| self.cx.enum_def_scope(sid).map(|(_, scope)| scope))
+        else {
             self.cx.diagnostics.push(InvalidGlobTarget::new(
                 span,
                 display_path(&tree.prefix, &self.cx.symbols),
@@ -212,7 +216,7 @@ impl SignatureLowerer<'_, '_> {
         let symbol = alias.ident.symbol;
         self.with_ty_alias_scope(symbol, |this, def| {
             let aliased = this.cx.lower_ty(ty);
-            let def_ty = this.cx.def(def).ty();
+            let def_ty = this.cx.def(def.id()).ty();
             // Unifies the fresh placeholder inference variable which
             // was created during the previous Resolution stage with the
             // ty created by lowering the type of the expression being
@@ -287,13 +291,18 @@ impl SignatureLowerer<'_, '_> {
                 .variant
                 .generics
                 .extend(synthesized);
-            this.unify_variant_field_tys(def, &lowered);
-            let generics = this.cx.def(def).generics().to_vec();
+            this.unify_variant_field_tys(def.id(), &lowered);
+            let generics = this.cx.def(def.id()).generics().to_vec();
             let placeholder_args = generics
                 .iter()
                 .map(|&id| this.cx.ty(TyKind::Generic(id)))
                 .collect();
-            this.unify_ctor_ty(def, TyKind::Struct(def, placeholder_args), data, &lowered);
+            this.unify_ctor_ty(
+                def.id(),
+                TyKind::Struct(def.id(), placeholder_args),
+                data,
+                &lowered,
+            );
         });
     }
 
@@ -320,14 +329,14 @@ impl SignatureLowerer<'_, '_> {
                 .zip(&def.variants)
                 .for_each(|((variant, lowered_fields), ast_variant)| {
                     this.cx.defs.variant_mut(variant).generics = generics.clone();
-                    this.unify_variant_field_tys(variant, &lowered_fields);
+                    this.unify_variant_field_tys(variant.id(), &lowered_fields);
                     let placeholder_args = generics
                         .iter()
                         .map(|&id| this.cx.ty(TyKind::Generic(id)))
                         .collect();
                     this.unify_ctor_ty(
-                        variant,
-                        TyKind::Enum(id, placeholder_args),
+                        variant.id(),
+                        TyKind::Enum(id.id(), placeholder_args),
                         &ast_variant.data,
                         &lowered_fields,
                     );
