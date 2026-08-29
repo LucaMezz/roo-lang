@@ -8,6 +8,7 @@
 //! been checked.
 
 use crate::DefId;
+use crate::TypeCheckContext;
 use crate::call_graph::{CallGraph, SCCCollector};
 
 pub(crate) struct RecursionTracker {
@@ -62,7 +63,11 @@ impl RecursionTracker {
     /// and onto the ancestor stack, and starts Tarjan's algorithm
     /// for it. Returns the previously-current def, to be handed
     /// back to [`Self::exit`] once `def` finishes checking.
-    pub(crate) fn enter(&mut self, def: DefId) -> Option<DefId> {
+    ///
+    /// Private: pairing this with [`Self::exit`] by hand is exactly
+    /// the mistake [`TypeCheckContext::checking`] exists to rule
+    /// out. Go through that instead.
+    fn enter(&mut self, def: DefId) -> Option<DefId> {
         self.sccc.enter(def);
         let parent = self.current;
         self.current = Some(def);
@@ -74,9 +79,38 @@ impl RecursionTracker {
     /// [`Self::enter`]) as the current function. Returns the
     /// strongly connected component that was completed, if `def`
     /// was its root.
-    pub(crate) fn exit(&mut self, def: DefId, parent: Option<DefId>) -> Option<Vec<DefId>> {
+    ///
+    /// Private for the same reason as [`Self::enter`].
+    fn exit(&mut self, def: DefId, parent: Option<DefId>) -> Option<Vec<DefId>> {
         self.stack.pop();
         self.current = parent;
         self.sccc.exit(def)
+    }
+}
+
+impl<'ast> TypeCheckContext<'ast> {
+    /// Runs `f` with `def` marked as currently being checked for the
+    /// call-graph/SCC tracking in [`RecursionTracker`], then
+    /// unconditionally restores the previous state and reports the
+    /// strongly connected component completed by `def`, if any.
+    ///
+    /// [`RecursionTracker::enter`]/[`RecursionTracker::exit`] are
+    /// private specifically so that this closure-scoped wrapper is
+    /// the only way to reach them: pairing them by hand (as this
+    /// crate used to do, once, in `check_fn_body`) leaves a call
+    /// site free to add an early return between the two, or to
+    /// exit with the wrong def, and the mismatch would only surface
+    /// later as an index-panic inside [`SCCCollector`]. Here, `def`
+    /// is guaranteed to be exited exactly once, with its own
+    /// `parent`, regardless of how `f` returns.
+    pub(crate) fn checking<R>(
+        &mut self,
+        def: DefId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Option<Vec<DefId>>) {
+        let parent = self.recursion.enter(def);
+        let result = f(self);
+        let scc = self.recursion.exit(def, parent);
+        (result, scc)
     }
 }

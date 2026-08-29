@@ -918,27 +918,27 @@ impl<'ast> TypeCheckContext<'ast> {
         let def_ty = self.def(def).ty();
         let (input_tys, output_ty) = self.resolved_fn_parts(def_ty)?;
 
-        let parent = self.recursion.enter(def);
+        let (_, scc) = self.checking(def, |this| {
+            this.with_scope(scope, |this| {
+                f.sig
+                    .inputs
+                    .iter()
+                    .zip(&input_tys)
+                    .for_each(|(param, input_ty)| {
+                        this.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
+                    });
 
-        self.with_scope(scope, |this| {
-            f.sig
-                .inputs
-                .iter()
-                .zip(&input_tys)
-                .for_each(|(param, input_ty)| {
-                    this.check_pat(&param.pat, *input_ty, PatDeclKind::Param);
-                });
+                let output_span = match &f.sig.output {
+                    FnRetTy::Default(span) => *span,
+                    FnRetTy::Ty(ty) => ty.span,
+                };
+                this.check_block_expecting(body, Some(output_ty), Some(output_span));
 
-            let output_span = match &f.sig.output {
-                FnRetTy::Default(span) => *span,
-                FnRetTy::Ty(ty) => ty.span,
-            };
-            this.check_block_expecting(body, Some(output_ty), Some(output_span));
-
-            this.check_nested_functions(nested_items(body), def);
+                this.check_nested_functions(nested_items(body), def);
+            });
         });
 
-        self.recursion.exit(def, parent)
+        scc
     }
 }
 
