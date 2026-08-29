@@ -4,10 +4,11 @@ use ast::Item;
 use diagnostics::Diagnostic;
 use intern::Interner;
 
+use crate::defs::{DefKind, FnDef};
 use crate::errors::{Locale, TypeCheckDiagnostic};
 use crate::position_index::PositionIndex;
-use crate::types::{Type, resolve_type};
-use crate::{DefId, DefKind, FnDef, TypeCheckContext};
+use crate::types::{Type, TypeResolver};
+use crate::{DefId, TypeCheckContext};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Constructs the final result of the type checking stage, which
@@ -28,13 +29,13 @@ impl<'ast> TypeCheckContext<'ast> {
         let mut defs = HashMap::with_capacity(self.defs.len());
         for (id, def) in self.defs.iter() {
             let ty = match def.kind.ty() {
-                Some(ty) => resolve_type(
-                    &mut self.inf,
-                    &self.defs,
-                    &self.symbols,
-                    &self.generic_names,
-                    ty,
-                ),
+                Some(ty) => TypeResolver {
+                    inf: &mut self.inf,
+                    defs: &self.defs,
+                    names: &self.symbols,
+                    generics: &self.generics,
+                }
+                .resolve(ty),
                 None => Type::Unresolved,
             };
             let symbol = self.symbols.resolve(def.symbol).to_owned();
@@ -42,7 +43,7 @@ impl<'ast> TypeCheckContext<'ast> {
                 .generics()
                 .iter()
                 .map(|id| {
-                    self.generic_names
+                    self.generics
                         .get(id)
                         .cloned()
                         .unwrap_or_else(|| "<generic>".to_owned())

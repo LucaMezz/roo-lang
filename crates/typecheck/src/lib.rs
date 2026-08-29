@@ -8,16 +8,11 @@
 //!     1.
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use ast::visit::{Visitor, Walkable};
-use ast::{
-    AssocItemKind, EnumDef as AstEnumDef, Fn, FnRetTy, FnTy, GenericParam, Generics, Ident, Impl,
-    Item, ItemKind, ModKind, Path, Span, Trait, Ty, TyAlias, TyKind as AstTyKind, UseTree,
-    UseTreeKind, VariantData,
-};
+use ast::visit::Visitor;
+use ast::{FnRetTy, FnTy, GenericParam, Item, ItemKind, Path, Span, Ty, TyKind as AstTyKind};
 use intern::{Interner, Symbol};
-use slotmap::SlotMap;
 
 use crate::inference::{InferenceTable, TyId, VarId};
 use crate::types::TyKind;
@@ -26,179 +21,38 @@ mod adt;
 mod call_graph;
 mod check;
 mod checked_program;
+mod defs;
 mod errors;
-mod generic_names;
+mod generics;
 mod inference;
+mod lower_signatures;
 mod polymorphism;
 mod position_index;
+mod recursion;
+mod resolve;
+mod scope;
 mod types;
 
 use check::collect_fn_mod_items;
+use defs::{Def, DefKind, Defs, EnumDef, VariantDef};
 use errors::Diagnostics;
-use generic_names::GenericNames;
+use generics::{GenericId, GenericRegistry};
+use lower_signatures::SignatureLowerer;
 use position_index::PositionIndex;
+use recursion::RecursionTracker;
+use resolve::Resolver;
+use scope::{Namespace, ScopeId, ScopeTree};
 
 pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
-use crate::call_graph::{CallGraph, SCCCollector};
-use crate::errors::{
-    AlreadyDefined, AnnotationsNeeded, InvalidGlobTarget, UnresolvedImport, UnresolvedType,
-};
+use crate::errors::{AlreadyDefined, AnnotationsNeeded, UnresolvedType};
 
 slotmap::new_key_type! {
-    /// A handle to a scope stored in the scope arena within
-    /// the [`TypeCheckContext`]
-    pub struct ScopeId;
-
     /// A handle to a def stored in the def arena within
     /// the [`TypeCheckContext`]
     pub struct DefId;
-
-    /// A handle to a generic parameter stored in the generic
-    /// arena within the [`TypeCheckContext`].
-    pub struct GenericId;
-}
-
-/// A kind of Namespace within each scope.
-///
-/// A scope has two separate Namespaces for defs. One only
-/// contains defs which represent types within the scope,
-/// while the other only contains defs which represent
-/// values within the scope.
-#[derive(Clone, Copy)]
-enum Namespace {
-    /// The Namespace of Types within a scope.
-    Type,
-
-    /// The Namespace of Values within a scope.
-    Value,
-}
-
-/// A scope. Represents a context where defs can be defined.
-///
-/// Scopes are created for things such as function bodies,
-/// blocks, etc.
-#[derive(Debug)]
-struct Scope {
-    /// A handle to the enclosing scope.
-    parent: Option<ScopeId>,
-
-    /// The [Namespace::Type] Namespace. Maps the symbol of each
-    /// type defined in this scope to its def's handle.
-    types: HashMap<Symbol, DefId>,
-
-    /// The [Namespace::Value] Namespace. Maps the symbol of
-    /// each value defined in this scope to its def's
-    /// handle.
-    values: HashMap<Symbol, DefId>,
-}
-
-/// A def within a def table.
-#[derive(Debug)]
-struct Def {
-    /// An interned string which is the symbol of the def.
-    symbol: Symbol,
-
-    /// The specific kind of def that it is.
-    kind: DefKind,
-
-    /// The span within the source code that resulted in
-    /// the introduction of this def.
-    declared_at: Span,
-}
-
-impl Def {
-    /// The ty representing the type associated with this
-    /// def.
-    ///
-    /// Panics if this def's kind can never have a ty (e.g.
-    /// [`DefKind::Mod`]). Only call this where the kind is
-    /// already known by construction.
-    fn ty(&self) -> TyId {
-        self.kind.ty().expect("def kind does not have a ty")
-    }
-
-    /// The generic parameters associated with this def.
-    /// Empty for kinds that can never have generics.
-    fn generics(&self) -> &[GenericId] {
-        self.kind.generics().unwrap_or(&[])
-    }
-}
-
-/// Extra information about a function def.
-#[derive(Debug)]
-struct FnDef {
-    /// A handle to the scope of the function body.
-    scope: ScopeId,
-
-    /// The span of each of the parameters of the function
-    /// within the source code.
-    param_spans: Vec<Option<Span>>,
-
-    /// The symbol of each of the parameters as they appear
-    /// in the source code.
-    param_symbols: Vec<String>,
-
-    /// The ty representing the type of this function.
-    ty: TyId,
-
-    /// The generic parameters associated with this function.
-    generics: Vec<GenericId>,
-}
-
-/// Extra information about a type alias def.
-#[derive(Debug)]
-struct TyAliasDef {
-    /// A handle to the scope in which the alias's generic
-    /// parameters live.
-    scope: ScopeId,
-
-    /// The ty representing the aliased type.
-    ty: TyId,
-
-    /// The generic parameters associated with this alias.
-    generics: Vec<GenericId>,
-}
-
-#[derive(Debug)]
-struct EnumDef {
-    variants: Vec<DefId>,
-    /// The generic parameters associated with this enum.
-    generics: Vec<GenericId>,
-
-    scope: ScopeId,
-}
-
-#[derive(Debug)]
-struct StructDef {
-    variant: VariantDef,
-
-    scope: ScopeId,
-}
-
-#[derive(Debug)]
-struct VariantDef {
-    name: Symbol,
-    span: Span,
-    fields: Vec<FieldDef>,
-    ctor_ty: Option<TyId>,
-    /// The generic parameters associated with this variant.
-    generics: Vec<GenericId>,
-    parent: Option<DefId>,
-}
-
-impl VariantDef {
-    fn field(&self, symbol: Symbol) -> Option<&FieldDef> {
-        self.fields.iter().find(|f| f.name == symbol)
-    }
-}
-
-#[derive(Debug)]
-struct FieldDef {
-    name: Symbol,
-    ty: TyId,
 }
 
 #[derive(Debug)]
@@ -232,75 +86,6 @@ fn impl_target_of(kind: &TyKind) -> Option<ImplTarget> {
     }
 }
 
-/// The specific kind of [`Def`].
-#[derive(Debug)]
-enum DefKind {
-    Struct(StructDef),
-    Enum(EnumDef),
-    Variant(VariantDef),
-    Trait,
-    /// A type alias. Type aliases need their own scope
-    /// because they can have generic type parameters which
-    /// should only exist during the evaluation of the
-    /// type on the right hand side of the alias.
-    TyAlias(TyAliasDef),
-    /// A module. Here, the [`ScopeId`] is a handle to the
-    /// scope of the module body.
-    Mod(ScopeId),
-    Fn(FnDef),
-    Local(TyId),
-    Param(TyId),
-    GenericParam(TyId),
-}
-
-impl DefKind {
-    /// A human-readable description of this kind of def,
-    /// e.g. for use in diagnostics like "expected a module,
-    /// found a function".
-    fn describe(&self) -> &'static str {
-        match self {
-            DefKind::Struct(_) => "a struct",
-            DefKind::Enum(_) => "an enum",
-            DefKind::Variant(_) => "an enum variant",
-            DefKind::Trait => "a trait",
-            DefKind::TyAlias(_) => "a type alias",
-            DefKind::Mod(_) => "a module",
-            DefKind::Fn(_) => "a function",
-            DefKind::Local(_) => "a local variable",
-            DefKind::Param(_) => "a parameter",
-            DefKind::GenericParam(_) => "a generic parameter",
-        }
-    }
-
-    /// The ty representing the type of this def, if this
-    /// kind of def can have one at all.
-    fn ty(&self) -> Option<TyId> {
-        match self {
-            DefKind::Fn(fn_data) => Some(fn_data.ty),
-            DefKind::TyAlias(alias_data) => Some(alias_data.ty),
-            DefKind::Local(ty) | DefKind::Param(ty) | DefKind::GenericParam(ty) => Some(*ty),
-            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
-                variant.ctor_ty
-            }
-            DefKind::Enum(_) | DefKind::Trait | DefKind::Mod(_) => None,
-        }
-    }
-
-    /// The generic parameters of this def, if this kind of
-    /// def can have any at all.
-    fn generics(&self) -> Option<&[GenericId]> {
-        match self {
-            DefKind::Fn(fn_data) => Some(&fn_data.generics),
-            DefKind::TyAlias(alias_data) => Some(&alias_data.generics),
-            DefKind::Enum(enum_data) => Some(&enum_data.generics),
-            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
-                Some(&variant.generics)
-            }
-            _ => None,
-        }
-    }
-}
-
 /// Differentiates between a variable introduced to the scope
 /// of a function via being a parameter, and one introduced
 /// by a let def.
@@ -315,24 +100,6 @@ impl PatDeclKind {
         match self {
             PatDeclKind::Param => DefKind::Param(ty),
             PatDeclKind::Let => DefKind::Local(ty),
-        }
-    }
-}
-
-impl DefKind {
-    /// Which [`Namespace`] a def of this kind belongs to
-    /// within a [`Scope`].
-    fn namespace(&self) -> Namespace {
-        match self {
-            DefKind::Struct(_)
-            | DefKind::Enum(_)
-            | DefKind::Trait
-            | DefKind::TyAlias(_)
-            | DefKind::GenericParam(_)
-            | DefKind::Mod(_) => Namespace::Type,
-            DefKind::Variant(_) | DefKind::Fn(_) | DefKind::Local(_) | DefKind::Param(_) => {
-                Namespace::Value
-            }
         }
     }
 }
@@ -354,26 +121,16 @@ struct TypeCheckContext<'ast> {
     /// They are cheap to copy and hash, etc.
     symbols: Interner,
 
-    /// The def table. Contains all defs within the
-    /// program. It is a generational arena where a
-    /// [`DefId`] is a unique handle to a [`Def`].
-    defs: SlotMap<DefId, Def>,
+    /// The def table. See [`Defs`].
+    defs: Defs,
 
-    /// Contains all scopes within the program. It is a
-    /// generational arena where a [`ScopeId`] is a unique
-    /// handle to a certain [`Scope`].
-    scopes: SlotMap<ScopeId, Scope>,
+    /// Contains all scopes within the program, linked into a
+    /// tree by parent pointers. See [`ScopeTree`].
+    scopes: ScopeTree,
 
-    /// Identifies a unique generic type parameter which appears
-    /// somewhere in the program.
-    ///
-    /// TODO No need for a SlotMap here. GenericIds are never
-    /// deleted from the arena, so need for a generational arena.
-    generic_ids: SlotMap<GenericId, ()>,
-
-    /// Store and synthesise symbols for generics. See
-    /// [`GenericNames`] for more info.
-    generic_names: GenericNames,
+    /// The registry of every generic type parameter in the
+    /// program. See [`GenericRegistry`].
+    generics: GenericRegistry,
 
     /// A handle to the scope that is currently being checked.
     current_scope: ScopeId,
@@ -385,17 +142,13 @@ struct TypeCheckContext<'ast> {
     /// and other things, based on spans within the source code.
     positions: PositionIndex,
 
-    graph: CallGraph,
-
-    sccc: SCCCollector,
+    /// Tracks which function is currently being checked, the
+    /// call graph, and SCC discovery. See [`RecursionTracker`].
+    recursion: RecursionTracker,
 
     items_by_def: HashMap<DefId, &'ast Item>,
 
     impls_by_target: HashMap<ImplTarget, Vec<ImplInfo>>,
-
-    current_fn: Option<DefId>,
-
-    checking_stack: Vec<DefId>,
 
     inference_vars: Vec<(VarId, Span)>,
 }
@@ -403,36 +156,27 @@ struct TypeCheckContext<'ast> {
 impl<'ast> TypeCheckContext<'ast> {
     /// Create a new blank [`TypeCheckContext`].
     fn new(symbols: Interner) -> Self {
-        let mut scopes = SlotMap::with_key();
-        let root = scopes.insert(Scope {
-            parent: None,
-            types: HashMap::new(),
-            values: HashMap::new(),
-        });
+        let (scopes, root) = ScopeTree::new();
 
         Self {
             inf: InferenceTable::new(),
 
             symbols,
             scopes,
-            generic_ids: SlotMap::with_key(),
-            generic_names: GenericNames::new(),
+            generics: GenericRegistry::new(),
             inference_vars: Vec::new(),
-            defs: SlotMap::with_key(),
+            defs: Defs::new(),
             current_scope: root,
             diagnostics: Diagnostics::default(),
             positions: PositionIndex::default(),
-            graph: CallGraph::new(),
-            sccc: SCCCollector::new(),
+            recursion: RecursionTracker::new(),
             items_by_def: HashMap::new(),
             impls_by_target: HashMap::new(),
-            current_fn: None,
-            checking_stack: Vec::new(),
         }
     }
 
     fn def(&self, def: DefId) -> &Def {
-        &self.defs[def]
+        self.defs.get(def)
     }
 
     #[cfg(test)]
@@ -643,7 +387,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let mut segments = path.segments.iter().enumerate();
         let (i, first) = segments.next()?;
         let symbol = first.ident.symbol;
-        let first_def = self.lookup_up_scope_chain(
+        let first_def = self.scopes.lookup_up_chain(
             self.current_scope,
             symbol,
             segment_namespace(i, last, namespace),
@@ -652,7 +396,8 @@ impl<'ast> TypeCheckContext<'ast> {
         segments.try_fold(first_def, |def, (i, segment)| {
             let scope = self.mod_def_scope(def).or(self.enum_def_scope(def))?;
             let symbol = segment.ident.symbol;
-            self.lookup_in_scope(scope, symbol, segment_namespace(i, last, namespace))
+            self.scopes
+                .lookup(scope, symbol, segment_namespace(i, last, namespace))
         })
     }
 
@@ -666,10 +411,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn resolve_path_to_struct(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
         let id = self.resolve_path_to_type(path)?;
-        match &self.def(id).kind {
-            DefKind::Struct(StructDef { variant, .. }) => Some((id, variant)),
-            _ => None,
-        }
+        self.def(id).kind.as_struct().map(|variant| (id, variant))
     }
 
     fn resolve_path_to_enum(&mut self, path: &Path) -> Option<DefId> {
@@ -679,10 +421,11 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn resolve_path_to_variant(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
         let id = self.resolve_path_to_value(path)?;
-        match &self.def(id).kind {
-            DefKind::Variant(variant) if variant.ctor_ty.is_none() => Some((id, variant)),
-            _ => None,
-        }
+        self.def(id)
+            .kind
+            .as_variant()
+            .filter(|variant| variant.ctor_ty.is_none())
+            .map(|variant| (id, variant))
     }
 
     fn resolve_path_from(
@@ -698,23 +441,9 @@ impl<'ast> TypeCheckContext<'ast> {
             .try_fold(root, |def, (i, segment)| {
                 let scope = self.mod_def_scope(def)?;
                 let symbol = segment.ident.symbol;
-                self.lookup_in_scope(scope, symbol, segment_namespace(i, last, namespace))
+                self.scopes
+                    .lookup(scope, symbol, segment_namespace(i, last, namespace))
             })
-    }
-
-    /// Directly checks if the given scope contains a def
-    /// with a given symbol, which belongs to a certain Namespace.
-    fn lookup_in_scope(
-        &self,
-        scope: ScopeId,
-        symbol: Symbol,
-        namespace: Namespace,
-    ) -> Option<DefId> {
-        let map = match namespace {
-            Namespace::Type => &self.scopes[scope].types,
-            Namespace::Value => &self.scopes[scope].values,
-        };
-        map.get(&symbol).copied()
     }
 
     fn with_def_in_scope<T>(
@@ -723,7 +452,8 @@ impl<'ast> TypeCheckContext<'ast> {
         namespace: Namespace,
         f: impl FnOnce(&mut Self, DefId) -> T,
     ) -> Option<T> {
-        self.lookup_in_scope(self.current_scope, symbol, namespace)
+        self.scopes
+            .lookup(self.current_scope, symbol, namespace)
             .map(|def| f(self, def))
     }
 
@@ -778,41 +508,6 @@ impl<'ast> TypeCheckContext<'ast> {
         Some(alias_data.scope)
     }
 
-    fn struct_def_mut(&mut self, def: DefId) -> &mut StructDef {
-        match &mut self.defs[def].kind {
-            DefKind::Struct(s) => s,
-            _ => unreachable!("{def:?} must be a struct"),
-        }
-    }
-
-    fn enum_def_mut(&mut self, def: DefId) -> &mut EnumDef {
-        match &mut self.defs[def].kind {
-            DefKind::Enum(e) => e,
-            _ => unreachable!("{def:?} must be an enum"),
-        }
-    }
-
-    fn fn_def_mut(&mut self, def: DefId) -> &mut FnDef {
-        match &mut self.defs[def].kind {
-            DefKind::Fn(f) => f,
-            _ => unreachable!("{def:?} must be a function"),
-        }
-    }
-
-    fn ty_alias_def_mut(&mut self, def: DefId) -> &mut TyAliasDef {
-        match &mut self.defs[def].kind {
-            DefKind::TyAlias(a) => a,
-            _ => unreachable!("{def:?} must be a type alias"),
-        }
-    }
-
-    fn variant_def_mut(&mut self, def: DefId) -> &mut VariantDef {
-        match &mut self.defs[def].kind {
-            DefKind::Variant(v) => v,
-            _ => unreachable!("{def:?} must be a variant"),
-        }
-    }
-
     fn register_impl_for(
         &mut self,
         target: ImplTarget,
@@ -828,19 +523,6 @@ impl<'ast> TypeCheckContext<'ast> {
                 of_trait,
                 generics,
             });
-    }
-
-    /// Recursively searches the current scope and enclosing
-    /// scopes for a [`Def`] with a given symbol and which
-    /// belongs to the specified Namespace.
-    fn lookup_up_scope_chain(
-        &self,
-        scope: ScopeId,
-        symbol: Symbol,
-        namespace: Namespace,
-    ) -> Option<DefId> {
-        std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
-            .find_map(|scope| self.lookup_in_scope(scope, symbol, namespace))
     }
 
     /// Declares a new [`Def`] in a scope of a certain kind.
@@ -877,7 +559,8 @@ impl<'ast> TypeCheckContext<'ast> {
     /// Namespace of the current scope, emits an [`AlreadyDefined`]
     /// diagnostic pointing back at its original declaration.
     fn check_redeclaration(&mut self, namespace: Namespace, symbol: Symbol, span: Span) {
-        self.lookup_in_scope(self.current_scope, symbol, namespace)
+        self.scopes
+            .lookup(self.current_scope, symbol, namespace)
             .into_iter()
             .for_each(|existing| {
                 let original = self.def(existing).declared_at;
@@ -899,9 +582,9 @@ impl<'ast> TypeCheckContext<'ast> {
     /// is created for `T` inside that scope so `T` becomes
     /// a valid type that can be used within the function body.
     fn declare_generic_param(&mut self, symbol: Symbol, span: Span) -> (DefId, GenericId) {
-        let id = self.generic_ids.insert(());
-        self.generic_names
-            .declare(id, self.symbols.resolve(symbol).to_owned());
+        let id = self
+            .generics
+            .declare_new(self.symbols.resolve(symbol).to_owned());
         let ty = self.ty(TyKind::Generic(id));
         let def = self.defs.insert(Def {
             symbol,
@@ -923,21 +606,10 @@ impl<'ast> TypeCheckContext<'ast> {
             .collect()
     }
 
-    fn declare_synthetic_generic_param(&mut self, taken: &mut HashSet<String>) -> GenericId {
-        let id = self.generic_ids.insert(());
-        let name = self.generic_names.fresh_synthetic(taken);
-        self.generic_names.declare(id, name);
-        id
-    }
-
-    /// Inserts a def into the current [`Scope`] via its
-    /// handle.
+    /// Inserts a def into the current scope.
     fn insert_in_scope(&mut self, symbol: Symbol, def: DefId, namespace: Namespace) {
-        let scope = &mut self.scopes[self.current_scope];
-        match namespace {
-            Namespace::Type => scope.types.insert(symbol, def),
-            Namespace::Value => scope.values.insert(symbol, def),
-        };
+        self.scopes
+            .insert(self.current_scope, symbol, def, namespace);
     }
 
     fn insert_type_in_scope(&mut self, symbol: Symbol, def: DefId) {
@@ -1187,572 +859,12 @@ const PRIMITIVE_TYPES: &[(&str, TyKind)] = &[
     ("String", TyKind::Str),
 ];
 
-/// The AST Visitor that performs the Resolution stage of the
-/// type checking. Walks the AST, creating new defs in the
-/// def table for each item it finds.
-struct Resolver<'a, 'ast> {
-    /// Mutable reference to the underlying TypeCheckContext.
-    cx: &'a mut TypeCheckContext<'ast>,
-}
-
-impl<'ast> Resolver<'_, 'ast> {
-    /// Creates a new [`Scope`] in the underling
-    /// [`TypeCheckContext`], and returns a handle to it.
-    fn new_scope(&mut self) -> ScopeId {
-        let parent = self.cx.current_scope;
-        self.cx.scopes.insert(Scope {
-            parent: Some(parent),
-            types: HashMap::new(),
-            values: HashMap::new(),
-        })
-    }
-}
-
-impl<'ast> CxExt<'ast> for Resolver<'_, 'ast> {
-    fn cx(&mut self) -> &mut TypeCheckContext<'ast> {
-        self.cx
-    }
-}
-
-impl Visitor for Resolver<'_, '_> {
-    fn visit_item(&mut self, item: &Item) {
-        match &item.kind {
-            ItemKind::Fn(f) => self.resolve_fn_item(f),
-            ItemKind::TyAlias(alias) => self.resolve_ty_alias_item(alias),
-            ItemKind::Enum(ident, generics, def) => self.resolve_enum_item(ident, generics, def),
-            ItemKind::Struct(ident, generics, data) => {
-                self.resolve_struct_item(ident, generics, data)
-            }
-            ItemKind::Trait(t) => self.resolve_trait_item(t),
-            ItemKind::Mod(ident, ModKind::Unloaded) => self.resolve_mod_unloaded_item(ident),
-            ItemKind::Mod(ident, ModKind::Loaded(_)) => self.resolve_mod_loaded_item(ident, item),
-            ItemKind::Use(_) => self.resolve_use_item(),
-            ItemKind::Impl(_) => self.resolve_impl_item(),
-        }
-    }
-}
-
-impl Resolver<'_, '_> {
-    fn resolve_fn_item(&mut self, f: &Fn) {
-        let scope = self.new_scope();
-        let ty = self.cx.fresh_var_at(Some(f.ident.span));
-        let fn_def = self.cx.declare(
-            f.ident.symbol,
-            f.ident.span,
-            DefKind::Fn(FnDef {
-                scope,
-                param_spans: Vec::new(),
-                param_symbols: Vec::new(),
-                ty,
-                generics: Vec::new(),
-            }),
-        );
-
-        let mut generics = Vec::new();
-        self.with_scope(scope, |this| {
-            generics = this.cx.declare_generic_params(&f.generics.params);
-            f.walk(this);
-        });
-        self.cx.fn_def_mut(fn_def).generics = generics;
-    }
-
-    fn resolve_ty_alias_item(&mut self, alias: &TyAlias) {
-        let scope = self.new_scope();
-        let ty = self.cx.fresh_var_at(Some(alias.ident.span));
-        let alias_def = self.cx.declare(
-            alias.ident.symbol,
-            alias.ident.span,
-            DefKind::TyAlias(TyAliasDef {
-                scope,
-                ty,
-                generics: Vec::new(),
-            }),
-        );
-
-        let mut generics = Vec::new();
-        self.with_scope(scope, |this| {
-            generics = this.cx.declare_generic_params(&alias.generics.params);
-        });
-        self.cx.ty_alias_def_mut(alias_def).generics = generics;
-    }
-
-    fn resolve_enum_item(&mut self, ident: &Ident, generics: &Generics, def: &AstEnumDef) {
-        let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&generics.params)
-        });
-        let enum_def = self.cx.declare(
-            ident.symbol,
-            ident.span,
-            DefKind::Enum(EnumDef {
-                variants: Vec::new(),
-                generics: generics.clone(),
-                scope,
-            }),
-        );
-        let variants = def
-            .variants
-            .iter()
-            .map(|v| {
-                self.resolve_variant_data(
-                    v.ident.symbol,
-                    v.ident.span,
-                    &v.data,
-                    generics.clone(),
-                    Some(enum_def),
-                )
-            })
-            .collect::<Vec<_>>();
-        let variants = self.with_scope(scope, |this| {
-            variants
-                .into_iter()
-                .map(|v| this.cx.declare(v.name, v.span, DefKind::Variant(v)))
-                .collect::<Vec<_>>()
-        });
-        self.cx.enum_def_mut(enum_def).variants = variants;
-    }
-
-    fn resolve_variant_data(
-        &mut self,
-        name: Symbol,
-        span: Span,
-        data: &VariantData,
-        generics: Vec<GenericId>,
-        parent: Option<DefId>,
-    ) -> VariantDef {
-        let ctor_ty = match data {
-            VariantData::Struct(_) => None,
-            VariantData::Tuple(_) | VariantData::Unit => Some(self.cx.fresh_var_at(Some(span))),
-        };
-        match data {
-            VariantData::Unit => VariantDef {
-                name,
-                span,
-                fields: vec![],
-                ctor_ty,
-                generics,
-                parent,
-            },
-            VariantData::Tuple(fields) => VariantDef {
-                name,
-                span,
-                fields: fields
-                    .iter()
-                    .enumerate()
-                    .map(|(i, field)| FieldDef {
-                        name: self.cx.symbols.intern_owned(&i.to_string()),
-                        ty: self.cx.fresh_var_at(Some(field.span)),
-                    })
-                    .collect(),
-                ctor_ty,
-                generics,
-                parent,
-            },
-            VariantData::Struct(fields) => VariantDef {
-                name,
-                span,
-                fields: fields
-                    .iter()
-                    .map(|field| FieldDef {
-                        name: field.ident.clone().unwrap().symbol,
-                        ty: self.cx.fresh_var_at(Some(field.span)),
-                    })
-                    .collect(),
-                ctor_ty,
-                generics,
-                parent,
-            },
-        }
-    }
-
-    fn resolve_struct_item(&mut self, ident: &Ident, generics: &Generics, data: &VariantData) {
-        let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&generics.params)
-        });
-        let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics, None);
-        let def = self.cx.declare(
-            ident.symbol,
-            ident.span,
-            DefKind::Struct(StructDef { variant, scope }),
-        );
-        if !matches!(data, VariantData::Struct(_)) {
-            let symbol = ident.symbol;
-            self.cx
-                .check_redeclaration(Namespace::Value, symbol, ident.span);
-            self.cx.insert_value_in_scope(symbol, def);
-        }
-    }
-
-    fn resolve_trait_item(&mut self, t: &Trait) {
-        self.cx
-            .declare(t.ident.symbol, t.ident.span, DefKind::Trait);
-    }
-
-    fn resolve_mod_unloaded_item(&mut self, ident: &Ident) {
-        let scope = self.new_scope();
-        self.cx
-            .declare(ident.symbol, ident.span, DefKind::Mod(scope));
-    }
-
-    fn resolve_mod_loaded_item(&mut self, ident: &Ident, item: &Item) {
-        let scope = self.new_scope();
-        self.cx
-            .declare(ident.symbol, ident.span, DefKind::Mod(scope));
-        self.with_scope(scope, |this| item.walk(this));
-    }
-
-    fn resolve_use_item(&mut self) {}
-
-    fn resolve_impl_item(&mut self) {}
-}
-
-/// Performs the signature lowering stage of the type checking.
-/// Fills in the types of the defs created by the [`Resolver`]
-/// where possible, for example for functions and type aliases.
-struct SignatureLowerer<'a, 'ast> {
-    /// A mutable reference to the underlying TypeCheckContext.
-    cx: &'a mut TypeCheckContext<'ast>,
-}
-
-impl<'ast> CxExt<'ast> for SignatureLowerer<'_, 'ast> {
-    fn cx(&mut self) -> &mut TypeCheckContext<'ast> {
-        self.cx
-    }
-}
-
-impl SignatureLowerer<'_, '_> {
-    /// Creates a ty representing the type of a function
-    /// based on the explicit type annotations within its
-    /// signature.
-    fn lower_fn_sig(&mut self, f: &Fn) -> TyId {
-        let inputs = f
-            .sig
-            .inputs
-            .iter()
-            .map(|param| match &param.ty {
-                Some(ty) => self.cx.lower_ty(ty),
-                None => self.cx.fresh_var(),
-            })
-            .collect();
-        let output_ty = self.cx.lower_ret_ty(&f.sig.output, None);
-        self.cx.ty(TyKind::Fn(inputs, output_ty))
-    }
-}
-
-impl SignatureLowerer<'_, '_> {
-    fn lower_trait_item(&mut self, _trt: &Trait) {
-        unimplemented!()
-    }
-
-    fn lower_impl_item(&mut self, imp: &Impl) {
-        let mut resolver = Resolver { cx: self.cx };
-        let scope = resolver.new_scope();
-        let generics = resolver.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&imp.generics.params)
-        });
-        resolver.with_scope(scope, |this| {
-            imp.items.iter().for_each(|item| match &item.kind {
-                AssocItemKind::Fn(f) => this.resolve_fn_item(f),
-                AssocItemKind::Type(alias) => this.resolve_ty_alias_item(alias),
-            });
-        });
-
-        self.with_scope(scope, |this| {
-            imp.items.iter().for_each(|item| match &item.kind {
-                AssocItemKind::Fn(f) => this.lower_fn_item(f),
-                AssocItemKind::Type(alias) => this.lower_ty_alias_item(alias),
-            });
-        });
-
-        let self_ty = self.with_scope(scope, |this| this.cx.lower_ty(&imp.self_ty));
-        let resolved = self.cx.inf.resolve(self_ty);
-        let target = self.cx.inf.ty(resolved).and_then(impl_target_of);
-
-        let of_trait = imp
-            .of_trait
-            .as_ref()
-            .and_then(|path| self.with_scope(scope, |this| this.cx.resolve_path_to_type(path)));
-
-        if let Some(target) = target {
-            self.cx.register_impl_for(target, scope, of_trait, generics);
-        }
-    }
-
-    fn lower_fn_item(&mut self, f: &Fn) {
-        let symbol = f.ident.symbol;
-        self.with_fn_scope(symbol, |this, def| {
-            let fn_ty = this.lower_fn_sig(f);
-            let def_ty = this.cx.def(def).ty();
-            // Unifies the fresh placeholder inference variable which
-            // was created during the previous Resolution stage with the
-            // ty created by lowering the function signature.
-            let _ = this.cx.inf.unify(def_ty, fn_ty);
-
-            // Collect information about parameter symbols and spans.
-            let param_symbols: Vec<String> = f
-                .sig
-                .inputs
-                .iter()
-                .map(|p| types::pat_display_name(&p.pat, &this.cx.symbols))
-                .collect();
-            let fn_data = this.cx.fn_def_mut(def);
-            fn_data.param_spans = f
-                .sig
-                .inputs
-                .iter()
-                .map(|p| p.ty.as_ref().map(|ty| ty.span))
-                .collect();
-            fn_data.param_symbols = param_symbols;
-            f.walk(this);
-        });
-    }
-
-    /// Resolves a `use` path, optionally rooted at an already
-    /// resolved parent module (for paths nested inside a
-    /// `use foo::{ ... }` group).
-    fn resolve_use_path(
-        &mut self,
-        prefix: Option<DefId>,
-        path: &Path,
-        namespace: Namespace,
-    ) -> Option<DefId> {
-        match prefix {
-            Some(pid) => self.cx.resolve_path_from(pid, path, namespace),
-            None => self.cx.resolve_path(path, namespace),
-        }
-    }
-
-    fn resolve_use_path_to_type(&mut self, prefix: Option<DefId>, path: &Path) -> Option<DefId> {
-        self.resolve_use_path(prefix, path, Namespace::Type)
-    }
-
-    fn resolve_use_path_to_value(&mut self, prefix: Option<DefId>, path: &Path) -> Option<DefId> {
-        self.resolve_use_path(prefix, path, Namespace::Value)
-    }
-
-    fn lower_use_tree(&mut self, tree: &UseTree, prefix: Option<DefId>) {
-        let mut sid = self.resolve_use_path_to_type(prefix, &tree.prefix);
-        if sid.is_none() && matches!(tree.kind, UseTreeKind::Simple(_)) {
-            sid = self.resolve_use_path_to_value(prefix, &tree.prefix);
-        }
-        let sid = sid.filter(|&sid| !matches!(self.cx.defs[sid].kind, DefKind::GenericParam(_)));
-        let Some(sid) = sid else {
-            self.cx.diagnostics.push(UnresolvedImport::new(
-                tree.prefix.span,
-                display_path(&tree.prefix, &self.cx.symbols),
-            ));
-            return;
-        };
-
-        self.cx.record_path_reference(&tree.prefix, sid);
-
-        match &tree.kind {
-            UseTreeKind::Simple(ident) => self.lower_use_tree_simple(tree, sid, ident),
-            UseTreeKind::Glob(span) => self.lower_use_tree_glob(tree, sid, *span),
-            UseTreeKind::Nested { items, .. } => self.lower_use_tree_nested(items, sid),
-        }
-    }
-
-    fn lower_use_tree_simple(&mut self, tree: &UseTree, sid: DefId, ident: &Option<Ident>) {
-        let Some(ident) = ident
-            .as_ref()
-            .or(tree.prefix.segments.last().map(|seg| &seg.ident))
-        else {
-            unreachable!("A path should always have a valid symbol");
-        };
-        let symbol = ident.symbol;
-        let namespace = self.cx().def(sid).kind.namespace();
-        self.cx.insert_in_scope(symbol, sid, namespace);
-    }
-
-    fn lower_use_tree_glob(&mut self, tree: &UseTree, sid: DefId, span: Span) {
-        let Some(scope) = self.cx.mod_def_scope(sid).or(self.cx.enum_def_scope(sid)) else {
-            self.cx.diagnostics.push(InvalidGlobTarget::new(
-                span,
-                display_path(&tree.prefix, &self.cx.symbols),
-                self.cx.def(sid).kind.describe().to_string(),
-            ));
-            return;
-        };
-        let types: Vec<(Symbol, DefId)> = self.cx.scopes[scope]
-            .types
-            .clone()
-            .into_iter()
-            .filter(|(_, sid)| !matches!(self.cx.defs[*sid].kind, DefKind::GenericParam(_)))
-            .collect();
-        types
-            .into_iter()
-            .for_each(|(symbol, sid)| self.cx.insert_type_in_scope(symbol, sid));
-        self.cx.scopes[scope]
-            .values
-            .clone()
-            .into_iter()
-            .for_each(|(symbol, sid)| self.cx.insert_value_in_scope(symbol, sid));
-    }
-
-    fn lower_use_tree_nested(&mut self, items: &[UseTree], sid: DefId) {
-        items
-            .iter()
-            .for_each(|item| self.lower_use_tree(item, Some(sid)));
-    }
-
-    fn lower_ty_alias_item(&mut self, alias: &TyAlias) {
-        let Some(ty) = alias.ty.as_ref() else {
-            return;
-        };
-        let symbol = alias.ident.symbol;
-        self.with_ty_alias_scope(symbol, |this, def| {
-            let aliased = this.cx.lower_ty(ty);
-            let def_ty = this.cx.def(def).ty();
-            // Unifies the fresh placeholder inference variable which
-            // was created during the previous Resolution stage with the
-            // ty created by lowering the type of the expression being
-            // aliased. A type alias can never refer to itself, directly
-            // or indirectly (e.g. `type Foo = (Foo, int);`), since that
-            // would make it an infinitely-sized type.
-            this.cx.unify_or_report_cycle(def_ty, aliased, ty.span);
-        });
-    }
-
-    fn lower_variant_data_field_tys(&mut self, data: &VariantData) -> (Vec<TyId>, Vec<GenericId>) {
-        let fields = match data {
-            VariantData::Unit => return (vec![], vec![]),
-            VariantData::Tuple(fields) | VariantData::Struct(fields) => fields,
-        };
-        let mut taken = self.cx.generic_names.all_names();
-        let mut synthesized = Vec::new();
-        let tys = fields
-            .iter()
-            .map(|field| {
-                field
-                    .ty
-                    .as_ref()
-                    .map(|ty| self.cx.lower_ty(ty))
-                    .unwrap_or_else(|| {
-                        let id = self.cx.declare_synthetic_generic_param(&mut taken);
-                        synthesized.push(id);
-                        self.cx.ty(TyKind::Generic(id))
-                    })
-            })
-            .collect();
-        (tys, synthesized)
-    }
-
-    fn unify_variant_field_tys(&mut self, def: DefId, lowered: &[TyId]) {
-        let (DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant)) =
-            &self.cx.defs[def].kind
-        else {
-            return;
-        };
-        let field_tys: Vec<TyId> = variant.fields.iter().map(|field| field.ty).collect();
-        for (field_ty, lowered_ty) in field_tys.into_iter().zip(lowered) {
-            let _ = self.cx.inf.unify(field_ty, *lowered_ty);
-        }
-    }
-
-    fn unify_ctor_ty(&mut self, def: DefId, self_ty: TyKind, data: &VariantData, lowered: &[TyId]) {
-        let placeholder = match &self.cx.defs[def].kind {
-            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
-                variant.ctor_ty
-            }
-            _ => None,
-        };
-        let Some(placeholder) = placeholder else {
-            return;
-        };
-
-        let self_ty = self.cx.ty(self_ty);
-        let ctor_ty = match data {
-            VariantData::Tuple(_) => {
-                let params = lowered.into();
-                self.cx.ty(TyKind::Fn(params, self_ty))
-            }
-            VariantData::Unit | VariantData::Struct(_) => self_ty,
-        };
-        let _ = self.cx.inf.unify(placeholder, ctor_ty);
-    }
-
-    fn lower_struct_item(&mut self, ident: &Ident, data: &VariantData) {
-        self.with_struct_scope(ident.symbol, |this, def| {
-            let (lowered, synthesized) = this.lower_variant_data_field_tys(data);
-            this.cx
-                .struct_def_mut(def)
-                .variant
-                .generics
-                .extend(synthesized);
-            this.unify_variant_field_tys(def, &lowered);
-            let generics = this.cx.def(def).generics().to_vec();
-            let placeholder_args = generics
-                .iter()
-                .map(|&id| this.cx.ty(TyKind::Generic(id)))
-                .collect();
-            this.unify_ctor_ty(def, TyKind::Struct(def, placeholder_args), data, &lowered);
-        });
-    }
-
-    fn lower_enum_item(&mut self, ident: &Ident, def: &AstEnumDef) {
-        self.with_enum_scope(ident.symbol, |this, id| {
-            let results: Vec<(Vec<TyId>, Vec<GenericId>)> = def
-                .variants
-                .iter()
-                .map(|v| this.lower_variant_data_field_tys(&v.data))
-                .collect();
-            let (lowered, synthesised): (Vec<Vec<TyId>>, Vec<Vec<GenericId>>) =
-                results.into_iter().unzip();
-            this.cx
-                .enum_def_mut(id)
-                .generics
-                .extend(synthesised.iter().flatten());
-
-            let generics = this.cx.enum_def_mut(id).generics.clone();
-            let variants = this.cx.enum_def_mut(id).variants.clone();
-            for ((variant, lowered_fields), ast_variant) in
-                variants.into_iter().zip(lowered).zip(&def.variants)
-            {
-                this.cx.variant_def_mut(variant).generics = generics.clone();
-                this.unify_variant_field_tys(variant, &lowered_fields);
-                let placeholder_args = generics
-                    .iter()
-                    .map(|&id| this.cx.ty(TyKind::Generic(id)))
-                    .collect();
-                this.unify_ctor_ty(
-                    variant,
-                    TyKind::Enum(id, placeholder_args),
-                    &ast_variant.data,
-                    &lowered_fields,
-                );
-            }
-        });
-    }
-
-    fn lower_mod_item(&mut self, symbol: &Ident, _kind: &ModKind, item: &Item) {
-        self.with_mod_scope(symbol.symbol, |this, _def| item.walk(this));
-    }
-}
-
 fn display_path(path: &Path, symbols: &Interner) -> String {
     path.segments
         .iter()
         .map(|segment| symbols.resolve(segment.ident.symbol))
         .collect::<Vec<_>>()
         .join("::")
-}
-
-impl Visitor for SignatureLowerer<'_, '_> {
-    fn visit_item(&mut self, item: &Item) {
-        match &item.kind {
-            ItemKind::Fn(f) => self.lower_fn_item(f),
-            ItemKind::TyAlias(alias) => self.lower_ty_alias_item(alias),
-            ItemKind::Struct(ident, _generics, data) => self.lower_struct_item(ident, data),
-            ItemKind::Enum(ident, _generics, def) => self.lower_enum_item(ident, def),
-            ItemKind::Mod(ident, kind) => self.lower_mod_item(ident, kind, item),
-            ItemKind::Use(tree) => self.lower_use_tree(tree, None),
-            ItemKind::Trait(trt) => self.lower_trait_item(trt),
-            ItemKind::Impl(imp) => self.lower_impl_item(imp),
-            _ => {}
-        }
-    }
 }
 
 fn segment_namespace(i: usize, last: usize, namespace: Namespace) -> Namespace {

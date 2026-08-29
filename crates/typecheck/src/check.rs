@@ -14,9 +14,7 @@ use crate::errors::{
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{
-    CxExt, DefId, DefKind, GenericId, PatDeclKind, StructDef, TyId, TypeCheckContext, display_path,
-};
+use crate::{CxExt, DefId, GenericId, PatDeclKind, TyId, TypeCheckContext, display_path};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -72,7 +70,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn generic_name_of(&mut self, ty: TyId) -> Option<String> {
         let resolved = self.inf.resolve(ty);
         match self.inf.ty(resolved)? {
-            TyKind::Generic(id) => self.generic_names.get(id).cloned(),
+            TyKind::Generic(id) => self.generics.get(id).cloned(),
             _ => None,
         }
     }
@@ -226,14 +224,15 @@ impl<'ast> TypeCheckContext<'ast> {
         generics: Vec<TyId>,
         ident: &Ident,
     ) -> TyId {
-        let (field_ty, struct_generics, struct_name) = match &self.def(def).kind {
-            DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => (
-                variant.field(ident.symbol).map(|field| field.ty),
-                variant.generics.clone(),
-                variant.name,
-            ),
-            _ => unreachable!("TyKind::Struct must resolve to a struct or variant def"),
-        };
+        let variant = self
+            .def(def)
+            .variant()
+            .expect("TyKind::Struct must resolve to a struct or variant def");
+        let (field_ty, struct_generics, struct_name) = (
+            variant.field(ident.symbol).map(|field| field.ty),
+            variant.generics.clone(),
+            variant.name,
+        );
 
         let Some(field_ty) = field_ty else {
             let name = self.symbols.resolve(ident.symbol).to_owned();
@@ -590,10 +589,8 @@ impl<'ast> TypeCheckContext<'ast> {
         let callee_param_spans: Vec<Option<Span>> = match &callee.kind {
             ExprKind::Path(None, path) => self
                 .resolve_path_to_value(path)
-                .map(|def| match &self.def(def).kind {
-                    DefKind::Fn(fn_data) => fn_data.param_spans.clone(),
-                    _ => Vec::new(),
-                })
+                .and_then(|def| self.def(def).as_fn())
+                .map(|fn_data| fn_data.param_spans.clone())
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -864,14 +861,14 @@ impl<'ast> TypeCheckContext<'ast> {
         to: DefId,
         check: impl FnOnce(&mut Self) -> Option<Vec<DefId>>,
     ) -> Option<Vec<DefId>> {
-        if !self.sccc.is_visited(to) {
+        if !self.recursion.is_visited(to) {
             let completed = check(self);
-            if self.sccc.is_visited(to) {
-                self.sccc.pull_lowlink(from, to);
+            if self.recursion.is_visited(to) {
+                self.recursion.pull_lowlink(from, to);
             }
             completed
         } else {
-            self.sccc.note_back_edge(from, to);
+            self.recursion.note_back_edge(from, to);
             None
         }
     }
@@ -898,12 +895,12 @@ impl<'ast> TypeCheckContext<'ast> {
             return;
         };
 
-        let scc = match self.current_fn {
+        let scc = match self.recursion.current() {
             Some(from) => {
-                self.graph.call(from, def);
+                self.recursion.record_call(from, def);
                 self.record_edge(from, def, |this| this.check_fn_body(def, f))
             }
-            None if !self.sccc.is_visited(def) => self.check_fn_body(def, f),
+            None if !self.recursion.is_visited(def) => self.check_fn_body(def, f),
             None => None,
         };
 
@@ -911,7 +908,7 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_fn_body(&mut self, def: DefId, f: &'ast ast::Fn) -> Option<Vec<DefId>> {
-        if self.sccc.is_visited(def) {
+        if self.recursion.is_visited(def) {
             return None;
         }
 
@@ -921,10 +918,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let def_ty = self.def(def).ty();
         let (input_tys, output_ty) = self.resolved_fn_parts(def_ty)?;
 
-        self.sccc.enter(def);
-        let parent_fn = self.current_fn;
-        self.current_fn = Some(def);
-        self.checking_stack.push(def);
+        let parent = self.recursion.enter(def);
 
         self.with_scope(scope, |this| {
             f.sig
@@ -944,9 +938,7 @@ impl<'ast> TypeCheckContext<'ast> {
             this.check_nested_functions(nested_items(body), def);
         });
 
-        self.checking_stack.pop();
-        self.current_fn = parent_fn;
-        self.sccc.exit(def)
+        self.recursion.exit(def, parent)
     }
 }
 

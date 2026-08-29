@@ -5,6 +5,8 @@ use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
 use intern::Interner;
 
+use crate::defs::FnDef;
+
 fn resolve<'ast>(source: &str) -> TypeCheckContext<'ast> {
     let tokens = lexer::tokenize_all(source).expect("should lex");
     let mut state = parser::State::default();
@@ -36,11 +38,7 @@ fn lookup(cx: &TypeCheckContext<'_>, scope: ScopeId, namespace: Namespace, symbo
     let Some(symbol) = cx.symbols.get(symbol) else {
         return false;
     };
-    let map = match namespace {
-        Namespace::Type => &cx.scopes[scope].types,
-        Namespace::Value => &cx.scopes[scope].values,
-    };
-    map.contains_key(&symbol)
+    cx.scopes.lookup(scope, symbol, namespace).is_some()
 }
 
 fn path(symbols: &mut Interner, segments: &[&str]) -> Path {
@@ -112,11 +110,7 @@ fn declared_def(
     symbol: &str,
 ) -> Option<DefId> {
     let symbol = cx.symbols.get(symbol)?;
-    let map = match namespace {
-        Namespace::Type => &cx.scopes[scope].types,
-        Namespace::Value => &cx.scopes[scope].values,
-    };
-    map.get(&symbol).copied()
+    cx.scopes.lookup(scope, symbol, namespace)
 }
 
 #[test]
@@ -154,8 +148,7 @@ fn a_mod_gets_its_own_child_scope() {
 
     let child_scope = cx
         .scopes
-        .iter()
-        .find_map(|(id, scope)| (scope.parent == Some(cx.current_scope)).then_some(id))
+        .child_of(cx.current_scope)
         .expect("mod should have created a child scope");
     assert!(lookup(&cx, child_scope, Namespace::Value, "baz"));
 }
@@ -168,8 +161,7 @@ fn an_item_nested_inside_a_fn_body_is_hoisted_into_its_own_scope() {
 
     let body_scope = cx
         .scopes
-        .iter()
-        .find_map(|(id, scope)| (scope.parent == Some(cx.current_scope)).then_some(id))
+        .child_of(cx.current_scope)
         .expect("the fn body should have created a child scope");
     assert!(lookup(&cx, body_scope, Namespace::Value, "inner"));
 }
@@ -1031,8 +1023,7 @@ fn lower_signatures_recurses_into_a_fns_own_body() {
     let mut cx = resolve_and_lower("fn outer() { fn inner(x: int) -> bool { true } }");
     let body_scope = cx
         .scopes
-        .iter()
-        .find_map(|(id, scope)| (scope.parent == Some(cx.current_scope)).then_some(id))
+        .child_of(cx.current_scope)
         .expect("outer's body should have a child scope");
     let def =
         declared_def(&cx, body_scope, Namespace::Value, "inner").expect("inner should be declared");
@@ -1165,14 +1156,14 @@ fn fn_body_scope(cx: &TypeCheckContext<'_>, def: DefId) -> ScopeId {
     }
 }
 
-fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String {
+fn generics_list(registry: &GenericRegistry, generics: &[GenericId]) -> String {
     if generics.is_empty() {
         return String::new();
     }
     let symbols: Vec<String> = generics
         .iter()
         .map(|id| {
-            generic_names
+            registry
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| "<generic>".to_owned())
@@ -1183,9 +1174,9 @@ fn generics_list(generic_names: &GenericNames, generics: &[GenericId]) -> String
 
 struct Renderer<'a> {
     inf: &'a mut InferenceTable,
-    defs: &'a SlotMap<DefId, Def>,
+    defs: &'a Defs,
     symbols: &'a Interner,
-    generic_names: &'a GenericNames,
+    generics: &'a GenericRegistry,
 }
 
 impl<'ast> TypeCheckContext<'ast> {
@@ -1194,7 +1185,7 @@ impl<'ast> TypeCheckContext<'ast> {
             inf: &mut self.inf,
             defs: &self.defs,
             symbols: &self.symbols,
-            generic_names: &self.generic_names,
+            generics: &self.generics,
         }
     }
 
@@ -1296,7 +1287,7 @@ impl Renderer<'_> {
                 inputs_range.or(output_range)
             }
             TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
-                let symbol = self.defs[def].symbol;
+                let symbol = self.defs.get(def).symbol;
                 buf.push_str(self.symbols.resolve(symbol));
                 if !args.is_empty() {
                     buf.push('<');
@@ -1312,7 +1303,7 @@ impl Renderer<'_> {
             }
             TyKind::Generic(id) => {
                 let text = self
-                    .generic_names
+                    .generics
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| "<generic>".to_owned());
@@ -1323,10 +1314,10 @@ impl Renderer<'_> {
     }
 
     fn render_def_type(&mut self, def: DefId) -> String {
-        let ty = self.defs[def].ty();
+        let ty = self.defs.get(def).ty();
         let rendered = self.render_ty(ty);
-        let generics = self.defs[def].generics();
-        let generics_rendered = generics_list(self.generic_names, generics);
+        let generics = self.defs.get(def).generics();
+        let generics_rendered = generics_list(self.generics, generics);
         if generics_rendered.is_empty() {
             rendered
         } else {
@@ -1335,7 +1326,7 @@ impl Renderer<'_> {
     }
 
     fn describe_def(&mut self, def: DefId) -> String {
-        match &self.defs[def].kind {
+        match &self.defs.get(def).kind {
             DefKind::Fn(_) => self.describe_fn_item(def),
             DefKind::Param(_) => {
                 let symbol = self.def_display_symbol(def);
@@ -1360,30 +1351,30 @@ impl Renderer<'_> {
     }
 
     fn def_display_symbol(&mut self, def: DefId) -> String {
-        let symbol = self.defs[def].symbol;
+        let symbol = self.defs.get(def).symbol;
         self.symbols.resolve(symbol).to_owned()
     }
 
     fn alias_symbol_with_generics(&mut self, def: DefId) -> String {
         let symbol = self.def_display_symbol(def);
-        let generics = self.defs[def].generics();
-        let generics_rendered = generics_list(self.generic_names, generics);
+        let generics = self.defs.get(def).generics();
+        let generics_rendered = generics_list(self.generics, generics);
         format!("{symbol}{generics_rendered}")
     }
 
     fn describe_fn_item(&mut self, def: DefId) -> String {
-        let symbol = self.defs[def].symbol;
+        let symbol = self.defs.get(def).symbol;
         let symbol = self.symbols.resolve(symbol).to_owned();
 
-        let generics = self.defs[def].generics();
-        let generics_rendered = generics_list(self.generic_names, generics);
+        let generics = self.defs.get(def).generics();
+        let generics_rendered = generics_list(self.generics, generics);
 
-        let DefKind::Fn(FnDef { param_symbols, .. }) = &self.defs[def].kind else {
+        let DefKind::Fn(FnDef { param_symbols, .. }) = &self.defs.get(def).kind else {
             unreachable!("describe_fn_item is only ever called for a DefKind::Fn def");
         };
         let param_symbols = param_symbols.clone();
 
-        let ty = self.defs[def].ty();
+        let ty = self.defs.get(def).ty();
         let resolved = self.inf.resolve(ty);
         let Some(TyKind::Fn(param_types, output)) = self.inf.ty(resolved).cloned() else {
             return self.render_def_type(def);
@@ -2184,8 +2175,8 @@ fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
     let inferred = generics[1];
     assert_ne!(explicit, inferred, "should be two distinct GenericIds");
 
-    let explicit_symbol = cx.generic_names.get(&explicit).cloned();
-    let inferred_symbol = cx.generic_names.get(&inferred).cloned();
+    let explicit_symbol = cx.generics.get(&explicit).cloned();
+    let inferred_symbol = cx.generics.get(&inferred).cloned();
     assert_eq!(explicit_symbol.as_deref(), Some("T"));
     assert_ne!(
         explicit_symbol, inferred_symbol,

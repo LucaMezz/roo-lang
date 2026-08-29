@@ -44,7 +44,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn enclosing_free_vars(&mut self) -> HashSet<VarId> {
         let mut out = Vec::new();
-        self.checking_stack.clone().into_iter().for_each(|def| {
+        self.recursion.stack().to_vec().into_iter().for_each(|def| {
             let ty = self.def(def).ty();
             self.free_vars(ty, &mut out);
         });
@@ -53,7 +53,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     pub(crate) fn generalize_group(&mut self, members: &[DefId]) {
         // Restart synthetic names for generic type parameters back to `T`.
-        self.generic_names.reset_synthetic_counter();
+        self.generics.reset_synthetic_counter();
 
         let enclosing = self.enclosing_free_vars();
 
@@ -67,10 +67,10 @@ impl<'ast> TypeCheckContext<'ast> {
         // another function in the group. This is likely the cause of an
         // issue with LSP of mutually recursive functions where only one
         // explicitly specifies its generic type parameter.
-        let mut taken: HashSet<String> = self.generic_names.all_names();
+        let mut taken: HashSet<String> = self.generics.all_names();
         members.iter().for_each(|&def| {
             self.def(def).generics().iter().for_each(|id| {
-                if let Some(name) = self.generic_names.get(id) {
+                if let Some(name) = self.generics.get(id) {
                     taken.insert(name.clone());
                 }
             });
@@ -102,7 +102,7 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.iter().for_each(|(_, vars)| {
             vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
-                    let id = self.declare_synthetic_generic_param(&mut taken);
+                    let id = self.generics.declare_synthetic(&mut taken);
                     let generic_ty = self.ty(TyKind::Generic(id));
                     self.inf.bind(var, generic_ty);
                     entry.insert(id);
@@ -115,7 +115,7 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.into_iter().for_each(|(def, vars)| {
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
-                self.fn_def_mut(def).generics.push(id);
+                self.defs.fn_mut(def).generics.push(id);
             });
         });
     }

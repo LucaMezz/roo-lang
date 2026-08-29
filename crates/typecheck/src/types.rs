@@ -6,11 +6,11 @@
 
 use ast::{Pat, PatKind};
 use intern::Interner;
-use slotmap::SlotMap;
 
-use crate::generic_names::GenericNames;
+use crate::defs::Defs;
+use crate::generics::GenericRegistry;
 use crate::inference::{InferenceTable, TyId, VarId};
-use crate::{Def, DefId, GenericId, TypeCheckContext};
+use crate::{DefId, GenericId, TypeCheckContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
@@ -45,13 +45,13 @@ impl<'ast> TypeCheckContext<'ast> {
     // ty. This is done once the entirety of the type checking
     // process is completed.
     pub(crate) fn resolved(&mut self, ty: TyId) -> Type {
-        resolve_type(
-            &mut self.inf,
-            &self.defs,
-            &self.symbols,
-            &self.generic_names,
-            ty,
-        )
+        TypeResolver {
+            inf: &mut self.inf,
+            defs: &self.defs,
+            names: &self.symbols,
+            generics: &self.generics,
+        }
+        .resolve(ty)
     }
 }
 
@@ -116,68 +116,56 @@ impl diagnostics::ToArgValue for Type {
     }
 }
 
-/// Converts an intermediate `ty` used throughout type checking
-/// into a fully-resolved `Type`. This essentially freezes the ty,
+/// Converts intermediate `ty`s used throughout type checking into
+/// fully-resolved [`Type`]s. This essentially freezes each ty,
 /// replacing any still unbound inference variables with
 /// [`Type::Unresolved`].
 ///
-/// The resulting `Type` is recursive and can be read entirely on
-/// its own without needing to have access to names, defs,
+/// The resulting `Type`s are recursive and can be read entirely on
+/// their own without needing to have access to names, defs,
 /// generics, or the unification context.
-pub(crate) fn resolve_type(
-    inf: &mut InferenceTable,
-    defs: &SlotMap<DefId, Def>,
-    names: &Interner,
-    generic_names: &GenericNames,
-    ty: TyId,
-) -> Type {
-    let resolved = inf.resolve(ty);
-    let Some(kind) = inf.ty(resolved).cloned() else {
-        return Type::Unresolved;
-    };
+pub(crate) struct TypeResolver<'a> {
+    pub(crate) inf: &'a mut InferenceTable,
+    pub(crate) defs: &'a Defs,
+    pub(crate) names: &'a Interner,
+    pub(crate) generics: &'a GenericRegistry,
+}
 
-    match kind {
-        TyKind::Var(_) => Type::Unresolved,
-        TyKind::Never => Type::Never,
-        TyKind::Int => Type::Int,
-        TyKind::Float => Type::Float,
-        TyKind::Bool => Type::Bool,
-        TyKind::Str => Type::Str,
-        TyKind::Err => Type::Err,
-        TyKind::Array(elem) => Type::Array(Box::new(resolve_type(
-            inf,
-            defs,
-            names,
-            generic_names,
-            elem,
-        ))),
-        TyKind::Tuple(args) => Type::Tuple(
-            args.iter()
-                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
-                .collect(),
-        ),
-        TyKind::Fn(params, output) => {
-            let params = params
-                .iter()
-                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
-                .collect();
-            let output = Box::new(resolve_type(inf, defs, names, generic_names, output));
-            Type::Fn(params, output)
-        }
-        TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
-            let name = defs[def].symbol;
-            let args = args
-                .iter()
-                .map(|&arg| resolve_type(inf, defs, names, generic_names, arg))
-                .collect();
-            Type::Named(names.resolve(name).to_owned(), args)
-        }
-        TyKind::Generic(id) => {
-            let text = generic_names
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| "<generic>".to_owned());
-            Type::Generic(text)
+impl TypeResolver<'_> {
+    pub(crate) fn resolve(&mut self, ty: TyId) -> Type {
+        let resolved = self.inf.resolve(ty);
+        let Some(kind) = self.inf.ty(resolved).cloned() else {
+            return Type::Unresolved;
+        };
+
+        match kind {
+            TyKind::Var(_) => Type::Unresolved,
+            TyKind::Never => Type::Never,
+            TyKind::Int => Type::Int,
+            TyKind::Float => Type::Float,
+            TyKind::Bool => Type::Bool,
+            TyKind::Str => Type::Str,
+            TyKind::Err => Type::Err,
+            TyKind::Array(elem) => Type::Array(Box::new(self.resolve(elem))),
+            TyKind::Tuple(args) => Type::Tuple(args.iter().map(|&arg| self.resolve(arg)).collect()),
+            TyKind::Fn(params, output) => {
+                let params = params.iter().map(|&arg| self.resolve(arg)).collect();
+                let output = Box::new(self.resolve(output));
+                Type::Fn(params, output)
+            }
+            TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
+                let name = self.defs.get(def).symbol;
+                let args = args.iter().map(|&arg| self.resolve(arg)).collect();
+                Type::Named(self.names.resolve(name).to_owned(), args)
+            }
+            TyKind::Generic(id) => {
+                let text = self
+                    .generics
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| "<generic>".to_owned());
+                Type::Generic(text)
+            }
         }
     }
 }

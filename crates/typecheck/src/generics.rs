@@ -1,12 +1,21 @@
-//! Contains the [`GenericNames`] struct, with methods that
-//! facilitate the naming and storage of generic type parameters
-//! throughout the type checking process.
+//! Contains the [`GenericRegistry`] struct, the registry of every generic
+//! type parameter that exists in the program: its identity and its
+//! display name.
 use std::collections::{HashMap, HashSet};
 
-use crate::GenericId;
+use slotmap::SlotMap;
 
-/// Facilitates the storage and synthesis of names for generic
-/// parameters throughout the type checking process.
+slotmap::new_key_type! {
+    /// A handle to a generic parameter stored in [`GenericRegistry`].
+    pub struct GenericId;
+}
+
+/// The registry of every generic type parameter in the program.
+///
+/// A [`GenericId`] never exists without a name, so this struct owns
+/// both together: minting a fresh id always immediately assigns it
+/// a name, whether explicit (as written in the source) or
+/// synthesised.
 ///
 /// Synthesis of a generic parameter name occurs whenever a
 /// function or a group of functions generalise a free type
@@ -15,7 +24,15 @@ use crate::GenericId;
 /// so that these parameters can be displayed as any other
 /// generic parameter would be in diagnostics, etc.
 #[derive(Default)]
-pub(crate) struct GenericNames {
+pub(crate) struct GenericRegistry {
+    /// Identifies a unique generic type parameter which appears
+    /// somewhere in the program.
+    ///
+    /// TODO No need for a SlotMap here. GenericIds are never
+    /// deleted from the arena, so no need for a generational
+    /// arena.
+    ids: SlotMap<GenericId, ()>,
+
     /// A mapping from [`GenericId`] to the name of the
     /// generic parameter.
     names: HashMap<GenericId, String>,
@@ -26,15 +43,27 @@ pub(crate) struct GenericNames {
     synthetic_counter: u32,
 }
 
-impl GenericNames {
-    /// Creates a new blank [`GenericNames`].
+impl GenericRegistry {
+    /// Creates a new blank [`GenericRegistry`].
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Stores a new name for the given generic parameter.
-    pub(crate) fn declare(&mut self, id: GenericId, name: String) {
+    /// Mints a new [`GenericId`] and stores the given name for it,
+    /// so that a generic parameter can never exist without a name
+    /// or vice versa.
+    pub(crate) fn declare_new(&mut self, name: String) -> GenericId {
+        let id = self.ids.insert(());
         self.names.insert(id, name);
+        id
+    }
+
+    /// Mints a new [`GenericId`] with a synthesised name, given a
+    /// set of names which have already been taken. See
+    /// [`Self::fresh_synthetic`].
+    pub(crate) fn declare_synthetic(&mut self, taken: &mut HashSet<String>) -> GenericId {
+        let name = self.fresh_synthetic(taken);
+        self.declare_new(name)
     }
 
     /// Retireves the name of a generic parameter, if it has
@@ -113,7 +142,7 @@ impl GenericNames {
     /// ```ignore
     /// fn pair<T, U>(x: T, y: U) -> (T, U)
     /// ```
-    pub(crate) fn fresh_synthetic(&mut self, taken: &mut HashSet<String>) -> String {
+    fn fresh_synthetic(&mut self, taken: &mut HashSet<String>) -> String {
         std::iter::from_fn(|| Some(self.next_synthetic()))
             .find(|name| taken.insert(name.clone()))
             .expect("infinitely many candidate names are generated")
