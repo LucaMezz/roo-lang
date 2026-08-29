@@ -60,8 +60,7 @@ impl Resolver<'_, '_> {
             f.ident.span,
             FnDef {
                 scope,
-                param_spans: Vec::new(),
-                param_symbols: Vec::new(),
+                params: Vec::new(),
                 ty,
                 generics: Vec::new(),
             },

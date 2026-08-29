@@ -590,7 +590,7 @@ impl<'ast> TypeCheckContext<'ast> {
             ExprKind::Path(None, path) => self
                 .resolve_path_to_value(path)
                 .and_then(|def| self.def(def).as_fn())
-                .map(|fn_data| fn_data.param_spans.clone())
+                .map(|fn_data| fn_data.params.iter().map(|p| p.span).collect())
                 .unwrap_or_default(),
             _ => Vec::new(),
         };

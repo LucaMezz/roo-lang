@@ -1369,10 +1369,10 @@ impl Renderer<'_> {
         let generics = self.defs.get(def).generics();
         let generics_rendered = generics_list(self.generics, generics);
 
-        let DefKind::Fn(FnDef { param_symbols, .. }) = &self.defs.get(def).kind else {
+        let DefKind::Fn(FnDef { params, .. }) = &self.defs.get(def).kind else {
             unreachable!("describe_fn_item is only ever called for a DefKind::Fn def");
         };
-        let param_symbols = param_symbols.clone();
+        let param_symbols: Vec<String> = params.iter().map(|p| p.symbol.clone()).collect();
 
         let ty = self.defs.get(def).ty();
         let resolved = self.inf.resolve(ty);

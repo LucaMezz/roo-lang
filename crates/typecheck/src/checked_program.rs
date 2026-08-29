@@ -50,8 +50,8 @@ impl<'ast> TypeCheckContext<'ast> {
                 })
                 .collect();
             let kind = match &def.kind {
-                DefKind::Fn(FnDef { param_symbols, .. }) => FrozenDefKind::Fn {
-                    param_symbols: param_symbols.clone(),
+                DefKind::Fn(FnDef { params, .. }) => FrozenDefKind::Fn {
+                    param_symbols: params.iter().map(|p| p.symbol.clone()).collect(),
                 },
                 DefKind::Param(_) => FrozenDefKind::Param,
                 DefKind::Local(_) => FrozenDefKind::Local,

@@ -8,6 +8,7 @@ use ast::{
 };
 use intern::Symbol;
 
+use crate::defs::Param;
 use crate::errors::{InvalidGlobTarget, UnresolvedImport};
 use crate::inference::TyId;
 use crate::resolve::Resolver;
@@ -96,21 +97,19 @@ impl SignatureLowerer<'_, '_> {
             // ty created by lowering the function signature.
             let _ = this.cx.inf.unify(def_ty, fn_ty);
 
-            // Collect information about parameter symbols and spans.
-            let param_symbols: Vec<String> = f
+            // Collect each parameter's symbol and type-annotation span
+            // together, in one pass, so they can never end up out of
+            // step with each other (see `Param`).
+            let params: Vec<Param> = f
                 .sig
                 .inputs
                 .iter()
-                .map(|p| types::pat_display_name(&p.pat, &this.cx.symbols))
+                .map(|p| Param {
+                    symbol: types::pat_display_name(&p.pat, &this.cx.symbols),
+                    span: p.ty.as_ref().map(|ty| ty.span),
+                })
                 .collect();
-            let fn_data = this.cx.defs.fn_mut(def);
-            fn_data.param_spans = f
-                .sig
-                .inputs
-                .iter()
-                .map(|p| p.ty.as_ref().map(|ty| ty.span))
-                .collect();
-            fn_data.param_symbols = param_symbols;
+            this.cx.defs.fn_mut(def).params = params;
             f.walk(this);
         });
     }

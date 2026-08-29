@@ -142,19 +142,34 @@ pub(crate) struct FnDef {
     /// A handle to the scope of the function body.
     pub(crate) scope: ScopeId,
 
-    /// The span of each of the parameters of the function
-    /// within the source code.
-    pub(crate) param_spans: Vec<Option<Span>>,
-
-    /// The symbol of each of the parameters as they appear
-    /// in the source code.
-    pub(crate) param_symbols: Vec<String>,
+    /// The parameters of the function, in declaration order.
+    pub(crate) params: Vec<Param>,
 
     /// The ty representing the type of this function.
     pub(crate) ty: TyId,
 
     /// The generic parameters associated with this function.
     pub(crate) generics: Vec<GenericId>,
+}
+
+/// One parameter of a function, as it appeared in its signature.
+///
+/// Bundles the parameter's symbol and the span of its type
+/// annotation, which previously lived in two separate
+/// `Vec<String>`/`Vec<Option<Span>>` fields on [`FnDef`] populated by
+/// two separate passes over `f.sig.inputs`. Nothing tied their
+/// lengths or ordering together, so a future edit to either pass
+/// could silently desync a parameter's name from its span. Bundling
+/// them into one `Vec<Param>`, filled in a single pass, makes that
+/// desync impossible to represent: there is only one length and one
+/// order to get right.
+#[derive(Debug, Clone)]
+pub(crate) struct Param {
+    /// The parameter's symbol, as it appears in the source code.
+    pub(crate) symbol: String,
+
+    /// The span of the parameter's type annotation, if it has one.
+    pub(crate) span: Option<Span>,
 }
 
 /// Extra information about a type alias def.
