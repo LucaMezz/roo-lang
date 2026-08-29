@@ -1,6 +1,8 @@
 //! Contains the [`GenericRegistry`] struct, the registry of every generic
 //! type parameter that exists in the program: its identity and its
-//! display name.
+//! display name. Also contains [`SyntheticNames`], a local, one-off
+//! source of fresh generic parameter names for a single generalisation
+//! or synthesis scope.
 use std::collections::{HashMap, HashSet};
 
 use slotmap::SlotMap;
@@ -10,19 +12,6 @@ slotmap::new_key_type! {
     pub struct GenericId;
 }
 
-/// The registry of every generic type parameter in the program.
-///
-/// A [`GenericId`] never exists without a name, so this struct owns
-/// both together: minting a fresh id always immediately assigns it
-/// a name, whether explicit (as written in the source) or
-/// synthesised.
-///
-/// Synthesis of a generic parameter name occurs whenever a
-/// function or a group of functions generalise a free type
-/// inference variable into a new generic type parameter.
-/// These synthesised generic parameters are assigned names
-/// so that these parameters can be displayed as any other
-/// generic parameter would be in diagnostics, etc.
 #[derive(Default)]
 pub(crate) struct GenericRegistry {
     /// Identifies a unique generic type parameter which appears
@@ -36,11 +25,6 @@ pub(crate) struct GenericRegistry {
     /// A mapping from [`GenericId`] to the name of the
     /// generic parameter.
     names: HashMap<GenericId, String>,
-
-    /// A counter that tracks how many generic parameters
-    /// have already been synthesised within the current
-    /// context.
-    synthetic_counter: u32,
 }
 
 impl GenericRegistry {
@@ -58,12 +42,10 @@ impl GenericRegistry {
         id
     }
 
-    /// Mints a new [`GenericId`] with a synthesised name, given a
-    /// set of names which have already been taken. See
-    /// [`Self::fresh_synthetic`].
-    pub(crate) fn declare_synthetic(&mut self, taken: &mut HashSet<String>) -> GenericId {
-        let name = self.fresh_synthetic(taken);
-        self.declare_new(name)
+    /// Mints a new [`GenericId`] with a name drawn from `names`. See
+    /// [`SyntheticNames`].
+    pub(crate) fn declare_synthetic(&mut self, names: &mut SyntheticNames) -> GenericId {
+        self.declare_new(names.fresh())
     }
 
     /// Retireves the name of a generic parameter, if it has
@@ -71,46 +53,52 @@ impl GenericRegistry {
     pub(crate) fn get(&self, id: &GenericId) -> Option<&String> {
         self.names.get(id)
     }
+}
 
-    /// Returns every name assigned to a generic parameter so far,
-    /// whether explicit or synthesised. Used to seed the `taken`
-    /// set before generalising a new function or group of
-    /// functions, so that a synthesised name never collides with
-    /// one already assigned to a *different* [`GenericId`] that
-    /// may end up embedded in the same rendered signature (e.g. a
-    /// nested function's generic showing up inside its enclosing
-    /// function's type once the enclosing function returns it).
-    pub(crate) fn all_names(&self) -> HashSet<String> {
-        self.names.values().cloned().collect()
+#[derive(Default)]
+pub(crate) struct SyntheticNames {
+    /// Names that must not be handed out: reserved via
+    /// [`Self::reserve`], or returned by an earlier call to
+    /// [`Self::fresh`] on this same instance.
+    taken: HashSet<String>,
+
+    /// How many names this scope has synthesised so far.
+    counter: u32,
+}
+
+impl SyntheticNames {
+    /// Starts a new, empty source of fresh names for one scope.
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
-    /// Resets the internal synthetic counter back to 0. Used
-    /// whenever beginning to generalise a new function or group
-    /// of functions, since we would like them to reuse the same
-    /// generic names.
-    pub(crate) fn reset_synthetic_counter(&mut self) {
-        self.synthetic_counter = 0;
+    /// Reserves `name` so this scope's synthesis skips it. Used for
+    /// names local to this scope that aren't yet in the registry --
+    /// e.g. a function's own explicit generic type parameters, which
+    /// still need to be avoided even though the function that owns
+    /// them may not itself have been generalised yet. For example:
+    /// ```ignore
+    /// fn pair<T>(x: T, y) {
+    ///     (x, y)
+    /// }
+    /// ```
+    /// The function above has an explicit generic type parameter `T`,
+    /// but the variable `y` has no bound type. Reserving `T` before
+    /// synthesising means the next call to [`Self::fresh`] returns
+    /// `U`, not `T`, giving the function signature:
+    /// ```ignore
+    /// fn pair<T, U>(x: T, y: U) -> (T, U)
+    /// ```
+    pub(crate) fn reserve(&mut self, name: String) {
+        self.taken.insert(name);
     }
 
     /// Generates a new synthetic name for a generic type parameter
-    /// based on the number of generic names already synthesised.
-    /// For example:
-    /// ```ignore
-    /// fn identity(x) {
-    ///     x
-    /// }
-    /// ```
-    /// `x` has no bound type, so generalisation introduces a new
-    /// generic type parameter. `next_synthetic` is called to
-    /// assign a name to such a parameter, and so the inferred
-    /// signature of the function would be
-    /// ```ignore
-    /// fn identity(x: T) -> T
-    /// ```
-    fn next_synthetic(&mut self) -> String {
+    /// based on how many names this scope has synthesised so far.
+    fn next(&mut self) -> String {
         const LETTERS: [char; 7] = ['T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
-        let n = self.synthetic_counter;
-        self.synthetic_counter += 1;
+        let n = self.counter;
+        self.counter += 1;
         let letter = LETTERS[(n % LETTERS.len() as u32) as usize];
         let suffix = n / LETTERS.len() as u32;
         if suffix == 0 {
@@ -120,31 +108,13 @@ impl GenericRegistry {
         }
     }
 
-    /// Generates a new synthetic name for a generic type parameter
-    /// based on the number of generic names already synthesised, and
-    /// given a set of names which have already been taken.
-    ///
-    /// Used in functions which may already have explicit generic
-    /// type parameters included in the source, but which still has
-    /// free inference variables that need generalisation. This is
-    /// used to prevent a synthetic name from colliding with the
-    /// existing explicit names. For example:
-    /// ```ignore
-    /// fn pair<T>(x: T, y) {
-    ///     (x, y)
-    /// }
-    /// ```
-    /// The function above has an explicit generic type parameter `T`,
-    /// but the variable `y` has no bound type. Generalisation
-    /// calls `fresh_synthetic` with `T` in the taken set, which will
-    /// ignore the `T` and instead return `U` which is not taken.
-    /// This infers the function signature to be:
-    /// ```ignore
-    /// fn pair<T, U>(x: T, y: U) -> (T, U)
-    /// ```
-    fn fresh_synthetic(&mut self, taken: &mut HashSet<String>) -> String {
-        std::iter::from_fn(|| Some(self.next_synthetic()))
-            .find(|name| taken.insert(name.clone()))
-            .expect("infinitely many candidate names are generated")
+    /// Returns the next name in this scope that isn't already taken.
+    fn fresh(&mut self) -> String {
+        loop {
+            let name = self.next();
+            if self.taken.insert(name.clone()) {
+                return name;
+            }
+        }
     }
 }

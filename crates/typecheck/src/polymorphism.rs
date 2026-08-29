@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use ast::{GenericArg, Path, Span};
 
 use crate::errors::GenericArgumentCountMismatch;
+use crate::generics::SyntheticNames;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
 use crate::{DefId, GenericId, TyId, TypeCheckContext, VarId};
@@ -51,30 +52,45 @@ impl<'ast> TypeCheckContext<'ast> {
         out.into_iter().collect()
     }
 
-    pub(crate) fn generalize_group(&mut self, members: &[DefId]) {
-        // Restart synthetic names for generic type parameters back to `T`.
-        self.generics.reset_synthetic_counter();
+    /// Reserves `def`'s own generic parameters' names in `names`, so a
+    /// synthesised name never collides with one belonging to a
+    /// *different* [`GenericId`] that's actually relevant to the
+    /// current synthesis scope: `def`'s own generics, or (for the
+    /// caller who loops this over `self.recursion.stack()`) an
+    /// enclosing function's generics, since a nested function's
+    /// synthesised generic can end up embedded in an enclosing
+    /// function's rendered signature once it returns it.
+    pub(crate) fn reserve_declared_generics(&self, def: DefId, names: &mut SyntheticNames) {
+        self.def(def).generics().iter().for_each(|id| {
+            if let Some(name) = self.generics.get(id) {
+                names.reserve(name.clone());
+            }
+        });
+    }
 
+    pub(crate) fn generalize_group(&mut self, members: &[DefId]) {
         let enclosing = self.enclosing_free_vars();
 
-        // Gather all explicit generic type parameters from the signature
-        // of all of the functions within this group. Used to avoid
-        // any synthesised names which may be produced from having the same
-        // name as existing generic type parameters.
+        // A fresh, local source of synthesised names for this group --
+        // always starts at `T`, see `SyntheticNames`. Reserve names
+        // already used by this group's own members, and by any
+        // enclosing functions currently being checked (see
+        // `reserve_declared_generics`).
         //
         // FIXME Ensure that generic type parameter names being taken in
         // one function, do not prevent the names from being used in
         // another function in the group. This is likely the cause of an
         // issue with LSP of mutually recursive functions where only one
         // explicitly specifies its generic type parameter.
-        let mut taken: HashSet<String> = self.generics.all_names();
-        members.iter().for_each(|&def| {
-            self.def(def).generics().iter().for_each(|id| {
-                if let Some(name) = self.generics.get(id) {
-                    taken.insert(name.clone());
-                }
-            });
-        });
+        let mut names = SyntheticNames::new();
+        members
+            .iter()
+            .for_each(|&def| self.reserve_declared_generics(def, &mut names));
+        self.recursion
+            .stack()
+            .to_vec()
+            .into_iter()
+            .for_each(|def| self.reserve_declared_generics(def, &mut names));
 
         // Begin the process of generalisation of nested functions for
         // each individual function in the group with members provided.
@@ -102,7 +118,7 @@ impl<'ast> TypeCheckContext<'ast> {
         per_member_vars.iter().for_each(|(_, vars)| {
             vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
-                    let id = self.generics.declare_synthetic(&mut taken);
+                    let id = self.generics.declare_synthetic(&mut names);
                     let generic_ty = self.ty(TyKind::Generic(id));
                     self.inf.bind(var, generic_ty);
                     entry.insert(id);

@@ -10,6 +10,7 @@ use intern::Symbol;
 
 use crate::defs::Param;
 use crate::errors::{InvalidGlobTarget, UnresolvedImport};
+use crate::generics::SyntheticNames;
 use crate::inference::TyId;
 use crate::resolve::Resolver;
 use crate::types::{self, TyKind};
@@ -226,12 +227,20 @@ impl SignatureLowerer<'_, '_> {
         });
     }
 
-    fn lower_variant_data_field_tys(&mut self, data: &VariantData) -> (Vec<TyId>, Vec<GenericId>) {
+    /// Lowers `data`'s field types, synthesising a fresh generic for
+    /// each field with no type annotation, drawn from `names`. `names`
+    /// is threaded in by the caller (rather than started fresh here)
+    /// so that sibling variants of the same enum share one synthesis
+    /// scope and can't assign the same name to two different generics.
+    fn lower_variant_data_field_tys(
+        &mut self,
+        data: &VariantData,
+        names: &mut SyntheticNames,
+    ) -> (Vec<TyId>, Vec<GenericId>) {
         let fields = match data {
             VariantData::Unit => return (vec![], vec![]),
             VariantData::Tuple(fields) | VariantData::Struct(fields) => fields,
         };
-        let mut taken = self.cx.generics.all_names();
         let mut synthesized = Vec::new();
         let tys = fields
             .iter()
@@ -241,7 +250,7 @@ impl SignatureLowerer<'_, '_> {
                     .as_ref()
                     .map(|ty| self.cx.lower_ty(ty))
                     .unwrap_or_else(|| {
-                        let id = self.cx.generics.declare_synthetic(&mut taken);
+                        let id = self.cx.generics.declare_synthetic(names);
                         synthesized.push(id);
                         self.cx.ty(TyKind::Generic(id))
                     })
@@ -283,7 +292,9 @@ impl SignatureLowerer<'_, '_> {
 
     fn lower_struct_item(&mut self, ident: &Ident, data: &VariantData) {
         self.with_struct_scope(ident.symbol, |this, def| {
-            let (lowered, synthesized) = this.lower_variant_data_field_tys(data);
+            let mut names = SyntheticNames::new();
+            this.cx.reserve_declared_generics(def.id(), &mut names);
+            let (lowered, synthesized) = this.lower_variant_data_field_tys(data, &mut names);
             this.cx
                 .defs
                 .struct_mut(def)
@@ -307,10 +318,15 @@ impl SignatureLowerer<'_, '_> {
 
     fn lower_enum_item(&mut self, ident: &Ident, def: &AstEnumDef) {
         self.with_enum_scope(ident.symbol, |this, id| {
+            // One `SyntheticNames`, shared across every variant, so a
+            // field synthesised for one variant reserves its name
+            // against the others too (see `lower_variant_data_field_tys`).
+            let mut names = SyntheticNames::new();
+            this.cx.reserve_declared_generics(id.id(), &mut names);
             let results: Vec<(Vec<TyId>, Vec<GenericId>)> = def
                 .variants
                 .iter()
-                .map(|v| this.lower_variant_data_field_tys(&v.data))
+                .map(|v| this.lower_variant_data_field_tys(&v.data, &mut names))
                 .collect();
             let (lowered, synthesised): (Vec<Vec<TyId>>, Vec<Vec<GenericId>>) =
                 results.into_iter().unzip();

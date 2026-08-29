@@ -1019,6 +1019,80 @@ fn lower_signatures_ty_alias() {
 }
 
 #[test]
+fn lower_signatures_each_struct_synthesises_field_generics_starting_from_t_independently() {
+    // Regression test: struct/enum field synthesis used to share one
+    // ever-incrementing counter across the whole program, so `First`
+    // would correctly synthesise `T` for its untyped field but
+    // `Second` would get `U` instead of independently restarting at
+    // `T`.
+    let mut cx = resolve_and_lower(
+        r#"
+struct First { value }
+struct Second { value }
+"#,
+    );
+
+    let first_path = path(&mut cx.symbols, &["First"]);
+    let first = cx
+        .resolve_path_to_type(&first_path)
+        .expect("First should resolve");
+    let second_path = path(&mut cx.symbols, &["Second"]);
+    let second = cx
+        .resolve_path_to_type(&second_path)
+        .expect("Second should resolve");
+
+    let first_field_ty = cx
+        .def(first)
+        .variant()
+        .expect("First is a struct")
+        .fields[0]
+        .ty;
+    let second_field_ty = cx
+        .def(second)
+        .variant()
+        .expect("Second is a struct")
+        .fields[0]
+        .ty;
+
+    assert_eq!(cx.renderer().render_ty(first_field_ty), "T");
+    assert_eq!(cx.renderer().render_ty(second_field_ty), "T");
+}
+
+#[test]
+fn lower_signatures_sibling_enum_variants_synthesise_field_generics_without_colliding() {
+    // Unrelated structs each independently get `T` (see the test
+    // above), but sibling variants of the *same* enum are a different
+    // case: they must NOT collide, since two distinct generics named
+    // `T` on the same enum would be ambiguous. One `SyntheticNames` is
+    // shared across all of an enum's variants for exactly this reason.
+    let mut cx = resolve_and_lower(
+        r#"
+enum Either {
+    A { value },
+    B { value },
+}
+"#,
+    );
+
+    let target = path(&mut cx.symbols, &["Either"]);
+    let either = cx
+        .resolve_path_to_type(&target)
+        .expect("Either should resolve");
+
+    let DefKind::Enum(EnumDef { variants, .. }) = &cx.defs.get(either).kind else {
+        panic!("Either should be an enum");
+    };
+    let variants: Vec<DefId> = variants.iter().map(|v| v.id()).collect();
+    assert_eq!(variants.len(), 2);
+
+    let a_field_ty = cx.def(variants[0]).variant().expect("A is a variant").fields[0].ty;
+    let b_field_ty = cx.def(variants[1]).variant().expect("B is a variant").fields[0].ty;
+
+    assert_eq!(cx.renderer().render_ty(a_field_ty), "T");
+    assert_eq!(cx.renderer().render_ty(b_field_ty), "U");
+}
+
+#[test]
 fn lower_signatures_recurses_into_a_fns_own_body() {
     let mut cx = resolve_and_lower("fn outer() { fn inner(x: int) -> bool { true } }");
     let body_scope = cx
