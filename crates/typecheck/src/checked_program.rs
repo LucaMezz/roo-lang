@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ast::Item;
+use ast::{Item, SELF_PARAM};
 use diagnostics::Diagnostic;
 use intern::Interner;
 
@@ -200,12 +200,10 @@ fn describe_fn_item(bind: &FrozenDef, param_symbols: &[String]) -> String {
     let params: Vec<String> = params
         .iter()
         .enumerate()
-        .map(|(i, ty)| {
-            let rendered = ty.render();
-            match param_symbols.get(i) {
-                Some(symbol) => format!("{symbol}: {rendered}"),
-                None => rendered,
-            }
+        .map(|(i, ty)| match param_symbols.get(i) {
+            Some(symbol) if symbol == SELF_PARAM => symbol.clone(),
+            Some(symbol) => format!("{symbol}: {}", ty.render()),
+            None => ty.render(),
         })
         .collect();
     format!(

@@ -162,7 +162,7 @@ fn self_param<'src>() -> impl RooParser<'src, Param> {
         pat: Box::new(Pat {
             kind: PatKind::Ident(
                 Ident {
-                    symbol: intern(e, "self"),
+                    symbol: intern(e, SELF_PARAM),
                     span: span(e),
                 },
                 None,
@@ -558,7 +558,7 @@ mod tests {
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert_eq!(state.resolve(ident.symbol), "self");
+        assert_eq!(state.resolve(ident.symbol), SELF_PARAM);
         assert!(matches!(
             f.sig.inputs[0].ty.as_deref().map(|ty| &ty.kind),
             Some(TyKind::ImplicitSelf)
@@ -583,7 +583,7 @@ mod tests {
                 f.sig.inputs[0].pat.kind
             );
         };
-        assert_eq!(state.resolve(ident.symbol), "self");
+        assert_eq!(state.resolve(ident.symbol), SELF_PARAM);
     }
 
     #[test]

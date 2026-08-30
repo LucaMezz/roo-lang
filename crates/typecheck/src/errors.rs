@@ -320,6 +320,58 @@ impl MissingTraitItem {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 18, level = "error")]
+pub struct MissingSelfParam {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub trait_name: String,
+    #[diagnose(related)]
+    pub trait_declared_at: Option<Related>,
+}
+
+impl MissingSelfParam {
+    pub fn new(span: Span, name: String, trait_name: String, trait_span: Span) -> Self {
+        Self {
+            span,
+            name,
+            trait_name,
+            trait_declared_at: Some(Related {
+                span: trait_span,
+                message_id: "missing-self-param-declared-here",
+                args: Vec::new(),
+            }),
+        }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 19, level = "error")]
+pub struct UnexpectedSelfParam {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub trait_name: String,
+    #[diagnose(related)]
+    pub trait_declared_at: Option<Related>,
+}
+
+impl UnexpectedSelfParam {
+    pub fn new(span: Span, name: String, trait_name: String, trait_span: Span) -> Self {
+        Self {
+            span,
+            name,
+            trait_name,
+            trait_declared_at: Some(Related {
+                span: trait_span,
+                message_id: "unexpected-self-param-declared-here",
+                args: Vec::new(),
+            }),
+        }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -339,6 +391,8 @@ diagnostics::catalog! {
         TupleIndexOutOfBounds,
         InvalidFieldAccess,
         MissingTraitItem,
+        MissingSelfParam,
+        UnexpectedSelfParam,
     }
 }
 

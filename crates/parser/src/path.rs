@@ -62,8 +62,8 @@ fn path_segment_ident<'src>() -> impl RooParser<'src, Ident> {
     choice((
         ident(),
         select! {
-            Token::SelfLower = e => Ident { symbol: intern(e, "self"), span: span(e) },
-            Token::SelfUpper = e => Ident { symbol: intern(e, "Self"), span: span(e) },
+            Token::SelfLower = e => Ident { symbol: intern(e, SELF_PARAM), span: span(e) },
+            Token::SelfUpper = e => Ident { symbol: intern(e, SELF_TYPE), span: span(e) },
             Token::Super = e => Ident { symbol: intern(e, "super"), span: span(e) },
         },
     ))
@@ -224,7 +224,7 @@ mod tests {
             .into_result()
             .expect("should parse");
         assert_eq!(parsed.segments.len(), 1);
-        assert_eq!(state.resolve(parsed.segments[0].ident.symbol), "Self");
+        assert_eq!(state.resolve(parsed.segments[0].ident.symbol), SELF_TYPE);
     }
 
     #[test]
@@ -240,7 +240,7 @@ mod tests {
             .iter()
             .map(|s| state.resolve(s.ident.symbol))
             .collect();
-        assert_eq!(names, vec!["Self", "Output"]);
+        assert_eq!(names, vec![SELF_TYPE, "Output"]);
     }
 
     #[test]

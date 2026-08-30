@@ -4,11 +4,12 @@
 use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
     AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Generics, Ident, Item, ItemKind, ModKind,
-    Span, Trait, TyAlias, VariantData,
+    SELF_TYPE, Span, Trait, TyAlias, VariantData,
 };
 use intern::Symbol;
 
 use crate::defs::{EnumDef, FieldDef, FnDef, ModDef, StructDef, TraitDef, TyAliasDef, VariantDef};
+use crate::types::TyKind;
 use crate::{CxExt, DefIdOf, GenericId, Namespace, ScopeId, TypeCheckContext};
 
 /// The AST Visitor that performs the Resolution stage of the
@@ -212,9 +213,19 @@ impl Resolver<'_, '_> {
         let generics = self.with_scope(scope, |this| {
             this.cx.declare_generic_params(&t.generics.params)
         });
-        self.cx
-            .declare_typed(t.ident.symbol, t.ident.span, TraitDef { scope, generics });
+        let self_generic = self.cx.generics.declare_new(SELF_TYPE.to_owned());
+        self.cx.declare_typed(
+            t.ident.symbol,
+            t.ident.span,
+            TraitDef {
+                scope,
+                generics,
+                self_generic,
+            },
+        );
         self.with_scope(scope, |this| {
+            let self_ty = this.cx.ty(TyKind::Generic(self_generic));
+            this.cx.declare_self_ty_alias(self_ty, t.ident.span);
             t.items.iter().for_each(|item| item.visit(this))
         })
     }

@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 
 use ast::visit::Visitor;
-use ast::{FnRetTy, FnTy, GenericParam, Item, ItemKind, Path, Span, Ty, TyKind as AstTyKind};
+use ast::{
+    FnRetTy, FnTy, GenericParam, Item, ItemKind, Path, SELF_TYPE, Span, Ty, TyKind as AstTyKind,
+};
 use intern::{Interner, Symbol};
 
 use crate::inference::{InferenceTable, TyId, VarId};
@@ -158,6 +160,8 @@ struct TypeCheckContext<'ast> {
     inference_vars: Vec<(VarId, Span)>,
 
     return_tys: Vec<TyId>,
+
+    self_tys: Vec<TyId>,
 }
 
 impl<'ast> TypeCheckContext<'ast> {
@@ -180,6 +184,7 @@ impl<'ast> TypeCheckContext<'ast> {
             items_by_def: HashMap::new(),
             impls_by_target: HashMap::new(),
             return_tys: Vec::new(),
+            self_tys: Vec::new(),
         }
     }
 
@@ -220,6 +225,10 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn current_return_ty(&self) -> Option<TyId> {
         self.return_tys.last().copied()
+    }
+
+    fn current_self_ty(&self) -> Option<TyId> {
+        self.self_tys.last().copied()
     }
 
     fn ty(&mut self, kind: TyKind) -> TyId {
@@ -687,6 +696,20 @@ impl<'ast> TypeCheckContext<'ast> {
             .collect()
     }
 
+    fn declare_self_ty_alias(&mut self, self_ty: TyId, span: Span) -> DefId {
+        let symbol = self.symbols.intern(SELF_TYPE);
+        self.declare_typed(
+            symbol,
+            span,
+            TyAliasDef {
+                scope: self.current_scope,
+                ty: self_ty,
+                generics: Vec::new(),
+            },
+        )
+        .id()
+    }
+
     /// Inserts a def into the current scope.
     fn insert_in_scope(&mut self, symbol: Symbol, def: DefId, namespace: Namespace) {
         self.scopes
@@ -747,7 +770,8 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn lower_implicit_self_ty(&mut self) -> TyId {
-        unimplemented!()
+        self.current_self_ty()
+            .unwrap_or_else(|| self.ty(TyKind::Err))
     }
 
     fn lower_path_ty(&mut self, path: &Path) -> TyId {
@@ -808,6 +832,13 @@ pub(crate) trait CxExt<'ast> {
         self.cx().current_scope = scope;
         let result = f(self);
         self.cx().current_scope = parent;
+        result
+    }
+
+    fn with_self_ty<T>(&mut self, self_ty: TyId, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.cx().self_tys.push(self_ty);
+        let result = f(self);
+        self.cx().self_tys.pop();
         result
     }
 

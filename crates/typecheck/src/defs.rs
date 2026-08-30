@@ -218,6 +218,7 @@ pub(crate) struct StructDef {
 pub(crate) struct TraitDef {
     pub(crate) scope: ScopeId,
     pub(crate) generics: Vec<GenericId>,
+    pub(crate) self_generic: GenericId,
 }
 
 #[derive(Debug)]

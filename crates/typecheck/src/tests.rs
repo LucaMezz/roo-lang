@@ -1345,6 +1345,352 @@ impl Into<bool> for Foo {
 }
 
 #[test]
+fn lower_signatures_impl_trait_item_mismatch_substitutes_self_with_the_impls_self_ty() {
+    let source = r#"
+trait Into<K> {
+    fn into(self) -> K;
+}
+impl Into<bool> for bool {
+    fn into() -> bool { true }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "`into` is missing a `self` parameter required by trait `Into`"
+    );
+    assert_eq!(
+        diagnostics[1].message(),
+        "expected `Fn(bool) -> bool`, found `Fn() -> bool`"
+    );
+}
+
+#[test]
+fn lower_signatures_impl_trait_item_replacing_self_with_a_same_typed_param_is_an_error() {
+    let source = r#"
+trait Into<K> {
+    fn into(self) -> K;
+}
+impl Into<bool> for bool {
+    fn into(x: bool) -> bool { x }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "`into` is missing a `self` parameter required by trait `Into`"
+    );
+}
+
+#[test]
+fn lower_signatures_impl_trait_item_adding_an_unexpected_self_param_is_an_error() {
+    let source = r#"
+trait Make<K> {
+    fn make() -> K;
+}
+impl Make<bool> for bool {
+    fn make(self) -> bool { self }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "`make` has a `self` parameter, but trait `Make` does not declare one"
+    );
+    assert_eq!(
+        diagnostics[1].message(),
+        "expected `Fn() -> bool`, found `Fn(bool) -> bool`"
+    );
+}
+
+#[test]
+fn lower_signatures_impl_trait_item_with_matching_self_param_has_no_diagnostics() {
+    let source = r#"
+trait Into<K> {
+    fn into(self) -> K;
+}
+impl Into<bool> for bool {
+    fn into(self) -> bool { self }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn lower_impl_item_self_param_resolves_to_the_impls_self_ty() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello(self) -> bool {
+        true
+    }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let foo_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Foo").expect("Foo should resolve");
+
+    let hello_offset = source.find("hello").expect("source contains hello");
+    let hello_def = cx
+        .def_at(hello_offset)
+        .expect("hello should have a recorded def");
+    let hello_ty = cx.def(hello_def).ty();
+
+    let Some(TyKind::Fn(params, _)) = resolved_kind(&mut cx, hello_ty) else {
+        panic!("expected a Fn ty");
+    };
+    assert_eq!(params.len(), 1);
+    let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, params[0]) else {
+        panic!("expected self param to resolve to a Struct ty");
+    };
+    assert_eq!(self_struct_def, foo_def);
+}
+
+#[test]
+fn lower_impl_item_self_param_is_specific_to_each_impl_block() {
+    let source = r#"
+struct Foo;
+struct Bar;
+impl Foo {
+    fn hello(self) -> bool { true }
+}
+impl Bar {
+    fn greet(self) -> bool { true }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let foo_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Foo").expect("Foo should resolve");
+    let bar_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Bar").expect("Bar should resolve");
+
+    let hello_def = cx
+        .def_at(source.find("hello").unwrap())
+        .expect("hello should have a recorded def");
+    let greet_def = cx
+        .def_at(source.find("greet").unwrap())
+        .expect("greet should have a recorded def");
+
+    let hello_ty = cx.def(hello_def).ty();
+    let greet_ty = cx.def(greet_def).ty();
+    let Some(TyKind::Fn(hello_params, _)) = resolved_kind(&mut cx, hello_ty) else {
+        panic!("expected a Fn ty");
+    };
+    let Some(TyKind::Fn(greet_params, _)) = resolved_kind(&mut cx, greet_ty) else {
+        panic!("expected a Fn ty");
+    };
+
+    let Some(TyKind::Struct(hello_self_def, _)) = resolved_kind(&mut cx, hello_params[0]) else {
+        panic!("expected self param to resolve to a Struct ty");
+    };
+    let Some(TyKind::Struct(greet_self_def, _)) = resolved_kind(&mut cx, greet_params[0]) else {
+        panic!("expected self param to resolve to a Struct ty");
+    };
+    assert_eq!(hello_self_def, foo_def);
+    assert_eq!(greet_self_def, bar_def);
+}
+
+#[test]
+fn lower_trait_item_self_param_resolves_to_a_generic_ty() {
+    let source = r#"
+trait Greet {
+    fn hello(self) -> int;
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let hello_offset = source.find("hello").expect("source contains hello");
+    let hello_def = cx
+        .def_at(hello_offset)
+        .expect("hello should have a recorded def");
+    let hello_ty = cx.def(hello_def).ty();
+
+    let Some(TyKind::Fn(params, _)) = resolved_kind(&mut cx, hello_ty) else {
+        panic!("expected a Fn ty");
+    };
+    assert_eq!(params.len(), 1);
+    assert!(matches!(
+        resolved_kind(&mut cx, params[0]),
+        Some(TyKind::Generic(_))
+    ));
+}
+
+#[test]
+fn lower_trait_item_self_param_is_consistent_across_the_traits_own_items() {
+    let source = r#"
+trait Greet {
+    fn hello(self) -> int;
+    fn bye(self) -> int;
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let hello_def = cx
+        .def_at(source.find("hello").unwrap())
+        .expect("hello should have a recorded def");
+    let bye_def = cx
+        .def_at(source.find("bye").unwrap())
+        .expect("bye should have a recorded def");
+
+    let hello_ty = cx.def(hello_def).ty();
+    let bye_ty = cx.def(bye_def).ty();
+    let Some(TyKind::Fn(hello_params, _)) = resolved_kind(&mut cx, hello_ty) else {
+        panic!("expected a Fn ty");
+    };
+    let Some(TyKind::Fn(bye_params, _)) = resolved_kind(&mut cx, bye_ty) else {
+        panic!("expected a Fn ty");
+    };
+
+    let Some(TyKind::Generic(hello_self)) = resolved_kind(&mut cx, hello_params[0]) else {
+        panic!("expected self param to resolve to a Generic ty");
+    };
+    let Some(TyKind::Generic(bye_self)) = resolved_kind(&mut cx, bye_params[0]) else {
+        panic!("expected self param to resolve to a Generic ty");
+    };
+    assert_eq!(hello_self, bye_self);
+}
+
+#[test]
+fn lower_trait_item_self_type_resolves_to_the_traits_self_generic() {
+    let source = r#"
+trait Make {
+    fn make() -> Self;
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let make_def = cx
+        .def_at(source.find("make").unwrap())
+        .expect("make should have a recorded def");
+    let make_ty = cx.def(make_def).ty();
+
+    let Some(TyKind::Fn(_, output)) = resolved_kind(&mut cx, make_ty) else {
+        panic!("expected a Fn ty");
+    };
+    assert!(matches!(
+        resolved_kind(&mut cx, output),
+        Some(TyKind::Generic(_))
+    ));
+}
+
+#[test]
+fn lower_trait_item_self_type_and_self_param_share_the_same_generic() {
+    let source = r#"
+trait Make {
+    fn make(self) -> Self;
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let make_def = cx
+        .def_at(source.find("make").unwrap())
+        .expect("make should have a recorded def");
+    let make_ty = cx.def(make_def).ty();
+
+    let Some(TyKind::Fn(params, output)) = resolved_kind(&mut cx, make_ty) else {
+        panic!("expected a Fn ty");
+    };
+    let Some(TyKind::Generic(param_generic)) = resolved_kind(&mut cx, params[0]) else {
+        panic!("expected self param to resolve to a Generic ty");
+    };
+    let Some(TyKind::Generic(output_generic)) = resolved_kind(&mut cx, output) else {
+        panic!("expected Self return type to resolve to a Generic ty");
+    };
+    assert_eq!(param_generic, output_generic);
+}
+
+#[test]
+fn lower_impl_item_self_type_resolves_to_the_impls_concrete_self_ty() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn make() -> Self {
+        Foo
+    }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let foo_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Foo").expect("Foo should resolve");
+
+    let make_def = cx
+        .def_at(source.find("make").unwrap())
+        .expect("make should have a recorded def");
+    let make_ty = cx.def(make_def).ty();
+
+    let Some(TyKind::Fn(_, output)) = resolved_kind(&mut cx, make_ty) else {
+        panic!("expected a Fn ty");
+    };
+    let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, output) else {
+        panic!("expected Self to resolve to a Struct ty");
+    };
+    assert_eq!(self_struct_def, foo_def);
+}
+
+#[test]
+fn lower_impl_item_self_type_is_specific_to_each_impl_block() {
+    let source = r#"
+struct Foo;
+struct Bar;
+impl Foo {
+    fn hello() -> Self { Foo }
+}
+impl Bar {
+    fn greet() -> Self { Bar }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let foo_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Foo").expect("Foo should resolve");
+    let bar_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Bar").expect("Bar should resolve");
+
+    let hello_def = cx
+        .def_at(source.find("hello").unwrap())
+        .expect("hello should have a recorded def");
+    let greet_def = cx
+        .def_at(source.find("greet").unwrap())
+        .expect("greet should have a recorded def");
+
+    let hello_ty = cx.def(hello_def).ty();
+    let greet_ty = cx.def(greet_def).ty();
+    let Some(TyKind::Fn(_, hello_output)) = resolved_kind(&mut cx, hello_ty) else {
+        panic!("expected a Fn ty");
+    };
+    let Some(TyKind::Fn(_, greet_output)) = resolved_kind(&mut cx, greet_ty) else {
+        panic!("expected a Fn ty");
+    };
+
+    let Some(TyKind::Struct(hello_self, _)) = resolved_kind(&mut cx, hello_output) else {
+        panic!("expected Self to resolve to a Struct ty");
+    };
+    let Some(TyKind::Struct(greet_self, _)) = resolved_kind(&mut cx, greet_output) else {
+        panic!("expected Self to resolve to a Struct ty");
+    };
+    assert_eq!(hello_self, foo_def);
+    assert_eq!(greet_self, bar_def);
+}
+
+#[test]
 fn target_implements_matches_when_the_query_args_unify_with_the_impls_trait_args() {
     let source = r#"
 trait Into<K> {
@@ -1869,12 +2215,10 @@ impl Renderer<'_> {
         let params: Vec<String> = param_types
             .iter()
             .enumerate()
-            .map(|(i, &ty)| {
-                let rendered = self.render_ty(ty);
-                match param_symbols.get(i) {
-                    Some(symbol) => format!("{symbol}: {rendered}"),
-                    None => rendered,
-                }
+            .map(|(i, &ty)| match param_symbols.get(i) {
+                Some(symbol) if symbol == ast::SELF_PARAM => symbol.clone(),
+                Some(symbol) => format!("{symbol}: {}", self.render_ty(ty)),
+                None => self.render_ty(ty),
             })
             .collect();
 
@@ -2248,6 +2592,38 @@ fn describe_def_a_parameter_is_prefixed_with_its_own_symbol() {
     let offset = source.find("x:").unwrap();
     let def = cx.def_at(offset).expect("should resolve at the parameter");
     assert_eq!(cx.describe_def(def), "x: int");
+}
+
+#[test]
+fn describe_def_a_self_parameter_hovered_directly_still_shows_its_type() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello(self) -> bool { true }
+}
+"#;
+    let mut cx = check_all(source);
+    let offset = source.find("self)").unwrap();
+    let def = cx
+        .def_at(offset)
+        .expect("should resolve at the self parameter");
+    assert_eq!(cx.describe_def(def), "self: Foo");
+}
+
+#[test]
+fn describe_def_a_fn_item_with_a_self_param_omits_its_type_in_the_signature() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello(self, n: int) -> bool { true }
+}
+"#;
+    let mut cx = check_all(source);
+    let offset = source.find("hello").unwrap();
+    let def = cx
+        .def_at(offset)
+        .expect("should resolve at the fn's own symbol");
+    assert_eq!(cx.describe_def(def), "fn hello(self, n: int) -> bool");
 }
 
 #[test]
@@ -2932,6 +3308,38 @@ fn freeze_describe_def_a_parameter_is_prefixed_with_its_own_symbol() {
         .def_at(offset)
         .expect("should resolve at the parameter");
     assert_eq!(frozen.describe_def(def), "x: int");
+}
+
+#[test]
+fn freeze_describe_def_a_self_parameter_hovered_directly_still_shows_its_type() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello(self) -> bool { true }
+}
+"#;
+    let frozen = check_all_frozen(source);
+    let offset = source.find("self)").unwrap();
+    let def = frozen
+        .def_at(offset)
+        .expect("should resolve at the self parameter");
+    assert_eq!(frozen.describe_def(def), "self: Foo");
+}
+
+#[test]
+fn freeze_describe_def_a_fn_item_with_a_self_param_omits_its_type_in_the_signature() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello(self, n: int) -> bool { true }
+}
+"#;
+    let frozen = check_all_frozen(source);
+    let offset = source.find("hello").unwrap();
+    let def = frozen
+        .def_at(offset)
+        .expect("should resolve at the fn's own symbol");
+    assert_eq!(frozen.describe_def(def), "fn hello(self, n: int) -> bool");
 }
 
 #[test]

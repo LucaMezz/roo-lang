@@ -6,13 +6,16 @@ use std::collections::HashMap;
 use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
     AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Ident, Impl, Item, ItemKind, ModKind,
-    Path, Span, Trait, TyAlias, UseTree, UseTreeKind, VariantData,
+    Path, SELF_PARAM, Span, Trait, TyAlias, UseTree, UseTreeKind, VariantData,
 };
 use intern::Symbol;
 
 use crate::check::TypeMismatchExtras;
 use crate::defs::{DefKind, Param, TraitDef};
-use crate::errors::{InvalidGlobTarget, MissingTraitItem, UnresolvedImport, expected_due_to};
+use crate::errors::{
+    InvalidGlobTarget, MissingSelfParam, MissingTraitItem, UnexpectedSelfParam, UnresolvedImport,
+    expected_due_to,
+};
 use crate::generics::SyntheticNames;
 use crate::inference::TyId;
 use crate::resolve::Resolver;
@@ -57,8 +60,12 @@ impl SignatureLowerer<'_, '_> {
 
 impl SignatureLowerer<'_, '_> {
     fn lower_trait_item(&mut self, trt: &Trait) {
-        self.with_trait_scope(trt.ident.symbol, |this, _def| {
-            trt.items.iter().for_each(|item| item.visit(this));
+        self.with_trait_scope(trt.ident.symbol, |this, def| {
+            let self_generic = this.cx.defs.trait_ref(def).self_generic;
+            let self_ty = this.cx.ty(TyKind::Generic(self_generic));
+            this.with_self_ty(self_ty, |this| {
+                trt.items.iter().for_each(|item| item.visit(this));
+            });
         });
     }
 
@@ -75,11 +82,15 @@ impl SignatureLowerer<'_, '_> {
             });
         });
 
+        let self_ty = self.with_scope(scope, |this| this.cx.lower_ty(&imp.self_ty));
+
         self.with_scope(scope, |this| {
-            imp.items.iter().for_each(|item| item.visit(this));
+            this.cx.declare_self_ty_alias(self_ty, imp.self_ty.span);
+            this.with_self_ty(self_ty, |this| {
+                imp.items.iter().for_each(|item| item.visit(this));
+            });
         });
 
-        let self_ty = self.with_scope(scope, |this| this.cx.lower_ty(&imp.self_ty));
         let resolved = self.cx.inf.resolve(self_ty);
         let target = self.cx.inf.ty(resolved).and_then(impl_target_of);
 
@@ -90,6 +101,8 @@ impl SignatureLowerer<'_, '_> {
                 let trait_generics = self.cx.defs.trait_ref(of_trait).generics.clone();
                 let mut subst =
                     self.with_scope(scope, |this| this.cx.subst_for(&trait_generics, path));
+                let self_generic = self.cx.defs.trait_ref(of_trait).self_generic;
+                subst.insert(self_generic, self_ty);
                 trait_args = self.cx.args_from_subst(&trait_generics, &mut subst);
                 self.check_trait_impl_complete(of_trait, scope, path.span, &mut subst);
             }
@@ -147,7 +160,48 @@ impl SignatureLowerer<'_, '_> {
         }
 
         for (trait_def, impl_def) in matched {
+            self.check_trait_item_self_matches(trait_def, impl_def, &trait_name);
             self.check_trait_item_ty_matches(trait_def, impl_def, subst);
+        }
+    }
+
+    fn check_trait_item_self_matches(
+        &mut self,
+        trait_def: DefId,
+        impl_def: DefId,
+        trait_name: &str,
+    ) {
+        let (Some(trait_fn), Some(impl_fn)) = (
+            self.cx.def(trait_def).as_fn(),
+            self.cx.def(impl_def).as_fn(),
+        ) else {
+            return;
+        };
+        let trait_has_self = trait_fn.params.first().is_some_and(|p| p.symbol == SELF_PARAM);
+        let impl_has_self = impl_fn.params.first().is_some_and(|p| p.symbol == SELF_PARAM);
+        if trait_has_self == impl_has_self {
+            return;
+        }
+
+        let impl_symbol = self.cx.def(impl_def).symbol;
+        let name = self.cx.symbols.resolve(impl_symbol).to_owned();
+        let trait_span = self.cx.def(trait_def).declared_at;
+        let impl_span = self.cx.def(impl_def).declared_at;
+
+        if trait_has_self {
+            self.cx.diagnostics.push(MissingSelfParam::new(
+                impl_span,
+                name,
+                trait_name.to_owned(),
+                trait_span,
+            ));
+        } else {
+            self.cx.diagnostics.push(UnexpectedSelfParam::new(
+                impl_span,
+                name,
+                trait_name.to_owned(),
+                trait_span,
+            ));
         }
     }
 

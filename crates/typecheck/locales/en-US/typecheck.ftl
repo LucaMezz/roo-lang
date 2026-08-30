@@ -55,3 +55,9 @@ tuple-index-out-of-bounds = index out of bounds: the tuple `{$found}` has { $len
 invalid-field-access = expected a struct or tuple, found `{$found}`
 
 missing-trait-item = missing {$kind} `{$name}` from trait `{$trait_name}`
+
+missing-self-param = `{$name}` is missing a `self` parameter required by trait `{$trait_name}`
+missing-self-param-declared-here = `self` is declared here
+
+unexpected-self-param = `{$name}` has a `self` parameter, but trait `{$trait_name}` does not declare one
+unexpected-self-param-declared-here = declared without `self` here

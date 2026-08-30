@@ -1,5 +1,5 @@
 trait Into<K> {
-    fn into() -> K;
+    fn into(self) -> K;
 }
 
 impl bool {
@@ -9,25 +9,25 @@ impl bool {
 }
 
 impl Into<bool> for bool {
-    fn into() -> bool {
-        true
+    fn into(self) -> Self {
+        self
     }
 }
 
 impl Into<String> for String {
-    fn into() -> String {
-        ""
+    fn into(self) -> String {
+        self
     }
 }
 
 impl<T> Into<T> for String {
-    fn into() -> T {
-        ""
+    fn into(self) -> T {
+        self
     }
 }
 
 impl<T> Into<T> for T {
-    fn into() -> T {
+    fn into(self) -> T {
         self
     }
 }
