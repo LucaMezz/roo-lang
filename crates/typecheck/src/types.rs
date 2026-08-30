@@ -7,10 +7,10 @@
 use ast::{Pat, PatKind};
 use intern::Interner;
 
-use crate::defs::Defs;
+use crate::defs::{Defs, EnumDef, TraitDef};
 use crate::generics::GenericRegistry;
 use crate::inference::{InferenceTable, TyId, VarId};
-use crate::{DefId, GenericId, TypeCheckContext};
+use crate::{DefId, DefIdOf, GenericId, TypeCheckContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
@@ -25,8 +25,8 @@ pub(crate) enum TyKind {
     Tuple(Vec<TyId>),
     Fn(Vec<TyId>, TyId),
     Struct(DefId, Vec<TyId>),
-    Enum(DefId, Vec<TyId>),
-    TraitObject(DefId, Vec<TyId>),
+    Enum(DefIdOf<EnumDef>, Vec<TyId>),
+    TraitObject(DefIdOf<TraitDef>, Vec<TyId>),
     Generic(GenericId),
 }
 
@@ -154,10 +154,18 @@ impl TypeResolver<'_> {
                 let output = Box::new(self.resolve(output));
                 Type::Fn(params, output)
             }
-            TyKind::Struct(def, args)
-            | TyKind::Enum(def, args)
-            | TyKind::TraitObject(def, args) => {
+            TyKind::Struct(def, args) => {
                 let name = self.defs.get(def).symbol;
+                let args = args.iter().map(|&arg| self.resolve(arg)).collect();
+                Type::Named(self.names.resolve(name).to_owned(), args)
+            }
+            TyKind::Enum(def, args) => {
+                let name = self.defs.get(def.id()).symbol;
+                let args = args.iter().map(|&arg| self.resolve(arg)).collect();
+                Type::Named(self.names.resolve(name).to_owned(), args)
+            }
+            TyKind::TraitObject(def, args) => {
+                let name = self.defs.get(def.id()).symbol;
                 let args = args.iter().map(|&arg| self.resolve(arg)).collect();
                 Type::Named(self.names.resolve(name).to_owned(), args)
             }

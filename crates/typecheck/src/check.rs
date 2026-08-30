@@ -19,14 +19,14 @@ use crate::{
 };
 
 #[derive(Default)]
-struct TypeMismatchExtras {
+pub(crate) struct TypeMismatchExtras {
     expected_due_to: Option<Related>,
     generic_on_expected: Option<String>,
     generic_on_found: Option<String>,
 }
 
 impl TypeMismatchExtras {
-    fn expected_due_to(mut self, related: Option<Related>) -> Self {
+    pub(crate) fn expected_due_to(mut self, related: Option<Related>) -> Self {
         self.expected_due_to = related;
         self
     }
@@ -556,7 +556,7 @@ impl<'ast> TypeCheckContext<'ast> {
         self.inf.unify(actual, expected)
     }
 
-    fn unify_reporting_mismatch(
+    pub(crate) fn unify_reporting_mismatch(
         &mut self,
         expected: TyId,
         found: TyId,
@@ -1002,7 +1002,7 @@ pub(crate) fn collect_fn_mod_items<'ast>(
         ItemKind::Mod(ident, kind) => {
             let name = ident.symbol;
             cx.with_mod_scope(name, |cx, def| {
-                cx.items_by_def.insert(def, item);
+                cx.items_by_def.insert(def.id(), item);
 
                 match kind {
                     ModKind::Loaded(items) => {

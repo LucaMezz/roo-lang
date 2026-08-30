@@ -8,8 +8,8 @@ use ast::{
 };
 use intern::Symbol;
 
-use crate::defs::{DefKind, EnumDef, FieldDef, FnDef, StructDef, TyAliasDef, VariantDef};
-use crate::{CxExt, DefId, GenericId, Namespace, ScopeId, TypeCheckContext};
+use crate::defs::{EnumDef, FieldDef, FnDef, ModDef, StructDef, TraitDef, TyAliasDef, VariantDef};
+use crate::{CxExt, DefIdOf, GenericId, Namespace, ScopeId, TypeCheckContext};
 
 /// The AST Visitor that performs the Resolution stage of the
 /// type checking. Walks the AST, creating new defs in the
@@ -124,7 +124,7 @@ impl Resolver<'_, '_> {
                     v.ident.span,
                     &v.data,
                     generics.clone(),
-                    Some(enum_def.id()),
+                    Some(enum_def),
                 )
             })
             .collect::<Vec<_>>();
@@ -143,7 +143,7 @@ impl Resolver<'_, '_> {
         span: Span,
         data: &VariantData,
         generics: Vec<GenericId>,
-        parent: Option<DefId>,
+        parent: Option<DefIdOf<EnumDef>>,
     ) -> VariantDef {
         let ctor_ty = match data {
             VariantData::Struct(_) => None,
@@ -210,7 +210,7 @@ impl Resolver<'_, '_> {
     fn resolve_trait_item(&mut self, t: &Trait) {
         let scope = self.new_scope();
         self.cx
-            .declare(t.ident.symbol, t.ident.span, DefKind::Trait);
+            .declare_typed(t.ident.symbol, t.ident.span, TraitDef { scope });
         self.with_scope(scope, |this| {
             t.items.iter().for_each(|item| item.visit(this))
         })
@@ -219,13 +219,13 @@ impl Resolver<'_, '_> {
     fn resolve_mod_unloaded_item(&mut self, ident: &Ident) {
         let scope = self.new_scope();
         self.cx
-            .declare(ident.symbol, ident.span, DefKind::Mod(scope));
+            .declare_typed(ident.symbol, ident.span, ModDef { scope });
     }
 
     fn resolve_mod_loaded_item(&mut self, ident: &Ident, item: &Item) {
         let scope = self.new_scope();
         self.cx
-            .declare(ident.symbol, ident.span, DefKind::Mod(scope));
+            .declare_typed(ident.symbol, ident.span, ModDef { scope });
         self.with_scope(scope, |this| item.walk(this));
     }
 

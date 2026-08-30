@@ -60,7 +60,7 @@ impl<'ast> TypeCheckContext<'ast> {
                 DefKind::Struct(_)
                 | DefKind::Enum(_)
                 | DefKind::Variant(_)
-                | DefKind::Trait
+                | DefKind::Trait(_)
                 | DefKind::GenericParam(_) => FrozenDefKind::Other,
             };
             defs.insert(

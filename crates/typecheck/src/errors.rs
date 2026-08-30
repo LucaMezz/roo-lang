@@ -299,6 +299,27 @@ pub struct InvalidFieldAccess {
     pub found: Type,
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 17, level = "error")]
+pub struct MissingTraitItem {
+    #[diagnose(span)]
+    pub span: Span,
+    pub kind: String,
+    pub name: String,
+    pub trait_name: String,
+}
+
+impl MissingTraitItem {
+    pub fn new(span: Span, kind: String, name: String, trait_name: String) -> Self {
+        Self {
+            span,
+            kind,
+            name,
+            trait_name,
+        }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -317,6 +338,7 @@ diagnostics::catalog! {
         InvalidTupleIndex,
         TupleIndexOutOfBounds,
         InvalidFieldAccess,
+        MissingTraitItem,
     }
 }
 

@@ -353,7 +353,7 @@ fn lower_ty_path_resolves_a_declared_enum_by_nominal_identity() {
     let mut cx = resolve("enum Foo { Bar }");
     let target = path(&mut cx.symbols, &["Foo"]);
     let def = cx
-        .resolve_path_to_type(&target)
+        .resolve_path_to_enum(&target)
         .expect("Foo should resolve");
 
     let ty_val = ty(&mut cx.symbols, "Foo");
@@ -1132,10 +1132,10 @@ fn lower_signatures_recurses_into_a_mod() {
     let mut cx = resolve_and_lower("mod m { fn baz(x: bool) {} }");
     let target = path(&mut cx.symbols, &["m"]);
     let m_def = cx.resolve_path_to_type(&target).expect("m should resolve");
-    let DefKind::Mod(m_scope) = &cx.def(m_def).kind else {
+    let DefKind::Mod(mod_data) = &cx.def(m_def).kind else {
         panic!("m should be a Mod def");
     };
-    let m_scope = *m_scope;
+    let m_scope = mod_data.scope;
 
     let def = declared_def(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
     let def_ty = cx.def(def).ty();
@@ -1143,6 +1143,107 @@ fn lower_signatures_recurses_into_a_mod() {
         resolved_kind(&mut cx, def_ty),
         Some(TyKind::Fn(..))
     ));
+}
+
+#[test]
+fn lower_signatures_impl_missing_trait_items_is_an_error() {
+    let source = r#"
+trait Greet {
+    fn hello(x: int) -> int;
+    type Output;
+}
+struct Foo;
+impl Greet for Foo {
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "missing function `hello` from trait `Greet`"
+    );
+    assert_eq!(
+        diagnostics[1].message(),
+        "missing associated type `Output` from trait `Greet`"
+    );
+}
+
+#[test]
+fn lower_signatures_impl_with_every_trait_item_has_no_error() {
+    let source = r#"
+trait Greet {
+    fn hello(x: int) -> int;
+    type Output;
+}
+struct Foo;
+impl Greet for Foo {
+    fn hello(x: int) -> int { x }
+    type Output = int;
+}
+"#;
+    let cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn lower_signatures_impl_with_extra_items_beyond_the_trait_has_no_error() {
+    let source = r#"
+trait Greet {
+    fn hello(x: int) -> int;
+}
+struct Foo;
+impl Greet for Foo {
+    fn hello(x: int) -> int { x }
+    fn extra() -> int { 0 }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn lower_signatures_impl_fn_with_a_mismatched_signature_is_an_error() {
+    let source = r#"
+trait Greet {
+    fn hello(x: int) -> int;
+}
+struct Foo;
+impl Greet for Foo {
+    fn hello(x: int) -> bool { true }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+
+    let d = &diagnostics[0];
+    assert_eq!(
+        d.message(),
+        "expected `Fn(int) -> int`, found `Fn(int) -> bool`"
+    );
+    assert_eq!(&source[d.span().start..d.span().end], "hello");
+    assert_eq!(d.related().len(), 1);
+    let (related_span, related_message) = &d.related()[0];
+    assert_eq!(&source[related_span.start..related_span.end], "hello");
+    assert_eq!(related_message, "expected due to this");
+}
+
+#[test]
+fn lower_signatures_impl_assoc_type_with_a_mismatched_ty_is_an_error() {
+    let source = r#"
+trait Greet {
+    type Output = int;
+}
+struct Foo;
+impl Greet for Foo {
+    type Output = bool;
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
 }
 
 #[test]
@@ -1379,10 +1480,38 @@ impl Renderer<'_> {
                 let output_range = self.render_ty_into(buf, output, highlight);
                 inputs_range.or(output_range)
             }
-            TyKind::Struct(def, args)
-            | TyKind::Enum(def, args)
-            | TyKind::TraitObject(def, args) => {
+            TyKind::Struct(def, args) => {
                 let symbol = self.defs.get(def).symbol;
+                buf.push_str(self.symbols.resolve(symbol));
+                if !args.is_empty() {
+                    buf.push('<');
+                    for (i, arg) in args.into_iter().enumerate() {
+                        if i > 0 {
+                            buf.push_str(", ");
+                        }
+                        self.render_ty_into(buf, arg, highlight);
+                    }
+                    buf.push('>');
+                }
+                None
+            }
+            TyKind::Enum(def, args) => {
+                let symbol = self.defs.get(def.id()).symbol;
+                buf.push_str(self.symbols.resolve(symbol));
+                if !args.is_empty() {
+                    buf.push('<');
+                    for (i, arg) in args.into_iter().enumerate() {
+                        if i > 0 {
+                            buf.push_str(", ");
+                        }
+                        self.render_ty_into(buf, arg, highlight);
+                    }
+                    buf.push('>');
+                }
+                None
+            }
+            TyKind::TraitObject(def, args) => {
+                let symbol = self.defs.get(def.id()).symbol;
                 buf.push_str(self.symbols.resolve(symbol));
                 if !args.is_empty() {
                     buf.push('<');
@@ -1440,7 +1569,7 @@ impl Renderer<'_> {
             DefKind::Struct(_)
             | DefKind::Enum(_)
             | DefKind::Variant(_)
-            | DefKind::Trait
+            | DefKind::Trait(_)
             | DefKind::GenericParam(_) => self.render_def_type(def),
         }
     }

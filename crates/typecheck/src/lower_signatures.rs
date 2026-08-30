@@ -8,13 +8,17 @@ use ast::{
 };
 use intern::Symbol;
 
-use crate::defs::Param;
-use crate::errors::{InvalidGlobTarget, UnresolvedImport};
+use crate::check::TypeMismatchExtras;
+use crate::defs::{DefKind, Param, TraitDef};
+use crate::errors::{InvalidGlobTarget, MissingTraitItem, UnresolvedImport, expected_due_to};
 use crate::generics::SyntheticNames;
 use crate::inference::TyId;
 use crate::resolve::Resolver;
 use crate::types::{self, TyKind};
-use crate::{CxExt, DefId, GenericId, Namespace, TypeCheckContext, display_path, impl_target_of};
+use crate::{
+    CxExt, DefId, DefIdOf, GenericId, Namespace, ScopeId, TypeCheckContext, display_path,
+    impl_target_of,
+};
 
 /// Performs the signature lowering stage of the type checking.
 /// Fills in the types of the defs created by the [`Resolver`]
@@ -51,7 +55,9 @@ impl SignatureLowerer<'_, '_> {
 
 impl SignatureLowerer<'_, '_> {
     fn lower_trait_item(&mut self, trt: &Trait) {
-        trt.items.iter().for_each(|item| item.visit(self));
+        self.with_trait_scope(trt.ident.symbol, |this, _def| {
+            trt.items.iter().for_each(|item| item.visit(this));
+        });
     }
 
     fn lower_impl_item(&mut self, imp: &Impl) {
@@ -75,14 +81,78 @@ impl SignatureLowerer<'_, '_> {
         let resolved = self.cx.inf.resolve(self_ty);
         let target = self.cx.inf.ty(resolved).and_then(impl_target_of);
 
-        let of_trait = imp
-            .of_trait
-            .as_ref()
-            .and_then(|path| self.with_scope(scope, |this| this.cx.resolve_path_to_type(path)));
+        let of_trait = imp.of_trait.as_ref().and_then(|path| {
+            let of_trait = self.with_scope(scope, |this| this.cx.resolve_path_to_trait(path));
+            if let Some(of_trait) = of_trait {
+                self.check_trait_impl_complete(of_trait, scope, path.span);
+            }
+            of_trait
+        });
 
         if let Some(target) = target {
             self.cx.register_impl_for(target, scope, of_trait, generics);
         }
+    }
+
+    fn check_trait_impl_complete(
+        &mut self,
+        of_trait: DefIdOf<TraitDef>,
+        impl_scope: ScopeId,
+        span: Span,
+    ) {
+        let trait_scope = self.cx.defs.trait_ref(of_trait).scope;
+        let trait_symbol = self.cx.def(of_trait.id()).symbol;
+        let trait_name = self.cx.symbols.resolve(trait_symbol).to_owned();
+
+        let mut missing: Vec<(&'static str, Symbol)> = Vec::new();
+        let mut matched: Vec<(DefId, DefId)> = Vec::new();
+
+        for (symbol, trait_def) in self.cx.scopes.entries(trait_scope, Namespace::Value) {
+            if !matches!(self.cx.def(trait_def).kind, DefKind::Fn(_)) {
+                continue;
+            }
+            match self.cx.scopes.lookup(impl_scope, symbol, Namespace::Value) {
+                Some(impl_def) => matched.push((trait_def, impl_def)),
+                None => missing.push(("function", symbol)),
+            }
+        }
+
+        for (symbol, trait_def) in self.cx.scopes.entries(trait_scope, Namespace::Type) {
+            if !matches!(self.cx.def(trait_def).kind, DefKind::TyAlias(_)) {
+                continue;
+            }
+            match self.cx.scopes.lookup(impl_scope, symbol, Namespace::Type) {
+                Some(impl_def) => matched.push((trait_def, impl_def)),
+                None => missing.push(("associated type", symbol)),
+            }
+        }
+
+        for (kind, symbol) in missing {
+            let name = self.cx.symbols.resolve(symbol).to_owned();
+            self.cx.diagnostics.push(MissingTraitItem::new(
+                span,
+                kind.to_owned(),
+                name,
+                trait_name.clone(),
+            ));
+        }
+
+        for (trait_def, impl_def) in matched {
+            self.check_trait_item_ty_matches(trait_def, impl_def);
+        }
+    }
+
+    fn check_trait_item_ty_matches(&mut self, trait_def: DefId, impl_def: DefId) {
+        let expected = self.cx.def(trait_def).ty();
+        let found = self.cx.def(impl_def).ty();
+        let trait_span = self.cx.def(trait_def).declared_at;
+        let impl_span = self.cx.def(impl_def).declared_at;
+
+        let extras =
+            TypeMismatchExtras::default().expected_due_to(Some(expected_due_to(trait_span)));
+        let _ = self
+            .cx
+            .unify_reporting_mismatch(expected, found, impl_span, trait_span, extras);
     }
 
     fn lower_fn_item(&mut self, f: &Fn) {
@@ -174,6 +244,7 @@ impl SignatureLowerer<'_, '_> {
         let Some(scope) = self
             .cx
             .mod_def_scope(sid)
+            .map(|(_, scope)| scope)
             .or_else(|| self.cx.enum_def_scope(sid).map(|(_, scope)| scope))
         else {
             self.cx.diagnostics.push(InvalidGlobTarget::new(
@@ -348,7 +419,7 @@ impl SignatureLowerer<'_, '_> {
                         .collect();
                     this.unify_ctor_ty(
                         variant.id(),
-                        TyKind::Enum(id.id(), placeholder_args),
+                        TyKind::Enum(id, placeholder_args),
                         &ast_variant.data,
                         &lowered_fields,
                     );

@@ -53,3 +53,5 @@ tuple-index-out-of-bounds = index out of bounds: the tuple `{$found}` has { $len
 } but the index is {$index}
 
 invalid-field-access = expected a struct or tuple, found `{$found}`
+
+missing-trait-item = missing {$kind} `{$name}` from trait `{$trait_name}`
