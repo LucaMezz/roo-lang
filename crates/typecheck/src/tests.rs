@@ -320,6 +320,42 @@ fn lower_ty_err_is_a_wildcard_that_unifies_with_anything() {
 }
 
 #[test]
+fn inference_rollback_undoes_a_successful_unification_made_after_the_snapshot() {
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let a = cx.fresh_var();
+    let int_ty = cx.ty(TyKind::Int);
+
+    let snapshot = cx.inf.snapshot();
+    assert!(cx.inf.unify(a, int_ty).is_ok());
+    let resolved = cx.inf.resolve(a);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Int)));
+
+    cx.inf.rollback_to(snapshot);
+    let resolved = cx.inf.resolve(a);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+}
+
+#[test]
+fn inference_rollback_discards_partial_bindings_left_by_a_failed_unification() {
+    let mut cx = TypeCheckContext::new(Interner::new());
+    let a = cx.fresh_var();
+    let bool_ty = cx.ty(TyKind::Bool);
+    let str_ty = cx.ty(TyKind::Str);
+    let int_ty = cx.ty(TyKind::Int);
+    let tuple1 = cx.ty(TyKind::Tuple(vec![a, int_ty]));
+    let tuple2 = cx.ty(TyKind::Tuple(vec![bool_ty, str_ty]));
+
+    let snapshot = cx.inf.snapshot();
+    assert!(cx.inf.unify(tuple1, tuple2).is_err());
+    let resolved = cx.inf.resolve(a);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Bool)));
+
+    cx.inf.rollback_to(snapshot);
+    let resolved = cx.inf.resolve(a);
+    assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+}
+
+#[test]
 fn lower_ty_path_resolves_primitive_symbols() {
     let cases = [
         ("bool", TyKind::Bool),
@@ -1244,6 +1280,144 @@ impl Greet for Foo {
     let diagnostics = cx.diagnostics();
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
+#[test]
+fn resolve_trait_declares_its_generic_params_in_its_own_scope() {
+    let cx = resolve("trait Container<T> { fn get() -> T; }");
+
+    let trait_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Container")
+        .expect("Container should resolve");
+    assert_eq!(cx.def(trait_def).generics().len(), 1);
+
+    let DefKind::Trait(trait_data) = &cx.def(trait_def).kind else {
+        panic!("expected a trait def, found {:?}", cx.def(trait_def).kind);
+    };
+    let t = declared_def(&cx, trait_data.scope, Namespace::Type, "T")
+        .expect("T should be declared in the trait's own scope");
+    assert!(matches!(cx.def(t).kind, DefKind::GenericParam(_)));
+}
+
+#[test]
+fn lower_signatures_trait_item_can_reference_the_traits_own_generic_param() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+"#;
+    let cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn lower_signatures_impl_of_generic_trait_instantiates_the_traits_generics_before_matching() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+struct Foo;
+impl Into<bool> for Foo {
+    fn into() -> bool { true }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn lower_signatures_impl_of_generic_trait_still_catches_a_real_mismatch() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+struct Foo;
+impl Into<bool> for Foo {
+    fn into() -> String { "" }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "expected `Fn() -> bool`, found `Fn() -> String`"
+    );
+}
+
+#[test]
+fn target_implements_matches_when_the_query_args_unify_with_the_impls_trait_args() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl Into<bool> for bool {
+    fn into() -> bool { true }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let bool_ty = cx.ty(TyKind::Bool);
+    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[bool_ty]));
+}
+
+#[test]
+fn target_implements_does_not_match_when_the_query_args_dont_unify() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl Into<bool> for bool {
+    fn into() -> bool { true }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let string_ty = cx.ty(TyKind::Str);
+    assert!(!cx.target_implements(ImplTarget::Bool, trait_def, &[string_ty]));
+}
+
+#[test]
+fn target_implements_picks_the_matching_candidate_among_several_impls() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl Into<bool> for bool {
+    fn into() -> bool { true }
+}
+impl Into<int> for bool {
+    fn into() -> int { 0 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let bool_ty = cx.ty(TyKind::Bool);
+    let int_ty = cx.ty(TyKind::Int);
+    let string_ty = cx.ty(TyKind::Str);
+    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[bool_ty]));
+    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[int_ty]));
+    assert!(!cx.target_implements(ImplTarget::Bool, trait_def, &[string_ty]));
 }
 
 #[test]

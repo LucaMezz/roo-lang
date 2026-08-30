@@ -217,6 +217,7 @@ pub(crate) struct StructDef {
 #[derive(Debug)]
 pub(crate) struct TraitDef {
     pub(crate) scope: ScopeId,
+    pub(crate) generics: Vec<GenericId>,
 }
 
 #[derive(Debug)]
@@ -306,6 +307,7 @@ impl DefKind {
             DefKind::Fn(fn_data) => Some(&fn_data.generics),
             DefKind::TyAlias(alias_data) => Some(&alias_data.generics),
             DefKind::Enum(enum_data) => Some(&enum_data.generics),
+            DefKind::Trait(trait_data) => Some(&trait_data.generics),
             DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
                 Some(&variant.generics)
             }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ast::{
     Block, Closure, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind,
-    ModKind, Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
+    MethodCall, ModKind, Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
 };
 use diagnostics::Related;
 use intern::Symbol;
@@ -153,7 +153,7 @@ impl<'ast> TypeCheckContext<'ast> {
             }
             ExprKind::Array(exprs) => self.check_array_expr(exprs, expected),
             ExprKind::Assign(lhs, rhs, _) => self.check_assign_expr(lhs, rhs),
-            ExprKind::MethodCall(..) => self.check_method_call_expr(),
+            ExprKind::MethodCall(call) => self.check_method_call_expr(call),
             ExprKind::Binary(..) => self.check_binary_expr(),
             ExprKind::Unary(..) => self.check_unary_expr(),
             ExprKind::Let(..) => self.check_let_expr(),
@@ -174,7 +174,7 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_method_call_expr(&mut self) -> TyId {
+    fn check_method_call_expr(&mut self, call: &MethodCall) -> TyId {
         unimplemented!()
     }
 
@@ -534,10 +534,12 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn coerce(&mut self, actual: TyId, expected: TyId) -> bool {
         let resolved_expected = self.inf.resolve(expected);
-        let Some(TyKind::TraitObject(trait_def, _)) = self.inf.ty(resolved_expected) else {
+        let Some(TyKind::TraitObject(trait_def, trait_args)) = self.inf.ty(resolved_expected)
+        else {
             return false;
         };
         let trait_def = *trait_def;
+        let trait_args = trait_args.clone();
 
         let resolved_actual = self.inf.resolve(actual);
         let Some(actual_kind) = self.inf.ty(resolved_actual) else {
@@ -547,7 +549,7 @@ impl<'ast> TypeCheckContext<'ast> {
             return false;
         };
 
-        self.target_implements(target, trait_def)
+        self.target_implements(target, trait_def, &trait_args)
     }
 
     fn unify_or_coerce(&mut self, actual: TyId, expected: TyId) -> Result<(), UnifyError> {

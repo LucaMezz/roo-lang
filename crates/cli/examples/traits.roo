@@ -1,42 +1,45 @@
-trait Hash {
-    fn hash() -> String;
+trait Into<K> {
+    fn into() -> K;
 }
 
-impl Hash for bool {
-    fn hash() -> String {
+impl bool {
+    fn then(f: Fn() -> ()) -> bool {
+           
+    }
+}
+
+impl Into<bool> for bool {
+    fn into() -> bool {
+        true
+    }
+}
+
+impl Into<String> for String {
+    fn into() -> String {
         ""
     }
 }
 
-impl Hash for String {
-    fn hash() -> String {
+impl<T> Into<T> for String {
+    fn into() -> T {
         ""
     }
 }
 
-fn check(thing: Hash) -> Hash {
-    return true;
+impl<T> Into<T> for T {
+    fn into() -> T {
+        self
+    }
+}
+
+fn check(thing: Into<String>) -> String {
+    return "Hello";
 }
 
 fn main() {
-    // TODO
-    //
-    // Curently, the `inference` module only checks
-    // that the two unified types are both of type
-    // TraitObject with the same generic argument
-    // types.
-    //
-    // Need it to allow unifying a TraitObject with
-    // something of another type, by first looking
-    // up if that type is an ImplTarget, and also
-    // it actually implements the trait which the
-    // TraitObject corresponds to.
-    //
-    // Ideally try not to modify the `inference`
-    // module for this. Maybe instead, at a site
-    // where a TraitObject is expected, it can be
-    // done directly.
-    let x: Hash = true;
+    let x: Into<[int]> = [10];
+
+    let eg: Into<([int], Fn() -> ())> = "10";
 
     check(x);
 }

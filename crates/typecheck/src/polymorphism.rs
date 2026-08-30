@@ -263,12 +263,16 @@ impl<'ast> TypeCheckContext<'ast> {
         self.instantiate_ty(ty, &mut subst)
     }
 
-    fn subst_for(&mut self, generics: &[GenericId], path: &Path) -> HashMap<GenericId, TyId> {
+    pub(crate) fn subst_for(
+        &mut self,
+        generics: &[GenericId],
+        path: &Path,
+    ) -> HashMap<GenericId, TyId> {
         let explicit = self.explicit_generic_args(path, generics);
         self.build_subst(generics, &explicit)
     }
 
-    fn args_from_subst(
+    pub(crate) fn args_from_subst(
         &mut self,
         generics: &[GenericId],
         subst: &mut HashMap<GenericId, TyId>,

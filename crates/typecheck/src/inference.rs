@@ -323,6 +323,23 @@ impl InferenceTable {
         }
         found.map(|i| self.provenance[i].reason)
     }
+
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            bindings: self.bindings.clone(),
+            provenance_len: self.provenance.len(),
+        }
+    }
+
+    pub(crate) fn rollback_to(&mut self, snapshot: Snapshot) {
+        self.bindings = snapshot.bindings;
+        self.provenance.truncate(snapshot.provenance_len);
+    }
+}
+
+pub(crate) struct Snapshot {
+    bindings: QuickUnionUf<Binding>,
+    provenance_len: usize,
 }
 
 impl Default for InferenceTable {

@@ -58,11 +58,12 @@ slotmap::new_key_type! {
     pub struct DefId;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ImplInfo {
     scope: ScopeId,
     of_trait: Option<DefIdOf<TraitDef>>,
     generics: Vec<GenericId>,
+    trait_args: Vec<TyId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -527,6 +528,7 @@ impl<'ast> TypeCheckContext<'ast> {
         scope: ScopeId,
         of_trait: Option<DefIdOf<TraitDef>>,
         generics: Vec<GenericId>,
+        trait_args: Vec<TyId>,
     ) {
         self.impls_by_target
             .entry(target)
@@ -535,14 +537,58 @@ impl<'ast> TypeCheckContext<'ast> {
                 scope,
                 of_trait,
                 generics,
+                trait_args,
             });
     }
 
     /// Whether `target` has an impl of the trait `trait_def`.
-    fn target_implements(&self, target: ImplTarget, trait_def: DefIdOf<TraitDef>) -> bool {
-        self.impls_by_target
-            .get(&target)
-            .is_some_and(|impls| impls.iter().any(|imp| imp.of_trait == Some(trait_def)))
+    fn target_implements(
+        &mut self,
+        target: ImplTarget,
+        trait_def: DefIdOf<TraitDef>,
+        trait_args: &[TyId],
+    ) -> bool {
+        let Some(candidates) = self.impls_by_target.get(&target) else {
+            return false;
+        };
+        let candidates: Vec<ImplInfo> = candidates
+            .iter()
+            .filter(|imp| imp.of_trait == Some(trait_def))
+            .cloned()
+            .collect();
+
+        candidates
+            .iter()
+            .any(|imp| self.impl_matches_trait_args(imp, trait_args))
+    }
+
+    fn impl_matches_trait_args(&mut self, imp: &ImplInfo, trait_args: &[TyId]) -> bool {
+        self.speculatively(|this| {
+            let mut subst: HashMap<GenericId, TyId> = imp
+                .generics
+                .iter()
+                .map(|&id| (id, this.fresh_var()))
+                .collect();
+
+            imp.trait_args.len() == trait_args.len()
+                && imp
+                    .trait_args
+                    .iter()
+                    .zip(trait_args)
+                    .all(|(&impl_arg, &query_arg)| {
+                        let instantiated = this.instantiate_ty(impl_arg, &mut subst);
+                        this.inf.unify(instantiated, query_arg).is_ok()
+                    })
+        })
+    }
+
+    fn speculatively(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
+        let snapshot = self.inf.snapshot();
+        let succeeded = f(self);
+        if !succeeded {
+            self.inf.rollback_to(snapshot);
+        }
+        succeeded
     }
 
     /// Declares a new [`Def`] in a scope of a certain kind.

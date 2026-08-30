@@ -209,8 +209,11 @@ impl Resolver<'_, '_> {
 
     fn resolve_trait_item(&mut self, t: &Trait) {
         let scope = self.new_scope();
+        let generics = self.with_scope(scope, |this| {
+            this.cx.declare_generic_params(&t.generics.params)
+        });
         self.cx
-            .declare_typed(t.ident.symbol, t.ident.span, TraitDef { scope });
+            .declare_typed(t.ident.symbol, t.ident.span, TraitDef { scope, generics });
         self.with_scope(scope, |this| {
             t.items.iter().for_each(|item| item.visit(this))
         })

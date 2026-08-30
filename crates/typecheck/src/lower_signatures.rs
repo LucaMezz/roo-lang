@@ -1,6 +1,8 @@
 //! Performs the signature lowering stage of the type checking. See
 //! [`SignatureLowerer`].
 
+use std::collections::HashMap;
+
 use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
     AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Ident, Impl, Item, ItemKind, ModKind,
@@ -81,16 +83,22 @@ impl SignatureLowerer<'_, '_> {
         let resolved = self.cx.inf.resolve(self_ty);
         let target = self.cx.inf.ty(resolved).and_then(impl_target_of);
 
+        let mut trait_args = Vec::new();
         let of_trait = imp.of_trait.as_ref().and_then(|path| {
             let of_trait = self.with_scope(scope, |this| this.cx.resolve_path_to_trait(path));
             if let Some(of_trait) = of_trait {
-                self.check_trait_impl_complete(of_trait, scope, path.span);
+                let trait_generics = self.cx.defs.trait_ref(of_trait).generics.clone();
+                let mut subst =
+                    self.with_scope(scope, |this| this.cx.subst_for(&trait_generics, path));
+                trait_args = self.cx.args_from_subst(&trait_generics, &mut subst);
+                self.check_trait_impl_complete(of_trait, scope, path.span, &mut subst);
             }
             of_trait
         });
 
         if let Some(target) = target {
-            self.cx.register_impl_for(target, scope, of_trait, generics);
+            self.cx
+                .register_impl_for(target, scope, of_trait, generics, trait_args);
         }
     }
 
@@ -99,6 +107,7 @@ impl SignatureLowerer<'_, '_> {
         of_trait: DefIdOf<TraitDef>,
         impl_scope: ScopeId,
         span: Span,
+        subst: &mut HashMap<GenericId, TyId>,
     ) {
         let trait_scope = self.cx.defs.trait_ref(of_trait).scope;
         let trait_symbol = self.cx.def(of_trait.id()).symbol;
@@ -138,12 +147,18 @@ impl SignatureLowerer<'_, '_> {
         }
 
         for (trait_def, impl_def) in matched {
-            self.check_trait_item_ty_matches(trait_def, impl_def);
+            self.check_trait_item_ty_matches(trait_def, impl_def, subst);
         }
     }
 
-    fn check_trait_item_ty_matches(&mut self, trait_def: DefId, impl_def: DefId) {
-        let expected = self.cx.def(trait_def).ty();
+    fn check_trait_item_ty_matches(
+        &mut self,
+        trait_def: DefId,
+        impl_def: DefId,
+        subst: &mut HashMap<GenericId, TyId>,
+    ) {
+        let raw_expected = self.cx.def(trait_def).ty();
+        let expected = self.cx.instantiate_ty(raw_expected, subst);
         let found = self.cx.def(impl_def).ty();
         let trait_span = self.cx.def(trait_def).declared_at;
         let impl_span = self.cx.def(impl_def).declared_at;
