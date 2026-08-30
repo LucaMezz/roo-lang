@@ -1410,6 +1410,34 @@ impl Make<bool> for bool {
 }
 
 #[test]
+fn lower_fn_item_self_param_outside_impl_or_trait_is_an_error() {
+    let source = "fn hello(self) -> int { 0 }";
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "`self` parameter is only valid inside an `impl` or `trait` block"
+    );
+}
+
+#[test]
+fn lower_fn_item_self_param_in_a_nested_fn_inside_a_free_fn_is_an_error() {
+    let source = r#"
+fn outer() {
+    fn inner(self) -> int { 0 }
+}
+"#;
+    let cx = resolve_and_lower(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "`self` parameter is only valid inside an `impl` or `trait` block"
+    );
+}
+
+#[test]
 fn lower_signatures_impl_trait_item_with_matching_self_param_has_no_diagnostics() {
     let source = r#"
 trait Into<K> {

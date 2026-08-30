@@ -61,3 +61,5 @@ missing-self-param-declared-here = `self` is declared here
 
 unexpected-self-param = `{$name}` has a `self` parameter, but trait `{$trait_name}` does not declare one
 unexpected-self-param-declared-here = declared without `self` here
+
+self-outside-impl-or-trait = `self` parameter is only valid inside an `impl` or `trait` block

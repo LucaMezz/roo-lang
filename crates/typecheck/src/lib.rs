@@ -52,7 +52,7 @@ pub use checked_program::CheckedProgram;
 pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
-use crate::errors::{AlreadyDefined, AnnotationsNeeded, UnresolvedType};
+use crate::errors::{AlreadyDefined, AnnotationsNeeded, SelfOutsideImplOrTrait, UnresolvedType};
 
 slotmap::new_key_type! {
     /// A handle to a def stored in the def arena within
@@ -735,7 +735,7 @@ impl<'ast> TypeCheckContext<'ast> {
             AstTyKind::Tup(inner) => self.lower_tup_ty(inner),
             AstTyKind::Fn(fn_ty) => self.lower_fn_ty(fn_ty, ty.span),
             AstTyKind::Path(path) => self.lower_path_ty(path),
-            AstTyKind::ImplicitSelf => self.lower_implicit_self_ty(),
+            AstTyKind::ImplicitSelf => self.lower_implicit_self_ty(ty.span),
             // When `_` is used as a type annotation, it means
             // the type should be inferred. Hence, introduce
             // a fresh inference variable `?a` to represent
@@ -769,9 +769,11 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn lower_implicit_self_ty(&mut self) -> TyId {
-        self.current_self_ty()
-            .unwrap_or_else(|| self.ty(TyKind::Err))
+    fn lower_implicit_self_ty(&mut self, span: Span) -> TyId {
+        self.current_self_ty().unwrap_or_else(|| {
+            self.diagnostics.push(SelfOutsideImplOrTrait::new(span));
+            self.ty(TyKind::Err)
+        })
     }
 
     fn lower_path_ty(&mut self, path: &Path) -> TyId {

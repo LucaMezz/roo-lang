@@ -372,6 +372,19 @@ impl UnexpectedSelfParam {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 20, level = "error")]
+pub struct SelfOutsideImplOrTrait {
+    #[diagnose(span)]
+    pub span: Span,
+}
+
+impl SelfOutsideImplOrTrait {
+    pub fn new(span: Span) -> Self {
+        Self { span }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -393,6 +406,7 @@ diagnostics::catalog! {
         MissingTraitItem,
         MissingSelfParam,
         UnexpectedSelfParam,
+        SelfOutsideImplOrTrait,
     }
 }
 
