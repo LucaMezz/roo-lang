@@ -2158,6 +2158,89 @@ impl Foo {
 }
 
 #[test]
+fn check_all_self_type_annotation_resolves_inside_an_impl_fn_body() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn make(self) -> Foo {
+        let x: Self = self;
+        x
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_self_qualified_call_resolves_inside_an_impl_fn_body() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn make() -> Foo {
+        Foo
+    }
+    fn remake() -> Foo {
+        Self::make()
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_self_struct_literal_resolves_inside_an_impl_fn_body() {
+    let source = r#"
+struct Foo {
+    x: int,
+}
+impl Foo {
+    fn make() -> Foo {
+        Self { x: 1 }
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_self_struct_literal_still_checks_field_types() {
+    let source = r#"
+struct Foo {
+    x: int,
+}
+impl Foo {
+    fn make() -> Foo {
+        Self { x: "wrong" }
+    }
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `String`");
+}
+
+#[test]
+fn check_all_self_struct_literal_resolves_for_a_generic_struct() {
+    let source = r#"
+struct Pair<T> {
+    a: T,
+    b: T,
+}
+impl Pair<int> {
+    fn zero() -> Pair<int> {
+        Self { a: 0, b: 0 }
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
 fn check_all_trait_impl_fn_body_is_type_checked() {
     let source = r#"
 trait Greet {

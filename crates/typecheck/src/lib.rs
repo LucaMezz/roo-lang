@@ -449,15 +449,27 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn impl_target_of_def(&mut self, def: DefId) -> Option<ImplTarget> {
-        let alias_ty = match &self.def(def).kind {
-            DefKind::Struct(_) | DefKind::Enum(_) => return Some(ImplTarget::Adt(def)),
-            DefKind::TyAlias(alias) => alias.ty,
-            _ => return None,
-        };
-
-        let resolved = self.inf.resolve(alias_ty);
-        let kind = self.inf.ty(resolved)?.clone();
+        if matches!(self.def(def).kind, DefKind::Struct(_) | DefKind::Enum(_)) {
+            return Some(ImplTarget::Adt(def));
+        }
+        let kind = self.resolved_alias_kind(def)?;
         impl_target_of(&kind)
+    }
+
+    fn unwrap_to_adt_def(&mut self, def: DefId) -> DefId {
+        match self.resolved_alias_kind(def) {
+            Some(TyKind::Struct(inner, _)) => inner,
+            Some(TyKind::Enum(inner, _)) => inner.id(),
+            _ => def,
+        }
+    }
+
+    fn resolved_alias_kind(&mut self, def: DefId) -> Option<TyKind> {
+        let DefKind::TyAlias(alias) = &self.def(def).kind else {
+            return None;
+        };
+        let resolved = self.inf.resolve(alias.ty);
+        self.inf.ty(resolved).cloned()
     }
 
     fn resolve_primitive_prefix(
@@ -511,11 +523,13 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn resolve_path_to_struct(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
         let id = self.resolve_path_to_type(path)?;
+        let id = self.unwrap_to_adt_def(id);
         self.def(id).kind.as_struct().map(|variant| (id, variant))
     }
 
     fn resolve_path_to_enum(&mut self, path: &Path) -> Option<DefIdOf<EnumDef>> {
         let id = self.resolve_path_to_type(path)?;
+        let id = self.unwrap_to_adt_def(id);
         self.enum_def_scope(id).map(|(def, _)| def)
     }
 

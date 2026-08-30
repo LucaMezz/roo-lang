@@ -29,13 +29,23 @@ enum Option<T> {
 
 use Option::*;
 
+trait Default {
+    fn default() -> Self;
+}
+
+impl Default for Tree {
+    fn default() {
+        Self::new()
+    }
+}
+
 struct Tree {
     root: TreeNode,
 }
 
 impl Tree {
     fn new() {
-        Tree {
+        Self {
             root: TreeNode::root()
         }
     }
@@ -48,7 +58,7 @@ struct TreeNode {
 
 impl TreeNode {
     fn root() {
-        TreeNode {
+        Self {
             parent: None,
             children: []
         }
@@ -64,4 +74,7 @@ fn main() {
     let zer = int::zero();
 
     let tree = Tree::new();
+    let root = tree.root;
+
+    let def: Default = tree;
 }
