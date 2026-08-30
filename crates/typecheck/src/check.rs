@@ -14,7 +14,9 @@ use crate::errors::{
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
-use crate::{CxExt, DefId, GenericId, PatDeclKind, TyId, TypeCheckContext, display_path};
+use crate::{
+    CxExt, DefId, GenericId, PatDeclKind, TyId, TypeCheckContext, display_path, impl_target_of,
+};
 
 #[derive(Default)]
 struct TypeMismatchExtras {
@@ -106,6 +108,9 @@ impl<'ast> TypeCheckContext<'ast> {
             self.positions.record_primitive(expr.span, name);
         }
         if let Some(expected) = expected {
+            if self.coerce(actual, expected) {
+                return expected;
+            }
             // Whether either side is currently a bare generic type
             // parameter is only meaningful *before* the unification
             // attempt below, since a successful partial unification
@@ -141,7 +146,10 @@ impl<'ast> TypeCheckContext<'ast> {
             ExprKind::Ret(expr) => self.check_ret_expr(expr),
             ExprKind::Path(qself, path) => self.check_path_expr(qself, path),
             ExprKind::Call(callee, args) => self.check_call_expr(callee, args),
-            ExprKind::Cast(_expr, ty) => self.lower_ty(ty),
+            ExprKind::Cast(expr, ty) => {
+                self.check_expr(expr, None);
+                self.lower_ty(ty)
+            }
             ExprKind::Array(exprs) => self.check_array_expr(exprs, expected),
             ExprKind::Assign(lhs, rhs, _) => self.check_assign_expr(lhs, rhs),
             ExprKind::MethodCall(..) => self.check_method_call_expr(),
@@ -388,8 +396,9 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_ret_expr(&mut self, expr: &Option<Box<Expr>>) -> TyId {
+        let expected = self.current_return_ty();
         if let Some(expr) = expr {
-            self.check_expr(expr, None);
+            self.check_expr(expr, expected);
         }
         self.ty(TyKind::Never)
     }
@@ -520,6 +529,31 @@ impl<'ast> TypeCheckContext<'ast> {
             self.diagnostics
                 .push(CyclicType::new(span, expected_ty, found_ty));
         }
+    }
+
+    fn coerce(&mut self, actual: TyId, expected: TyId) -> bool {
+        let resolved_expected = self.inf.resolve(expected);
+        let Some(TyKind::TraitObject(trait_def, _)) = self.inf.ty(resolved_expected) else {
+            return false;
+        };
+        let trait_def = *trait_def;
+
+        let resolved_actual = self.inf.resolve(actual);
+        let Some(actual_kind) = self.inf.ty(resolved_actual) else {
+            return false;
+        };
+        let Some(target) = impl_target_of(actual_kind) else {
+            return false;
+        };
+
+        self.target_implements(target, trait_def)
+    }
+
+    fn unify_or_coerce(&mut self, actual: TyId, expected: TyId) -> Result<(), UnifyError> {
+        if self.coerce(actual, expected) {
+            return Ok(());
+        }
+        self.inf.unify(actual, expected)
     }
 
     fn unify_reporting_mismatch(
@@ -929,7 +963,9 @@ impl<'ast> TypeCheckContext<'ast> {
                     FnRetTy::Default(span) => *span,
                     FnRetTy::Ty(ty) => ty.span,
                 };
-                this.check_block_expecting(body, Some(output_ty), Some(output_span));
+                this.with_return_ty(output_ty, |this| {
+                    this.check_block_expecting(body, Some(output_ty), Some(output_span));
+                });
 
                 this.check_nested_functions(nested_items(body), def);
             });

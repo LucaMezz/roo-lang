@@ -13,10 +13,7 @@ fn expr_field<'src>(expr: impl RooParser<'src, Expr> + 'src) -> impl RooParser<'
                     kind: ExprKind::Path(
                         None,
                         Path {
-                            segments: vec![PathSegment {
-                                ident,
-                                args: None,
-                            }],
+                            segments: vec![PathSegment { ident, args: None }],
                             span: ident.span,
                         },
                     ),

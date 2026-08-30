@@ -26,6 +26,7 @@ pub(crate) enum TyKind {
     Fn(Vec<TyId>, TyId),
     Struct(DefId, Vec<TyId>),
     Enum(DefId, Vec<TyId>),
+    TraitObject(DefId, Vec<TyId>),
     Generic(GenericId),
 }
 
@@ -153,7 +154,9 @@ impl TypeResolver<'_> {
                 let output = Box::new(self.resolve(output));
                 Type::Fn(params, output)
             }
-            TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
+            TyKind::Struct(def, args)
+            | TyKind::Enum(def, args)
+            | TyKind::TraitObject(def, args) => {
                 let name = self.defs.get(def).symbol;
                 let args = args.iter().map(|&arg| self.resolve(arg)).collect();
                 Type::Named(self.names.resolve(name).to_owned(), args)

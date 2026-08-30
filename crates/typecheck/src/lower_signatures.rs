@@ -1,10 +1,10 @@
 //! Performs the signature lowering stage of the type checking. See
 //! [`SignatureLowerer`].
 
-use ast::visit::{Visitor, Walkable};
+use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
-    AssocItemKind, EnumDef as AstEnumDef, Fn, Ident, Impl, Item, ItemKind, ModKind, Path, Span,
-    Trait, TyAlias, UseTree, UseTreeKind, VariantData,
+    AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Ident, Impl, Item, ItemKind, ModKind,
+    Path, Span, Trait, TyAlias, UseTree, UseTreeKind, VariantData,
 };
 use intern::Symbol;
 
@@ -50,8 +50,8 @@ impl SignatureLowerer<'_, '_> {
 }
 
 impl SignatureLowerer<'_, '_> {
-    fn lower_trait_item(&mut self, _trt: &Trait) {
-        unimplemented!()
+    fn lower_trait_item(&mut self, trt: &Trait) {
+        trt.items.iter().for_each(|item| item.visit(self));
     }
 
     fn lower_impl_item(&mut self, imp: &Impl) {
@@ -68,10 +68,7 @@ impl SignatureLowerer<'_, '_> {
         });
 
         self.with_scope(scope, |this| {
-            imp.items.iter().for_each(|item| match &item.kind {
-                AssocItemKind::Fn(f) => this.lower_fn_item(f),
-                AssocItemKind::Type(alias) => this.lower_ty_alias_item(alias),
-            });
+            imp.items.iter().for_each(|item| item.visit(this));
         });
 
         let self_ty = self.with_scope(scope, |this| this.cx.lower_ty(&imp.self_ty));
@@ -375,7 +372,13 @@ impl Visitor for SignatureLowerer<'_, '_> {
             ItemKind::Use(tree) => self.lower_use_tree(tree, None),
             ItemKind::Trait(trt) => self.lower_trait_item(trt),
             ItemKind::Impl(imp) => self.lower_impl_item(imp),
-            _ => {}
+        }
+    }
+
+    fn visit_assoc_item(&mut self, item: &AssocItem) {
+        match &item.kind {
+            AssocItemKind::Fn(f) => self.lower_fn_item(f),
+            AssocItemKind::Type(alias) => self.lower_ty_alias_item(alias),
         }
     }
 }

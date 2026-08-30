@@ -5,6 +5,8 @@ impl int {
     }
 }
 
+
+
 fn main() {
     int::zero()
 }

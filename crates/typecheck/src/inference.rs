@@ -288,6 +288,12 @@ impl InferenceTable {
                         }
                         Ok(())
                     }
+                    (TyKind::TraitObject(s1, a1), TyKind::TraitObject(s2, a2)) if s1 == s2 => {
+                        for (x, y) in a1.into_iter().zip(a2) {
+                            self.unify_impl(x, y, reason)?;
+                        }
+                        Ok(())
+                    }
                     (TyKind::Generic(g1), TyKind::Generic(g2)) if g1 == g2 => Ok(()),
                     (k1, k2) => Err(UnifyError::ConstructorMismatch { t1, k1, t2, k2 }),
                 }
@@ -341,7 +347,7 @@ pub(crate) fn child_tys(kind: TyKind) -> Vec<TyId> {
         | TyKind::Generic(_) => Vec::new(),
         TyKind::Array(elem) => vec![elem],
         TyKind::Tuple(elems) => elems,
-        TyKind::Struct(_, args) | TyKind::Enum(_, args) => args,
+        TyKind::Struct(_, args) | TyKind::Enum(_, args) | TyKind::TraitObject(_, args) => args,
         TyKind::Fn(mut params, ret) => {
             params.push(ret);
             params

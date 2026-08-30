@@ -1,0 +1,42 @@
+trait Hash {
+    fn hash() -> String;
+}
+
+impl Hash for bool {
+    fn hash() -> String {
+        ""
+    }
+}
+
+impl Hash for String {
+    fn hash() -> String {
+        10
+    }
+}
+
+fn check(thing: Hash) -> Hash {
+    return true;
+}
+
+fn main() {
+    // TODO
+    //
+    // Curently, the `inference` module only checks
+    // that the two unified types are both of type
+    // TraitObject with the same generic argument
+    // types.
+    //
+    // Need it to allow unifying a TraitObject with
+    // something of another type, by first looking
+    // up if that type is an ImplTarget, and also
+    // it actually implements the trait which the
+    // TraitObject corresponds to.
+    //
+    // Ideally try not to modify the `inference`
+    // module for this. Maybe instead, at a site
+    // where a TraitObject is expected, it can be
+    // done directly.
+    let x: Hash = true;
+
+    check(x);
+}

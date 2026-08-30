@@ -1379,7 +1379,9 @@ impl Renderer<'_> {
                 let output_range = self.render_ty_into(buf, output, highlight);
                 inputs_range.or(output_range)
             }
-            TyKind::Struct(def, args) | TyKind::Enum(def, args) => {
+            TyKind::Struct(def, args)
+            | TyKind::Enum(def, args)
+            | TyKind::TraitObject(def, args) => {
                 let symbol = self.defs.get(def).symbol;
                 buf.push_str(self.symbols.resolve(symbol));
                 if !args.is_empty() {

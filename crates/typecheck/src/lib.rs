@@ -34,7 +34,9 @@ mod scope;
 mod types;
 
 use check::collect_fn_mod_items;
-use defs::{Def, DefKind, Defs, EnumDef, FnDef, IntoDefKind, StructDef, TyAliasDef, Typed, VariantDef};
+use defs::{
+    Def, DefKind, Defs, EnumDef, FnDef, IntoDefKind, StructDef, TyAliasDef, Typed, VariantDef,
+};
 use errors::Diagnostics;
 use generics::{GenericId, GenericRegistry};
 use lower_signatures::SignatureLowerer;
@@ -151,6 +153,8 @@ struct TypeCheckContext<'ast> {
     impls_by_target: HashMap<ImplTarget, Vec<ImplInfo>>,
 
     inference_vars: Vec<(VarId, Span)>,
+
+    return_tys: Vec<TyId>,
 }
 
 impl<'ast> TypeCheckContext<'ast> {
@@ -172,6 +176,7 @@ impl<'ast> TypeCheckContext<'ast> {
             recursion: RecursionTracker::new(),
             items_by_def: HashMap::new(),
             impls_by_target: HashMap::new(),
+            return_tys: Vec::new(),
         }
     }
 
@@ -201,6 +206,17 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn or_fresh_var(&mut self, ty: Option<TyId>) -> TyId {
         ty.unwrap_or_else(|| self.fresh_var())
+    }
+
+    fn with_return_ty<T>(&mut self, ty: TyId, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.return_tys.push(ty);
+        let result = f(self);
+        self.return_tys.pop();
+        result
+    }
+
+    fn current_return_ty(&self) -> Option<TyId> {
+        self.return_tys.last().copied()
     }
 
     fn ty(&mut self, kind: TyKind) -> TyId {
@@ -507,6 +523,13 @@ impl<'ast> TypeCheckContext<'ast> {
             });
     }
 
+    /// Whether `target` has an impl of the trait `trait_def`.
+    fn target_implements(&self, target: ImplTarget, trait_def: DefId) -> bool {
+        self.impls_by_target
+            .get(&target)
+            .is_some_and(|impls| impls.iter().any(|imp| imp.of_trait == Some(trait_def)))
+    }
+
     /// Declares a new [`Def`] in a scope of a certain kind.
     ///
     /// Any ty this kind of def needs must already be embedded
@@ -688,6 +711,11 @@ impl<'ast> TypeCheckContext<'ast> {
                         let generics = self.def(def).generics().to_vec();
                         let args = self.instantiate_adt_args(&generics, path);
                         self.ty(TyKind::Enum(def, args))
+                    }
+                    DefKind::Trait => {
+                        let generics = self.def(def).generics().to_vec();
+                        let args = self.instantiate_adt_args(&generics, path);
+                        self.ty(TyKind::TraitObject(def, args))
                     }
                     _ => self.instantiate_path(def, path),
                 }

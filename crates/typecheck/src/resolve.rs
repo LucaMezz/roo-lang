@@ -1,10 +1,10 @@
 //! Performs the resolution stage of the type checking. See
 //! [`Resolver`].
 
-use ast::visit::{Visitor, Walkable};
+use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
-    EnumDef as AstEnumDef, Fn, Generics, Ident, Item, ItemKind, ModKind, Span, Trait, TyAlias,
-    VariantData,
+    AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Generics, Ident, Item, ItemKind, ModKind,
+    Span, Trait, TyAlias, VariantData,
 };
 use intern::Symbol;
 
@@ -47,6 +47,13 @@ impl Visitor for Resolver<'_, '_> {
             ItemKind::Mod(ident, ModKind::Loaded(_)) => self.resolve_mod_loaded_item(ident, item),
             ItemKind::Use(_) => self.resolve_use_item(),
             ItemKind::Impl(_) => self.resolve_impl_item(),
+        }
+    }
+
+    fn visit_assoc_item(&mut self, item: &Item<AssocItemKind>) {
+        match &item.kind {
+            AssocItemKind::Fn(f) => self.resolve_fn_item(f),
+            AssocItemKind::Type(alias) => self.resolve_ty_alias_item(alias),
         }
     }
 }
@@ -201,8 +208,12 @@ impl Resolver<'_, '_> {
     }
 
     fn resolve_trait_item(&mut self, t: &Trait) {
+        let scope = self.new_scope();
         self.cx
             .declare(t.ident.symbol, t.ident.span, DefKind::Trait);
+        self.with_scope(scope, |this| {
+            t.items.iter().for_each(|item| item.visit(this))
+        })
     }
 
     fn resolve_mod_unloaded_item(&mut self, ident: &Ident) {
