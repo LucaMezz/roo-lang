@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use ast::{
-    Block, Closure, Expr, ExprKind, FnRetTy, Ident, Item, ItemKind, Lit, LitKind, Local, LocalKind,
-    MethodCall, ModKind, Pat, PatKind, Path, QSelf, Span, Stmt, StmtKind, StructExpr,
+    AssocItemKind, Block, Closure, Expr, ExprKind, FnRetTy, Ident, Impl, Item, ItemKind, Lit,
+    LitKind, Local, LocalKind, MethodCall, ModKind, Pat, PatKind, Path, QSelf, Span, Stmt,
+    StmtKind, StructExpr, Trait,
 };
 use diagnostics::Related;
 use intern::Symbol;
@@ -865,6 +866,11 @@ impl<'ast> TypeCheckContext<'ast> {
         self.with_fn_def(name, |_, def, scope| (def, scope))
     }
 
+    fn resolve_fn_def_at(&self, f: &ast::Fn) -> Option<(DefIdOf<FnDef>, ScopeId)> {
+        let def = self.positions.def_at_span(f.ident.span)?;
+        self.fn_def_scope(def)
+    }
+
     fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(DefIdOf<FnDef>, ScopeId, &'b ast::Fn)> {
         let ItemKind::Fn(f) = &item.kind else {
             return None;
@@ -902,6 +908,27 @@ impl<'ast> TypeCheckContext<'ast> {
                 this.check_items(items.iter().map(Box::as_ref));
             }
             ModKind::Unloaded => unimplemented!(),
+        });
+    }
+
+    pub(crate) fn check_trait(&mut self, t: &'ast Trait) {
+        self.with_trait_scope(t.ident.symbol, |this, _def| {
+            t.items.iter().for_each(|item| match &item.kind {
+                AssocItemKind::Fn(f) => this.check_function(f),
+                AssocItemKind::Type(_) => {}
+            });
+        });
+    }
+
+    pub(crate) fn check_impl(&mut self, imp: &'ast Impl) {
+        imp.items.iter().for_each(|item| match &item.kind {
+            AssocItemKind::Fn(f) => {
+                let scc = self
+                    .resolve_fn_def_at(f)
+                    .and_then(|(def, scope)| self.check_fn_body(def, scope, f));
+                self.finish_scc(scc);
+            }
+            AssocItemKind::Type(_) => {}
         });
     }
 

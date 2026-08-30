@@ -1,5 +1,7 @@
 //! Contains the [`PositionIndex`] data structure, which maps spans within
 //! the source code, to defs and types discovered during type checking.
+use std::collections::HashMap;
+
 use ast::Span;
 
 use crate::DefId;
@@ -12,6 +14,8 @@ use crate::DefId;
 pub(crate) struct PositionIndex {
     defs: Vec<(Span, DefId)>,
 
+    defs_by_span: HashMap<Span, DefId>,
+
     primitives: Vec<(Span, &'static str)>,
 }
 
@@ -20,6 +24,7 @@ impl PositionIndex {
     /// span.
     pub(crate) fn record_def(&mut self, span: Span, def: DefId) {
         self.defs.push((span, def));
+        self.defs_by_span.insert(span, def);
     }
 
     /// Records a discovered explicit primitive type within the type checked
@@ -36,6 +41,11 @@ impl PositionIndex {
             .filter(|(span, _)| span.start <= offset && offset < span.end)
             .min_by_key(|(span, _)| span.end - span.start)
             .map(|(_, def)| *def)
+    }
+
+    /// Looks up the def which was recorded at exactly the given span.
+    pub(crate) fn def_at_span(&self, span: Span) -> Option<DefId> {
+        self.defs_by_span.get(&span).copied()
     }
 
     /// Queries the index to see if there is an explitit primitive type at

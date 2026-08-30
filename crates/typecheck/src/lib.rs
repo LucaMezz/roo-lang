@@ -346,6 +346,8 @@ impl<'ast> TypeCheckContext<'ast> {
         items.into_iter().for_each(|item| match &item.kind {
             ItemKind::Fn(f) => self.check_function(f),
             ItemKind::Mod(ident, kind) => self.check_module(ident, kind),
+            ItemKind::Trait(trt) => self.check_trait(trt),
+            ItemKind::Impl(imp) => self.check_impl(imp),
             _ => {}
         });
     }

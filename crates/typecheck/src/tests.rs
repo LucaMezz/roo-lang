@@ -1517,6 +1517,94 @@ fn check_all(source: &str) -> TypeCheckContext<'static> {
     cx
 }
 
+#[test]
+fn check_all_trait_default_fn_body_is_type_checked() {
+    let source = r#"
+trait Greet {
+    fn hello() -> int {
+        true
+    }
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
+#[test]
+fn check_all_trait_default_fn_body_with_no_error_has_no_diagnostics() {
+    let source = r#"
+trait Greet {
+    fn hello() -> int {
+        1
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_trait_fn_with_no_default_body_has_no_diagnostics() {
+    let source = r#"
+trait Greet {
+    fn hello() -> int;
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_impl_fn_body_is_type_checked() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello() -> int {
+        true
+    }
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
+#[test]
+fn check_all_impl_fn_body_with_no_error_has_no_diagnostics() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn hello() -> int {
+        1
+    }
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_trait_impl_fn_body_is_type_checked() {
+    let source = r#"
+trait Greet {
+    fn hello() -> int;
+}
+struct Foo;
+impl Greet for Foo {
+    fn hello() -> int {
+        true
+    }
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
 fn fn_body_scope(cx: &TypeCheckContext<'_>, def: DefId) -> ScopeId {
     match &cx.def(def).kind {
         DefKind::Fn(fn_data) => fn_data.scope,

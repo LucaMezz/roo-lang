@@ -3,7 +3,7 @@ use std::fmt;
 pub mod visit;
 use crate::visit::Walkable;
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
