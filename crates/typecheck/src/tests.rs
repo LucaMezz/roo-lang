@@ -229,6 +229,108 @@ fn resolve_path_module_segment_is_looked_up_by_namespace_not_by_symbol_alone() {
 }
 
 #[test]
+fn resolve_path_resolves_a_fn_through_a_primitives_inherent_impl() {
+    let mut cx = resolve_and_lower("impl int { fn zero() -> int { 0 } }");
+    let target = path(&mut cx.symbols, &["int", "zero"]);
+    assert!(cx.resolve_path_to_value(&target).is_some());
+}
+
+#[test]
+fn resolve_path_resolves_an_associated_type_through_a_primitives_trait_impl() {
+    let source = r#"
+trait Add<Rhs = Self> {
+    type Output;
+    fn add(self, other: Rhs) -> Output;
+}
+impl Add for int {
+    type Output = Self;
+    fn add(self, other: Self) -> Output { self }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    let target = path(&mut cx.symbols, &["int", "Output"]);
+    assert!(cx.resolve_path_to_type(&target).is_some());
+}
+
+#[test]
+fn resolve_path_through_a_primitive_impl_checks_the_requested_namespace() {
+    let source = r#"
+trait Add<Rhs = Self> {
+    type Output;
+    fn add(self, other: Rhs) -> Output;
+}
+impl Add for int {
+    type Output = Self;
+    fn add(self, other: Self) -> Output { self }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    let target = path(&mut cx.symbols, &["int", "Output"]);
+    assert!(cx.resolve_path_to_value(&target).is_none());
+}
+
+#[test]
+fn resolve_path_resolves_through_a_blanket_impl_for_a_primitive() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl<T> Into<T> for T {
+    fn into() -> T { 0 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    let target = path(&mut cx.symbols, &["int", "into"]);
+    assert!(cx.resolve_path_to_value(&target).is_some());
+}
+
+#[test]
+fn resolve_path_fails_when_no_impl_provides_the_requested_item() {
+    let mut cx = resolve_and_lower("impl int { fn zero() -> int { 0 } }");
+    let target = path(&mut cx.symbols, &["int", "nonexistent"]);
+    assert!(cx.resolve_path_to_value(&target).is_none());
+}
+
+#[test]
+fn resolve_path_is_ambiguous_when_two_impls_define_the_same_name_for_a_primitive() {
+    let source = r#"
+impl int {
+    fn zero() -> int { 0 }
+}
+impl int {
+    fn zero() -> int { 1 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    let target = path(&mut cx.symbols, &["int", "zero"]);
+    assert!(cx.resolve_path_to_value(&target).is_none());
+}
+
+#[test]
+fn resolve_path_resolves_a_fn_through_a_struct_declared_inherent_impl() {
+    let mut cx = resolve_and_lower("struct Foo; impl Foo { fn make() -> Foo { Foo } }");
+    let target = path(&mut cx.symbols, &["Foo", "make"]);
+    assert!(cx.resolve_path_to_value(&target).is_some());
+}
+
+#[test]
+fn resolve_path_continues_past_an_associated_type_alias_into_its_underlying_types_impls() {
+    let source = r#"
+trait Add<Rhs = Self> {
+    type Output;
+    fn add(self, other: Rhs) -> Output;
+}
+impl Add for int {
+    type Output = Self;
+    fn add(self, other: Self) -> Output { self }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    let target = path(&mut cx.symbols, &["int", "Output", "add"]);
+    assert!(cx.resolve_path_to_value(&target).is_some());
+}
+
+#[test]
 fn lower_ty_never() {
     let mut cx = TypeCheckContext::new(Interner::new());
     let ty_val = ty(&mut cx.symbols, "!");

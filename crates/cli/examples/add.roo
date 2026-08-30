@@ -1,0 +1,67 @@
+
+trait Zero {
+    fn zero() -> Self;
+}
+
+trait Add<Rhs = Self> {
+    type Output;
+
+    fn add(self, other: Rhs) -> Output;
+}
+
+impl Add for int {
+    type Output = Self;
+
+    #[intrinsic]
+    fn add(self, other: Self) -> Output;
+}
+
+impl Zero for int {
+    fn zero() -> Self {
+        0
+    }
+}
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+use Option::*;
+
+struct Tree {
+    root: TreeNode,
+}
+
+impl Tree {
+    fn new() {
+        Tree {
+            root: TreeNode::root()
+        }
+    }
+}
+
+struct TreeNode {
+    parent: Option<TreeNode>,
+    children: [TreeNode],
+}
+
+impl TreeNode {
+    fn root() {
+        TreeNode {
+            parent: None,
+            children: []
+        }
+    }
+}
+
+fn main() {
+    let x: Add = 10;
+    let y: Add<int> = 10;
+    let out: int::Output = 73;
+    let z = int::Output::add(18, 8);
+
+    let zer = int::zero();
+
+    let tree = Tree::new();
+}

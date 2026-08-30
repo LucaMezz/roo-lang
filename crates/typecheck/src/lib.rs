@@ -398,24 +398,107 @@ impl<'ast> TypeCheckContext<'ast> {
     fn resolve_path(&mut self, path: &Path, namespace: Namespace) -> Option<DefId> {
         let last = path.segments.len() - 1;
 
-        let mut segments = path.segments.iter().enumerate();
-        let (i, first) = segments.next()?;
-        let symbol = first.ident.symbol;
-        let first_def = self.scopes.lookup_up_chain(
-            self.current_scope,
-            symbol,
-            segment_namespace(i, last, namespace),
-        )?;
+        let (start, first_def) = self
+            .resolve_primitive_prefix(path, last, namespace)
+            .or_else(|| {
+                let (i, first) = path.segments.iter().enumerate().next()?;
+                let def = self.scopes.lookup_up_chain(
+                    self.current_scope,
+                    first.ident.symbol,
+                    segment_namespace(i, last, namespace),
+                )?;
+                Some((1, def))
+            })?;
 
-        segments.try_fold(first_def, |def, (i, segment)| {
-            let scope = self
-                .mod_def_scope(def)
-                .map(|(_, scope)| scope)
-                .or_else(|| self.enum_def_scope(def).map(|(_, scope)| scope))?;
-            let symbol = segment.ident.symbol;
-            self.scopes
-                .lookup(scope, symbol, segment_namespace(i, last, namespace))
-        })
+        path.segments[start..]
+            .iter()
+            .enumerate()
+            .map(|(j, segment)| (start + j, segment))
+            .try_fold(first_def, |def, (i, segment)| {
+                let symbol = segment.ident.symbol;
+                let ns = segment_namespace(i, last, namespace);
+                self.resolve_path_segment(def, symbol, ns)
+            })
+    }
+
+    fn resolve_path_segment(
+        &mut self,
+        def: DefId,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<DefId> {
+        if let Some(found) = self.resolve_in_def_scope(def, symbol, namespace) {
+            return Some(found);
+        }
+
+        let target = self.impl_target_of_def(def)?;
+        self.resolve_in_impls_for_target(target, symbol, namespace)
+    }
+
+    fn resolve_in_def_scope(
+        &self,
+        def: DefId,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<DefId> {
+        let scope = self
+            .mod_def_scope(def)
+            .map(|(_, scope)| scope)
+            .or_else(|| self.enum_def_scope(def).map(|(_, scope)| scope))?;
+        self.scopes.lookup(scope, symbol, namespace)
+    }
+
+    fn impl_target_of_def(&mut self, def: DefId) -> Option<ImplTarget> {
+        let alias_ty = match &self.def(def).kind {
+            DefKind::Struct(_) | DefKind::Enum(_) => return Some(ImplTarget::Adt(def)),
+            DefKind::TyAlias(alias) => alias.ty,
+            _ => return None,
+        };
+
+        let resolved = self.inf.resolve(alias_ty);
+        let kind = self.inf.ty(resolved)?.clone();
+        impl_target_of(&kind)
+    }
+
+    fn resolve_primitive_prefix(
+        &mut self,
+        path: &Path,
+        last: usize,
+        namespace: Namespace,
+    ) -> Option<(usize, DefId)> {
+        let first = path.segments.first()?;
+        let (_, kind) = PRIMITIVE_TYPES
+            .iter()
+            .find(|(name, _)| self.symbols.get(name) == Some(first.ident.symbol))?;
+        let target = impl_target_of(kind)?;
+
+        let second = path.segments.get(1)?;
+        let symbol = second.ident.symbol;
+        let ns = segment_namespace(1, last, namespace);
+
+        let def = self.resolve_in_impls_for_target(target, symbol, ns)?;
+        Some((2, def))
+    }
+
+    fn resolve_in_impls_for_target(
+        &self,
+        target: ImplTarget,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<DefId> {
+        let mut matches = self
+            .impls_by_target
+            .get(&target)
+            .into_iter()
+            .flatten()
+            .chain(self.blanket_impls.iter())
+            .filter_map(|imp| self.scopes.lookup(imp.scope, symbol, namespace));
+
+        let found = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(found)
     }
 
     fn resolve_path_to_type(&mut self, path: &Path) -> Option<DefId> {

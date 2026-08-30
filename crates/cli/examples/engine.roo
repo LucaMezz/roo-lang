@@ -1,0 +1,42 @@
+mod engine {
+    pub struct Vec3 {
+        x: float,
+        y: float,
+        z: float,
+    }
+
+    impl Add for Vec3 {
+        type Output = Self;
+
+        #[extern]
+        fn add(self, other: Self) -> Output;
+    }
+
+    pub struct EntityId(int);
+
+    #[extern]
+    pub fn spawn_entity(name: String, position: Vec3) -> EntityId;
+
+    #[extern]
+    pub fn destroy_entity(entity: EntityId) -> ();
+
+    #[extern]
+    pub fn get_position(entity: EntityId) -> Vec3;
+
+    #[extern]
+    pub fn set_position(entity: EntityId, position: Vec3) -> ();
+
+    #[doc = "This is a docstring"]
+    #[extern]
+    #[deprecated]
+    pub fn print(message: String) -> ();
+}
+
+use engine::*;
+
+fn main() -> () {
+    destroy_entity(engine::EntityId(10));
+    let origin = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+    let dir = Vec3 { x: 3.0, y: 4.0, z: 5.0 };
+    // let result = origin.add(dir); 
+}
