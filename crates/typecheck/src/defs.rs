@@ -420,6 +420,13 @@ impl Defs {
         }
     }
 
+    pub(crate) fn fn_ref(&self, def: DefIdOf<FnDef>) -> &FnDef {
+        match &self.defs[def.id()].kind {
+            DefKind::Fn(f) => f,
+            _ => unreachable!("DefIdOf<FnDef> guarantees a function def"),
+        }
+    }
+
     pub(crate) fn ty_alias_mut(&mut self, def: DefIdOf<TyAliasDef>) -> &mut TyAliasDef {
         match &mut self.defs[def.id()].kind {
             DefKind::TyAlias(a) => a,

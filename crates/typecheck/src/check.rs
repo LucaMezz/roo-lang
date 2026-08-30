@@ -15,7 +15,8 @@ use crate::errors::{
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
-    CxExt, DefId, GenericId, PatDeclKind, TyId, TypeCheckContext, display_path, impl_target_of,
+    CxExt, DefId, DefIdOf, FnDef, GenericId, PatDeclKind, ScopeId, TyId, TypeCheckContext,
+    display_path, impl_target_of,
 };
 
 #[derive(Default)]
@@ -857,23 +858,39 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl<'ast> TypeCheckContext<'ast> {
-    fn resolve_fn_def(&mut self, f: &ast::Fn) -> Option<DefId> {
+    fn resolve_fn_def(&mut self, f: &ast::Fn) -> Option<(DefIdOf<FnDef>, ScopeId)> {
         let name = f.ident.symbol;
-        self.with_value_def(name, |_, def| def)
+        self.with_fn_def(name, |_, def, scope| (def, scope))
     }
 
-    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(DefId, &'b ast::Fn)> {
+    fn resolve_fn<'b>(&mut self, item: &'b Item) -> Option<(DefIdOf<FnDef>, ScopeId, &'b ast::Fn)> {
         let ItemKind::Fn(f) = &item.kind else {
             return None;
         };
-        self.resolve_fn_def(f).map(|def| (def, f.as_ref()))
+        self.resolve_fn_def(f)
+            .map(|(def, scope)| (def, scope, f.as_ref()))
     }
 
     pub(crate) fn check_function(&mut self, f: &'ast ast::Fn) {
-        self.resolve_fn_def(f)
-            .and_then(|def| self.check_fn_body(def, f))
+        let scc = self
+            .resolve_fn_def(f)
+            .and_then(|(def, scope)| self.check_fn_body(def, scope, f));
+        self.finish_scc(scc);
+    }
+
+    fn finish_scc(&mut self, scc: Option<Vec<DefId>>) {
+        let Some(scc) = scc else {
+            return;
+        };
+        let scc: Vec<DefIdOf<FnDef>> = scc
             .into_iter()
-            .for_each(|scc| self.generalize_group(&scc));
+            .map(|def| {
+                self.fn_def_scope(def)
+                    .map(|(def, _)| def)
+                    .expect("SCC members are always function defs")
+            })
+            .collect();
+        self.generalize_group(&scc);
     }
 
     pub(crate) fn check_module(&mut self, ident: &Ident, kind: &'ast ModKind) {
@@ -904,17 +921,21 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    fn check_nested_functions(&mut self, items: impl IntoIterator<Item = &'ast Item>, from: DefId) {
+    fn check_nested_functions(
+        &mut self,
+        items: impl IntoIterator<Item = &'ast Item>,
+        from: DefIdOf<FnDef>,
+    ) {
         items
             .into_iter()
             .filter_map(|item| self.resolve_fn(item))
             .collect::<Vec<_>>()
             .into_iter()
-            .for_each(|(def, f)| {
-                let scc = self.record_edge(from, def, |this| this.check_fn_body(def, f));
-                if let Some(scc) = scc {
-                    self.generalize_group(&scc);
-                }
+            .for_each(|(def, scope, f)| {
+                let scc = self.record_edge(from.id(), def.id(), |this| {
+                    this.check_fn_body(def, scope, f)
+                });
+                self.finish_scc(scc);
             });
     }
 
@@ -925,31 +946,38 @@ impl<'ast> TypeCheckContext<'ast> {
         let ItemKind::Fn(f) = &item.kind else {
             return;
         };
+        let Some((def, scope)) = self.fn_def_scope(def) else {
+            return;
+        };
 
         let scc = match self.recursion.current() {
             Some(from) => {
-                self.recursion.record_call(from, def);
-                self.record_edge(from, def, |this| this.check_fn_body(def, f))
+                self.recursion.record_call(from, def.id());
+                self.record_edge(from, def.id(), |this| this.check_fn_body(def, scope, f))
             }
-            None if !self.recursion.is_visited(def) => self.check_fn_body(def, f),
+            None if !self.recursion.is_visited(def.id()) => self.check_fn_body(def, scope, f),
             None => None,
         };
 
-        scc.into_iter().for_each(|scc| self.generalize_group(&scc));
+        self.finish_scc(scc);
     }
 
-    fn check_fn_body(&mut self, def: DefId, f: &'ast ast::Fn) -> Option<Vec<DefId>> {
-        if self.recursion.is_visited(def) {
+    fn check_fn_body(
+        &mut self,
+        def: DefIdOf<FnDef>,
+        scope: ScopeId,
+        f: &'ast ast::Fn,
+    ) -> Option<Vec<DefId>> {
+        if self.recursion.is_visited(def.id()) {
             return None;
         }
 
-        let (_, scope) = self.fn_def_scope(def)?;
         let body = f.body.as_ref()?;
 
-        let def_ty = self.def(def).ty();
+        let def_ty = self.defs.fn_ref(def).ty;
         let (input_tys, output_ty) = self.resolved_fn_parts(def_ty)?;
 
-        let (_, scc) = self.checking(def, |this| {
+        let (_, scc) = self.checking(def.id(), |this| {
             this.with_scope(scope, |this| {
                 f.sig
                     .inputs

@@ -14,7 +14,7 @@ use crate::errors::GenericArgumentCountMismatch;
 use crate::generics::SyntheticNames;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
-use crate::{DefId, GenericId, TyId, TypeCheckContext, VarId};
+use crate::{DefId, DefIdOf, FnDef, GenericId, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
@@ -68,7 +68,7 @@ impl<'ast> TypeCheckContext<'ast> {
         });
     }
 
-    pub(crate) fn generalize_group(&mut self, members: &[DefId]) {
+    pub(crate) fn generalize_group(&mut self, members: &[DefIdOf<FnDef>]) {
         let enclosing = self.enclosing_free_vars();
 
         // A fresh, local source of synthesised names for this group --
@@ -85,7 +85,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let mut names = SyntheticNames::new();
         members
             .iter()
-            .for_each(|&def| self.reserve_declared_generics(def, &mut names));
+            .for_each(|&def| self.reserve_declared_generics(def.id(), &mut names));
         self.recursion
             .stack()
             .to_vec()
@@ -101,10 +101,10 @@ impl<'ast> TypeCheckContext<'ast> {
         // function context.
         //
         // These become candidates for generalisation.
-        let per_member_vars: Vec<(DefId, Vec<VarId>)> = members
+        let per_member_vars: Vec<(DefIdOf<FnDef>, Vec<VarId>)> = members
             .iter()
             .map(|&def| {
-                let ty = self.def(def).ty();
+                let ty = self.defs.fn_ref(def).ty;
                 let mut vars = Vec::new();
                 self.free_vars(ty, &mut vars);
                 vars.retain(|v| !enclosing.contains(v));
@@ -128,14 +128,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
         // For each function, append all new generics synthesised from
         // generalisation to its def.
-        per_member_vars.into_iter().for_each(|(def, vars)| {
-            // `def` comes from an SCC of the call graph, which only
-            // ever contains function defs (see `RecursionTracker`,
-            // driven exclusively from `check_fn_body`).
-            let fn_def = self
-                .fn_def_scope(def)
-                .map(|(fn_def, _)| fn_def)
-                .expect("SCC members are always function defs");
+        per_member_vars.into_iter().for_each(|(fn_def, vars)| {
             vars.into_iter().for_each(|var| {
                 let id = assigned[&var];
                 self.defs.fn_mut(fn_def).generics.push(id);
