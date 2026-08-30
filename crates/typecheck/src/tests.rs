@@ -1738,7 +1738,7 @@ impl Into<bool> for bool {
         .expect("Into should be a trait");
 
     let bool_ty = cx.ty(TyKind::Bool);
-    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[bool_ty]));
+    assert!(cx.target_implements(bool_ty, trait_def, &[bool_ty]));
 }
 
 #[test]
@@ -1760,8 +1760,9 @@ impl Into<bool> for bool {
         .trait_def_scope(into_def)
         .expect("Into should be a trait");
 
+    let bool_ty = cx.ty(TyKind::Bool);
     let string_ty = cx.ty(TyKind::Str);
-    assert!(!cx.target_implements(ImplTarget::Bool, trait_def, &[string_ty]));
+    assert!(!cx.target_implements(bool_ty, trait_def, &[string_ty]));
 }
 
 #[test]
@@ -1789,9 +1790,103 @@ impl Into<int> for bool {
     let bool_ty = cx.ty(TyKind::Bool);
     let int_ty = cx.ty(TyKind::Int);
     let string_ty = cx.ty(TyKind::Str);
-    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[bool_ty]));
-    assert!(cx.target_implements(ImplTarget::Bool, trait_def, &[int_ty]));
-    assert!(!cx.target_implements(ImplTarget::Bool, trait_def, &[string_ty]));
+    assert!(cx.target_implements(bool_ty, trait_def, &[bool_ty]));
+    assert!(cx.target_implements(bool_ty, trait_def, &[int_ty]));
+    assert!(!cx.target_implements(bool_ty, trait_def, &[string_ty]));
+}
+
+#[test]
+fn target_implements_matches_via_a_blanket_impl_with_no_other_impls_for_the_target() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl<T> Into<T> for T {
+    fn into() -> T { 0 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let int_ty = cx.ty(TyKind::Int);
+    assert!(cx.target_implements(int_ty, trait_def, &[int_ty]));
+}
+
+#[test]
+fn target_implements_does_not_match_a_blanket_impl_when_the_query_isnt_reflexive() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl<T> Into<T> for T {
+    fn into() -> T { 0 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let bool_ty = cx.ty(TyKind::Bool);
+    let int_ty = cx.ty(TyKind::Int);
+    assert!(!cx.target_implements(bool_ty, trait_def, &[int_ty]));
+}
+
+#[test]
+fn target_implements_matches_via_either_a_concrete_impl_or_a_blanket_impl() {
+    let source = r#"
+trait Into<K> {
+    fn into() -> K;
+}
+impl Into<bool> for bool {
+    fn into() -> bool { true }
+}
+impl<T> Into<T> for T {
+    fn into() -> T { 0 }
+}
+"#;
+    let mut cx = resolve_and_lower(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+
+    let into_def =
+        declared_def(&cx, cx.current_scope, Namespace::Type, "Into").expect("Into should resolve");
+    let (trait_def, _) = cx
+        .trait_def_scope(into_def)
+        .expect("Into should be a trait");
+
+    let bool_ty = cx.ty(TyKind::Bool);
+    let string_ty = cx.ty(TyKind::Str);
+    assert!(cx.target_implements(bool_ty, trait_def, &[bool_ty]));
+    assert!(cx.target_implements(string_ty, trait_def, &[string_ty]));
+    assert!(!cx.target_implements(bool_ty, trait_def, &[string_ty]));
+}
+
+#[test]
+fn check_all_a_trait_bound_argument_can_be_satisfied_only_by_a_blanket_impl() {
+    let source = r#"
+trait Into<K> {
+    fn into(self) -> K;
+}
+impl<T> Into<T> for T {
+    fn into(self) -> T { self }
+}
+fn check(thing: Into<int>) {}
+fn use_it() {
+    check(1);
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
 }
 
 #[test]

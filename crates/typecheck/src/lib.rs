@@ -66,6 +66,7 @@ struct ImplInfo {
     of_trait: Option<DefIdOf<TraitDef>>,
     generics: Vec<GenericId>,
     trait_args: Vec<TyId>,
+    self_ty: TyId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -157,6 +158,8 @@ struct TypeCheckContext<'ast> {
 
     impls_by_target: HashMap<ImplTarget, Vec<ImplInfo>>,
 
+    blanket_impls: Vec<ImplInfo>,
+
     inference_vars: Vec<(VarId, Span)>,
 
     return_tys: Vec<TyId>,
@@ -183,6 +186,7 @@ impl<'ast> TypeCheckContext<'ast> {
             recursion: RecursionTracker::new(),
             items_by_def: HashMap::new(),
             impls_by_target: HashMap::new(),
+            blanket_impls: Vec::new(),
             return_tys: Vec::new(),
             self_tys: Vec::new(),
         }
@@ -540,6 +544,7 @@ impl<'ast> TypeCheckContext<'ast> {
         of_trait: Option<DefIdOf<TraitDef>>,
         generics: Vec<GenericId>,
         trait_args: Vec<TyId>,
+        self_ty: TyId,
     ) {
         self.impls_by_target
             .entry(target)
@@ -549,37 +554,69 @@ impl<'ast> TypeCheckContext<'ast> {
                 of_trait,
                 generics,
                 trait_args,
+                self_ty,
             });
     }
 
-    /// Whether `target` has an impl of the trait `trait_def`.
+    fn register_blanket_impl(
+        &mut self,
+        scope: ScopeId,
+        of_trait: Option<DefIdOf<TraitDef>>,
+        generics: Vec<GenericId>,
+        trait_args: Vec<TyId>,
+        self_ty: TyId,
+    ) {
+        self.blanket_impls.push(ImplInfo {
+            scope,
+            of_trait,
+            generics,
+            trait_args,
+            self_ty,
+        });
+    }
+
+    /// Whether `target_ty` has an impl of the trait `trait_def`.
     fn target_implements(
         &mut self,
-        target: ImplTarget,
+        target_ty: TyId,
         trait_def: DefIdOf<TraitDef>,
         trait_args: &[TyId],
     ) -> bool {
-        let Some(candidates) = self.impls_by_target.get(&target) else {
-            return false;
-        };
-        let candidates: Vec<ImplInfo> = candidates
-            .iter()
+        let resolved = self.inf.resolve(target_ty);
+        let target = self
+            .inf
+            .ty(resolved)
+            .cloned()
+            .and_then(|kind| impl_target_of(&kind));
+
+        let bucketed = target
+            .and_then(|target| self.impls_by_target.get(&target))
+            .into_iter()
+            .flatten();
+
+        let candidates: Vec<ImplInfo> = bucketed
+            .chain(self.blanket_impls.iter())
             .filter(|imp| imp.of_trait == Some(trait_def))
             .cloned()
             .collect();
 
         candidates
             .iter()
-            .any(|imp| self.impl_matches_trait_args(imp, trait_args))
+            .any(|imp| self.impl_matches(imp, target_ty, trait_args))
     }
 
-    fn impl_matches_trait_args(&mut self, imp: &ImplInfo, trait_args: &[TyId]) -> bool {
+    fn impl_matches(&mut self, imp: &ImplInfo, target_ty: TyId, trait_args: &[TyId]) -> bool {
         self.speculatively(|this| {
             let mut subst: HashMap<GenericId, TyId> = imp
                 .generics
                 .iter()
                 .map(|&id| (id, this.fresh_var()))
                 .collect();
+
+            let instantiated_self = this.instantiate_ty(imp.self_ty, &mut subst);
+            if this.inf.unify(instantiated_self, target_ty).is_err() {
+                return false;
+            }
 
             imp.trait_args.len() == trait_args.len()
                 && imp

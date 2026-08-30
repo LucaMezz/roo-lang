@@ -8,27 +8,15 @@ impl bool {
     }
 }
 
-impl Into<bool> for bool {
-    fn into(self) -> Self {
-        self
-    }
-}
-
-impl Into<String> for String {
-    fn into(self) -> String {
+impl<T> Into<T> for T {
+    fn into(self) -> T {
         self
     }
 }
 
 impl<T> Into<T> for String {
     fn into(self) -> T {
-        self
-    }
-}
-
-impl<T> Into<T> for T {
-    fn into(self) -> T {
-        self
+        self as T;
     }
 }
 
@@ -38,9 +26,9 @@ fn check(thing: Into<String>) -> String {
 
 fn main() {
     let x: Into<[int]> = [10];
+    let x: Into<[int]> = 0;
 
-    let eg: Into<([int], Fn() -> ())> = "10";
-    let edge: Into<int> = "10";
+    let x: Into<bool> = "Hello World";
 
     check("10");
 }

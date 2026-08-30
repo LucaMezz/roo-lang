@@ -17,7 +17,7 @@ use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
     CxExt, DefId, DefIdOf, FnDef, GenericId, PatDeclKind, ScopeId, TyId, TypeCheckContext,
-    display_path, impl_target_of,
+    display_path,
 };
 
 #[derive(Default)]
@@ -542,15 +542,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let trait_def = *trait_def;
         let trait_args = trait_args.clone();
 
-        let resolved_actual = self.inf.resolve(actual);
-        let Some(actual_kind) = self.inf.ty(resolved_actual) else {
-            return false;
-        };
-        let Some(target) = impl_target_of(actual_kind) else {
-            return false;
-        };
-
-        self.target_implements(target, trait_def, &trait_args)
+        self.target_implements(actual, trait_def, &trait_args)
     }
 
     fn unify_or_coerce(&mut self, actual: TyId, expected: TyId) -> Result<(), UnifyError> {

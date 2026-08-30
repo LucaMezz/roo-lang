@@ -109,9 +109,13 @@ impl SignatureLowerer<'_, '_> {
             of_trait
         });
 
-        if let Some(target) = target {
-            self.cx
-                .register_impl_for(target, scope, of_trait, generics, trait_args);
+        match target {
+            Some(target) => self
+                .cx
+                .register_impl_for(target, scope, of_trait, generics, trait_args, self_ty),
+            None => self
+                .cx
+                .register_blanket_impl(scope, of_trait, generics, trait_args, self_ty),
         }
     }
 
@@ -177,8 +181,14 @@ impl SignatureLowerer<'_, '_> {
         ) else {
             return;
         };
-        let trait_has_self = trait_fn.params.first().is_some_and(|p| p.symbol == SELF_PARAM);
-        let impl_has_self = impl_fn.params.first().is_some_and(|p| p.symbol == SELF_PARAM);
+        let trait_has_self = trait_fn
+            .params
+            .first()
+            .is_some_and(|p| p.symbol == SELF_PARAM);
+        let impl_has_self = impl_fn
+            .params
+            .first()
+            .is_some_and(|p| p.symbol == SELF_PARAM);
         if trait_has_self == impl_has_self {
             return;
         }
