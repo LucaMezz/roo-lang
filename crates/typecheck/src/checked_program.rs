@@ -33,7 +33,6 @@ impl<'ast> TypeCheckContext<'ast> {
                     inf: &mut self.inf,
                     defs: &self.defs,
                     names: &self.symbols,
-                    generics: &self.generics,
                 }
                 .resolve(ty),
                 None => Type::Unresolved,

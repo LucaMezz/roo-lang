@@ -9,12 +9,14 @@
 use std::collections::{HashMap, HashSet};
 
 use ast::{GenericArg, GenericArgs, Path, PathSegment, Span};
+use intern::Symbol;
 
+use crate::defs::GenericParamDef;
 use crate::errors::GenericArgumentCountMismatch;
 use crate::generics::SyntheticNames;
 use crate::inference::{child_tys, map_children};
 use crate::types::TyKind;
-use crate::{DefId, DefIdOf, FnDef, GenericId, TyId, TypeCheckContext, VarId};
+use crate::{CxExt, DefId, DefIdOf, FnDef, TyId, TypeCheckContext, VarId};
 
 impl<'ast> TypeCheckContext<'ast> {
     /// Returns all of the free inference variables which appear
@@ -54,7 +56,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     /// Reserves `def`'s own generic parameters' names in `names`, so a
     /// synthesised name never collides with one belonging to a
-    /// *different* [`GenericId`] that's actually relevant to the
+    /// *different* [`DefIdOf<GenericParamDef>`] that's actually relevant to the
     /// current synthesis scope: `def`'s own generics, or (for the
     /// caller who loops this over `self.recursion.stack()`) an
     /// enclosing function's generics, since a nested function's
@@ -62,9 +64,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// function's rendered signature once it returns it.
     pub(crate) fn reserve_declared_generics(&self, def: DefId, names: &mut SyntheticNames) {
         self.def(def).generics().iter().for_each(|id| {
-            if let Some(name) = self.generics.get(id) {
-                names.reserve(name.clone());
-            }
+            names.reserve(self.generic_name(*id));
         });
     }
 
@@ -114,11 +114,14 @@ impl<'ast> TypeCheckContext<'ast> {
 
         // For each unique variable collected, generalise it to a new
         // new unique generic type parameter.
-        let mut assigned: HashMap<VarId, GenericId> = HashMap::new();
-        per_member_vars.iter().for_each(|(_, vars)| {
+        let mut assigned: HashMap<VarId, DefIdOf<GenericParamDef>> = HashMap::new();
+        per_member_vars.iter().for_each(|(def, vars)| {
             vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
-                    let id = self.generics.declare_synthetic(&mut names);
+                    let f = self.defs.fn_ref(*def);
+                    let symbol = self.symbols.intern("_T");
+                    let id = self
+                        .with_scope(f.scope, |this| this.declare_synthetic_generic_param(symbol));
                     let generic_ty = self.ty(TyKind::Generic(id));
                     self.inf.bind(var, generic_ty);
                     entry.insert(id);
@@ -138,9 +141,9 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn build_subst(
         &mut self,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
         explicit: &[(TyId, Span)],
-    ) -> HashMap<GenericId, TyId> {
+    ) -> HashMap<DefIdOf<GenericParamDef>, TyId> {
         let mut subst = HashMap::new();
         generics
             .iter()
@@ -153,7 +156,11 @@ impl<'ast> TypeCheckContext<'ast> {
         subst
     }
 
-    fn explicit_generic_args(&mut self, path: &Path, generics: &[GenericId]) -> Vec<(TyId, Span)> {
+    fn explicit_generic_args(
+        &mut self,
+        path: &Path,
+        generics: &[DefIdOf<GenericParamDef>],
+    ) -> Vec<(TyId, Span)> {
         let generic_args = path.segments.last().and_then(|seg| seg.args.as_ref());
         self.explicit_generic_args_from(generic_args, generics)
     }
@@ -161,7 +168,7 @@ impl<'ast> TypeCheckContext<'ast> {
     fn explicit_generic_args_from(
         &mut self,
         generic_args: Option<&GenericArgs>,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
     ) -> Vec<(TyId, Span)> {
         let Some(generic_args) = generic_args else {
             return Vec::new();
@@ -220,7 +227,7 @@ impl<'ast> TypeCheckContext<'ast> {
     pub(crate) fn instantiate_ty(
         &mut self,
         ty: TyId,
-        subst: &mut HashMap<GenericId, TyId>,
+        subst: &mut HashMap<DefIdOf<GenericParamDef>, TyId>,
     ) -> TyId {
         let resolved = self.inf.resolve(ty);
         match self.inf.ty(resolved).cloned() {
@@ -244,7 +251,7 @@ impl<'ast> TypeCheckContext<'ast> {
         }
     }
 
-    pub(crate) fn instantiate_generic_param(&mut self, id: GenericId) -> TyId {
+    pub(crate) fn instantiate_generic_param(&mut self, id: DefIdOf<GenericParamDef>) -> TyId {
         self.fresh_var()
     }
 
@@ -280,26 +287,26 @@ impl<'ast> TypeCheckContext<'ast> {
 
     pub(crate) fn subst_for(
         &mut self,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
         path: &Path,
-    ) -> HashMap<GenericId, TyId> {
+    ) -> HashMap<DefIdOf<GenericParamDef>, TyId> {
         let explicit = self.explicit_generic_args(path, generics);
         self.build_subst(generics, &explicit)
     }
 
     pub(crate) fn subst_for_seg(
         &mut self,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
         seg: &PathSegment,
-    ) -> HashMap<GenericId, TyId> {
+    ) -> HashMap<DefIdOf<GenericParamDef>, TyId> {
         let explicit = self.explicit_generic_args_from(seg.args.as_ref(), generics);
         self.build_subst(generics, &explicit)
     }
 
     pub(crate) fn args_from_subst(
         &mut self,
-        generics: &[GenericId],
-        subst: &mut HashMap<GenericId, TyId>,
+        generics: &[DefIdOf<GenericParamDef>],
+        subst: &mut HashMap<DefIdOf<GenericParamDef>, TyId>,
     ) -> Vec<TyId> {
         generics
             .iter()
@@ -312,7 +319,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     pub(crate) fn instantiate_adt_args(
         &mut self,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
         path: &Path,
     ) -> Vec<TyId> {
         if generics.is_empty() {
@@ -324,7 +331,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     pub(crate) fn instantiate_struct_fields(
         &mut self,
-        generics: &[GenericId],
+        generics: &[DefIdOf<GenericParamDef>],
         path: &Path,
         field_tys: &[TyId],
     ) -> (Vec<TyId>, Vec<TyId>) {

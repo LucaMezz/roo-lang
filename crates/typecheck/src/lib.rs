@@ -17,7 +17,7 @@ use ast::{
 };
 use intern::{Interner, Symbol};
 
-use crate::defs::GenericParamDef;
+use crate::defs::{DefOrigin, GenericParamDef};
 use crate::inference::{InferenceTable, TyId, VarId};
 use crate::types::TyKind;
 
@@ -43,7 +43,6 @@ use defs::{
     TyAliasDef, VariantDef,
 };
 use errors::Diagnostics;
-use generics::{GenericId, GenericRegistry};
 use lower_signatures::SignatureLowerer;
 use position_index::PositionIndex;
 use recursion::RecursionTracker;
@@ -66,7 +65,7 @@ slotmap::new_key_type! {
 struct ImplInfo {
     scope: ScopeId,
     of_trait: Option<DefIdOf<TraitDef>>,
-    generics: Vec<GenericId>,
+    generics: Vec<DefIdOf<GenericParamDef>>,
     trait_args: Vec<TyId>,
     self_ty: TyId,
 }
@@ -140,7 +139,7 @@ struct TypeCheckContext<'ast> {
 
     /// The registry of every generic type parameter in the
     /// program. See [`GenericRegistry`].
-    generics: GenericRegistry,
+    // generics: GenericRegistry,
 
     /// A handle to the scope that is currently being checked.
     current_scope: ScopeId,
@@ -179,7 +178,6 @@ impl<'ast> TypeCheckContext<'ast> {
 
             symbols,
             scopes,
-            generics: GenericRegistry::new(),
             inference_vars: Vec::new(),
             defs: Defs::new(),
             current_scope: root,
@@ -656,7 +654,7 @@ impl<'ast> TypeCheckContext<'ast> {
         target: ImplTarget,
         scope: ScopeId,
         of_trait: Option<DefIdOf<TraitDef>>,
-        generics: Vec<GenericId>,
+        generics: Vec<DefIdOf<GenericParamDef>>,
         trait_args: Vec<TyId>,
         self_ty: TyId,
     ) {
@@ -676,7 +674,7 @@ impl<'ast> TypeCheckContext<'ast> {
         &mut self,
         scope: ScopeId,
         of_trait: Option<DefIdOf<TraitDef>>,
-        generics: Vec<GenericId>,
+        generics: Vec<DefIdOf<GenericParamDef>>,
         trait_args: Vec<TyId>,
         self_ty: TyId,
     ) {
@@ -721,7 +719,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn impl_matches(&mut self, imp: &ImplInfo, target_ty: TyId, trait_args: &[TyId]) -> bool {
         self.speculatively(|this| {
-            let mut subst: HashMap<GenericId, TyId> = imp
+            let mut subst: HashMap<DefIdOf<GenericParamDef>, TyId> = imp
                 .generics
                 .iter()
                 .map(|&id| (id, this.fresh_var()))
@@ -776,7 +774,7 @@ impl<'ast> TypeCheckContext<'ast> {
         let def = self.defs.insert(Def {
             symbol,
             kind,
-            declared_at: span,
+            origin: DefOrigin::Source(span),
         });
         self.insert_in_scope(symbol, def, namespace);
         self.positions.record_def(span, def);
@@ -804,7 +802,7 @@ impl<'ast> TypeCheckContext<'ast> {
             .lookup(self.current_scope, symbol, namespace)
             .into_iter()
             .for_each(|existing| {
-                let original = self.def(existing).declared_at;
+                let original = self.def(existing).span();
                 let symbol = self.symbols.resolve(symbol).to_owned();
                 self.diagnostics
                     .push(AlreadyDefined::new(span, symbol, original));
@@ -822,7 +820,7 @@ impl<'ast> TypeCheckContext<'ast> {
     /// body is entered, and a new [`DefKind::GenericParam`]
     /// is created for `T` inside that scope so `T` becomes
     /// a valid type that can be used within the function body.
-    fn declare_generic_param(&mut self, param: &GenericParam) -> (DefId, GenericId) {
+    fn declare_generic_param(&mut self, param: &GenericParam) -> DefIdOf<GenericParamDef> {
         let ident = param.ident;
         let symbol = ident.symbol;
         let span = ident.span;
@@ -830,28 +828,40 @@ impl<'ast> TypeCheckContext<'ast> {
         let default = default_ty.map(|ty| self.lower_ty(ty));
         // TODO Implement trait bounds
         let bounds = &param.bounds;
-        let id = self
-            .generics
-            .declare_new(self.symbols.resolve(symbol).to_owned());
-        let ty = self.ty(TyKind::Generic(id));
         let def = self.defs.insert(Def {
             symbol,
             // TODO Create a new GenericParamDef struct.
             // Add default_ty to the new struct.
             // Somehow track the bounds on the generic param.
-            kind: DefKind::GenericParam(GenericParamDef { ty, default }),
-            declared_at: span,
+            kind: DefKind::GenericParam(GenericParamDef {
+                default,
+                name: symbol,
+            }),
+            origin: DefOrigin::Source(span),
         });
         self.insert_type_in_scope(symbol, def);
         self.positions.record_def(span, def);
-        (def, id)
+        DefIdOf::new_unchecked(def)
     }
 
-    fn declare_generic_params(&mut self, generics: &Generics) -> Vec<GenericId> {
+    fn declare_synthetic_generic_param(&mut self, symbol: Symbol) -> DefIdOf<GenericParamDef> {
+        let def = self.defs.insert(Def {
+            symbol,
+            kind: DefKind::GenericParam(GenericParamDef {
+                default: None,
+                name: symbol,
+            }),
+            origin: DefOrigin::Synthetic,
+        });
+        self.insert_type_in_scope(symbol, def);
+        DefIdOf::new_unchecked(def)
+    }
+
+    fn declare_generic_params(&mut self, generics: &Generics) -> Vec<DefIdOf<GenericParamDef>> {
         generics
             .params
             .iter()
-            .map(|param| self.declare_generic_param(param).1)
+            .map(|param| self.declare_generic_param(param))
             .collect()
     }
 

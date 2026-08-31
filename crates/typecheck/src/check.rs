@@ -8,14 +8,14 @@ use ast::{
 use diagnostics::Related;
 use intern::Symbol;
 
-use crate::defs::StructDef;
+use crate::defs::{GenericParamDef, StructDef};
 use crate::errors::*;
 
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
-    CxExt, DefId, DefIdOf, FnDef, GenericId, Namespace, PatDeclKind, ScopeId, TyId,
-    TypeCheckContext, display_path, impl_target_of,
+    CxExt, DefId, DefIdOf, FnDef, Namespace, PatDeclKind, ScopeId, TyId, TypeCheckContext,
+    display_path, impl_target_of,
 };
 
 #[derive(Default)]
@@ -71,10 +71,19 @@ impl<'ast> TypeCheckContext<'ast> {
     /// parameter exists.
     fn generic_name_of(&mut self, ty: TyId) -> Option<String> {
         let resolved = self.inf.resolve(ty);
-        match self.inf.ty(resolved)? {
-            TyKind::Generic(id) => self.generics.get(id).cloned(),
-            _ => None,
-        }
+        self.inf
+            .ty(resolved)
+            .map(|kind| match kind {
+                TyKind::Generic(id) => Some(self.defs.generic_param_ref(*id).name),
+                _ => None,
+            })
+            .flatten()
+            .map(|name| self.symbols.resolve(name).to_owned())
+    }
+
+    pub(crate) fn generic_name(&self, id: DefIdOf<GenericParamDef>) -> String {
+        let symbol = self.defs.generic_param_ref(id).name;
+        self.symbols.resolve(symbol).to_owned()
     }
 
     fn first_provenance(&mut self, candidates: &[(TyId, &'static str, &Type)]) -> Option<Related> {
@@ -348,7 +357,7 @@ impl<'ast> TypeCheckContext<'ast> {
             return self.ty(TyKind::Err);
         };
 
-        let mut subst: HashMap<GenericId, TyId> =
+        let mut subst: HashMap<DefIdOf<GenericParamDef>, TyId> =
             variant.generics.iter().copied().zip(generics).collect();
         self.instantiate_ty(field_ty, &mut subst)
     }

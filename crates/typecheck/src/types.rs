@@ -7,10 +7,9 @@
 use ast::{Pat, PatKind};
 use intern::Interner;
 
-use crate::defs::{Defs, EnumDef, StructDef, TraitDef, VariantDef};
-use crate::generics::GenericRegistry;
+use crate::defs::{Defs, EnumDef, GenericParamDef, StructDef, TraitDef};
 use crate::inference::{InferenceTable, TyId, VarId};
-use crate::{DefId, DefIdOf, GenericId, TypeCheckContext};
+use crate::{DefIdOf, TypeCheckContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TyKind {
@@ -27,7 +26,7 @@ pub(crate) enum TyKind {
     Struct(DefIdOf<StructDef>, Vec<TyId>),
     Enum(DefIdOf<EnumDef>, Vec<TyId>),
     TraitObject(DefIdOf<TraitDef>, Vec<TyId>),
-    Generic(GenericId),
+    Generic(DefIdOf<GenericParamDef>),
 }
 
 // Helper to convert a pattern into a string.
@@ -50,7 +49,6 @@ impl<'ast> TypeCheckContext<'ast> {
             inf: &mut self.inf,
             defs: &self.defs,
             names: &self.symbols,
-            generics: &self.generics,
         }
         .resolve(ty)
     }
@@ -129,7 +127,6 @@ pub(crate) struct TypeResolver<'a> {
     pub(crate) inf: &'a mut InferenceTable,
     pub(crate) defs: &'a Defs,
     pub(crate) names: &'a Interner,
-    pub(crate) generics: &'a GenericRegistry,
 }
 
 impl TypeResolver<'_> {
@@ -170,12 +167,9 @@ impl TypeResolver<'_> {
                 Type::Named(self.names.resolve(name).to_owned(), args)
             }
             TyKind::Generic(id) => {
-                let text = self
-                    .generics
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| "<generic>".to_owned());
-                Type::Generic(text)
+                let symbol = self.defs.generic_param_ref(id).name;
+                let text = self.names.resolve(symbol);
+                Type::Generic(text.to_owned())
             }
         }
     }

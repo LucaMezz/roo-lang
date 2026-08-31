@@ -9,8 +9,9 @@ use intern::Symbol;
 use slotmap::SlotMap;
 
 use crate::inference::TyId;
-use crate::{DefId, GenericId, Namespace, ScopeId};
+use crate::{DefId, Namespace, ScopeId};
 
+#[derive(Hash)]
 pub(crate) struct DefIdOf<K>(DefId, PhantomData<K>);
 
 impl<K> DefIdOf<K> {
@@ -105,6 +106,12 @@ impl IntoDefKind for ModDef {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum DefOrigin {
+    Source(Span),
+    Synthetic,
+}
+
 /// A def within a def table.
 #[derive(Debug)]
 pub(crate) struct Def {
@@ -116,10 +123,17 @@ pub(crate) struct Def {
 
     /// The span within the source code that resulted in
     /// the introduction of this def.
-    pub(crate) declared_at: Span,
+    pub(crate) origin: DefOrigin,
 }
 
 impl Def {
+    pub(crate) fn span(&self) -> Span {
+        match self.origin {
+            DefOrigin::Source(span) => span,
+            DefOrigin::Synthetic => Span::default(),
+        }
+    }
+
     /// The ty representing the type associated with this
     /// def.
     ///
@@ -132,7 +146,7 @@ impl Def {
 
     /// The generic parameters associated with this def.
     /// Empty for kinds that can never have generics.
-    pub(crate) fn generics(&self) -> &[GenericId] {
+    pub(crate) fn generics(&self) -> &[DefIdOf<GenericParamDef>] {
         self.kind.generics().unwrap_or(&[])
     }
 
@@ -161,7 +175,7 @@ pub(crate) struct FnDef {
     pub(crate) ty: TyId,
 
     /// The generic parameters associated with this function.
-    pub(crate) generics: Vec<GenericId>,
+    pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
 }
 
 /// One parameter of a function, as it appeared in its signature.
@@ -195,14 +209,14 @@ pub(crate) struct TyAliasDef {
     pub(crate) ty: TyId,
 
     /// The generic parameters associated with this alias.
-    pub(crate) generics: Vec<GenericId>,
+    pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct EnumDef {
     pub(crate) variants: Vec<DefIdOf<VariantDef>>,
     /// The generic parameters associated with this enum.
-    pub(crate) generics: Vec<GenericId>,
+    pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
 
     pub(crate) scope: ScopeId,
 }
@@ -217,8 +231,8 @@ pub(crate) struct StructDef {
 #[derive(Debug)]
 pub(crate) struct TraitDef {
     pub(crate) scope: ScopeId,
-    pub(crate) generics: Vec<GenericId>,
-    pub(crate) self_generic: GenericId,
+    pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
+    pub(crate) self_generic: DefIdOf<GenericParamDef>,
 }
 
 #[derive(Debug)]
@@ -233,13 +247,13 @@ pub(crate) struct VariantDef {
     pub(crate) fields: Vec<FieldDef>,
     pub(crate) ctor_ty: Option<TyId>,
     /// The generic parameters associated with this variant.
-    pub(crate) generics: Vec<GenericId>,
+    pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
     pub(crate) parent: Option<DefIdOf<EnumDef>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub(crate) struct GenericParamDef {
-    pub(crate) ty: TyId,
+    pub(crate) name: Symbol,
     pub(crate) default: Option<TyId>,
 }
 
@@ -299,19 +313,19 @@ impl DefKind {
         match self {
             DefKind::Fn(fn_data) => Some(fn_data.ty),
             DefKind::TyAlias(alias_data) => Some(alias_data.ty),
-            DefKind::Local(ty)
-            | DefKind::Param(ty)
-            | DefKind::GenericParam(GenericParamDef { ty, .. }) => Some(*ty),
+            DefKind::Local(ty) | DefKind::Param(ty) => Some(*ty),
             DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
                 variant.ctor_ty
             }
-            DefKind::Enum(_) | DefKind::Trait(_) | DefKind::Mod(_) => None,
+            DefKind::Enum(_) | DefKind::Trait(_) | DefKind::Mod(_) | DefKind::GenericParam(_) => {
+                None
+            }
         }
     }
 
     /// The generic parameters of this def, if this kind of
     /// def can have any at all.
-    pub(crate) fn generics(&self) -> Option<&[GenericId]> {
+    pub(crate) fn generics(&self) -> Option<&[DefIdOf<GenericParamDef>]> {
         match self {
             DefKind::Fn(fn_data) => Some(&fn_data.generics),
             DefKind::TyAlias(alias_data) => Some(&alias_data.generics),
@@ -479,6 +493,13 @@ impl Defs {
         match &self.defs[def.id()].kind {
             DefKind::Trait(t) => t,
             _ => unreachable!("DefIdOf<TraitDef> guarantees a trait def"),
+        }
+    }
+
+    pub(crate) fn generic_param_ref(&self, def: DefIdOf<GenericParamDef>) -> &GenericParamDef {
+        match &self.defs[def.id()].kind {
+            DefKind::GenericParam(t) => t,
+            _ => unreachable!("DefIdOf<GenericParamDef> guarantees a generic def"),
         }
     }
 }

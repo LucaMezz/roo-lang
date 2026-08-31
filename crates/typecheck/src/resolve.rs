@@ -3,14 +3,16 @@
 
 use ast::visit::{Visitable, Visitor, Walkable};
 use ast::{
-    AssocItem, AssocItemKind, EnumDef as AstEnumDef, Fn, Generics, Ident, Item, ItemKind, ModKind,
-    SELF_TYPE, Span, Trait, TyAlias, VariantData,
+    AssocItemKind, EnumDef as AstEnumDef, Fn, Generics, Ident, Item, ItemKind, ModKind, SELF_TYPE,
+    Span, Trait, TyAlias, VariantData,
 };
 use intern::Symbol;
 
-use crate::defs::{EnumDef, FieldDef, FnDef, ModDef, StructDef, TraitDef, TyAliasDef, VariantDef};
+use crate::defs::{
+    EnumDef, FieldDef, FnDef, GenericParamDef, ModDef, StructDef, TraitDef, TyAliasDef, VariantDef,
+};
 use crate::types::TyKind;
-use crate::{CxExt, DefIdOf, GenericId, Namespace, ScopeId, TypeCheckContext};
+use crate::{CxExt, DefIdOf, Namespace, ScopeId, TypeCheckContext};
 
 /// The AST Visitor that performs the Resolution stage of the
 /// type checking. Walks the AST, creating new defs in the
@@ -141,7 +143,7 @@ impl Resolver<'_, '_> {
         name: Symbol,
         span: Span,
         data: &VariantData,
-        generics: Vec<GenericId>,
+        generics: Vec<DefIdOf<GenericParamDef>>,
         parent: Option<DefIdOf<EnumDef>>,
     ) -> VariantDef {
         let ctor_ty = match data {
@@ -206,8 +208,14 @@ impl Resolver<'_, '_> {
 
     fn resolve_trait_item(&mut self, t: &Trait) {
         let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| this.cx.declare_generic_params(&t.generics));
-        let self_generic = self.cx.generics.declare_new(SELF_TYPE.to_owned());
+        let (generics, self_generic) = self.with_scope(scope, |this| {
+            let symbol = this.cx.symbols.intern(SELF_TYPE);
+            (
+                this.cx.declare_generic_params(&t.generics),
+                this.cx.declare_synthetic_generic_param(symbol),
+            )
+        });
+
         self.cx.declare_typed(
             t.ident.symbol,
             t.ident.span,

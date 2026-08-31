@@ -11,7 +11,7 @@ use ast::{
 use intern::Symbol;
 
 use crate::check::TypeMismatchExtras;
-use crate::defs::{DefKind, Param, TraitDef};
+use crate::defs::{DefKind, GenericParamDef, Param, TraitDef};
 use crate::errors::{
     InvalidGlobTarget, MissingSelfParam, MissingTraitItem, UnexpectedSelfParam, UnresolvedImport,
     expected_due_to,
@@ -21,8 +21,7 @@ use crate::inference::TyId;
 use crate::resolve::Resolver;
 use crate::types::{self, TyKind};
 use crate::{
-    CxExt, DefId, DefIdOf, GenericId, Namespace, ScopeId, TypeCheckContext, display_path,
-    impl_target_of,
+    CxExt, DefId, DefIdOf, Namespace, ScopeId, TypeCheckContext, display_path, impl_target_of,
 };
 
 /// Performs the signature lowering stage of the type checking.
@@ -123,7 +122,7 @@ impl SignatureLowerer<'_, '_> {
         of_trait: DefIdOf<TraitDef>,
         impl_scope: ScopeId,
         span: Span,
-        subst: &mut HashMap<GenericId, TyId>,
+        subst: &mut HashMap<DefIdOf<GenericParamDef>, TyId>,
     ) {
         let trait_scope = self.cx.defs.trait_ref(of_trait).scope;
         let trait_symbol = self.cx.def(of_trait.id()).symbol;
@@ -194,8 +193,8 @@ impl SignatureLowerer<'_, '_> {
 
         let impl_symbol = self.cx.def(impl_def).symbol;
         let name = self.cx.symbols.resolve(impl_symbol).to_owned();
-        let trait_span = self.cx.def(trait_def).declared_at;
-        let impl_span = self.cx.def(impl_def).declared_at;
+        let trait_span = self.cx.def(trait_def).span();
+        let impl_span = self.cx.def(impl_def).span();
 
         if trait_has_self {
             self.cx.diagnostics.push(MissingSelfParam::new(
@@ -218,13 +217,13 @@ impl SignatureLowerer<'_, '_> {
         &mut self,
         trait_def: DefId,
         impl_def: DefId,
-        subst: &mut HashMap<GenericId, TyId>,
+        subst: &mut HashMap<DefIdOf<GenericParamDef>, TyId>,
     ) {
         let raw_expected = self.cx.def(trait_def).ty();
         let expected = self.cx.instantiate_ty(raw_expected, subst);
         let found = self.cx.def(impl_def).ty();
-        let trait_span = self.cx.def(trait_def).declared_at;
-        let impl_span = self.cx.def(impl_def).declared_at;
+        let trait_span = self.cx.def(trait_def).span();
+        let impl_span = self.cx.def(impl_def).span();
 
         let extras =
             TypeMismatchExtras::default().expected_due_to(Some(expected_due_to(trait_span)));
@@ -382,7 +381,7 @@ impl SignatureLowerer<'_, '_> {
         &mut self,
         data: &VariantData,
         names: &mut SyntheticNames,
-    ) -> (Vec<TyId>, Vec<GenericId>) {
+    ) -> (Vec<TyId>, Vec<DefIdOf<GenericParamDef>>) {
         let fields = match data {
             VariantData::Unit => return (vec![], vec![]),
             VariantData::Tuple(fields) | VariantData::Struct(fields) => fields,
@@ -396,7 +395,8 @@ impl SignatureLowerer<'_, '_> {
                     .as_ref()
                     .map(|ty| self.cx.lower_ty(ty))
                     .unwrap_or_else(|| {
-                        let id = self.cx.generics.declare_synthetic(names);
+                        let symbol = self.cx.symbols.intern("_T");
+                        let id = self.cx.declare_synthetic_generic_param(symbol);
                         synthesized.push(id);
                         self.cx.ty(TyKind::Generic(id))
                     })
@@ -469,12 +469,12 @@ impl SignatureLowerer<'_, '_> {
             // against the others too (see `lower_variant_data_field_tys`).
             let mut names = SyntheticNames::new();
             this.cx.reserve_declared_generics(id.id(), &mut names);
-            let results: Vec<(Vec<TyId>, Vec<GenericId>)> = def
+            let results: Vec<(Vec<TyId>, Vec<DefIdOf<GenericParamDef>>)> = def
                 .variants
                 .iter()
                 .map(|v| this.lower_variant_data_field_tys(&v.data, &mut names))
                 .collect();
-            let (lowered, synthesised): (Vec<Vec<TyId>>, Vec<Vec<GenericId>>) =
+            let (lowered, synthesised): (Vec<Vec<TyId>>, Vec<Vec<DefIdOf<GenericParamDef>>>) =
                 results.into_iter().unzip();
             this.cx
                 .defs

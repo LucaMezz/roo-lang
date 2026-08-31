@@ -6,7 +6,7 @@ use crate::visit::Walkable;
 pub const SELF_PARAM: &str = "self";
 pub const SELF_TYPE: &str = "Self";
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
