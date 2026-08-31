@@ -230,7 +230,9 @@ impl<'ast> TypeCheckContext<'ast> {
             // `T |-> t` where `t` is some ty, then make the substitution,
             // otherwise make the substitution `T |-> ?a` where `?a` is a
             // fresh instance variable.
-            Some(TyKind::Generic(id)) => *subst.entry(id).or_insert_with(|| self.fresh_var()),
+            Some(TyKind::Generic(id)) => *subst
+                .entry(id)
+                .or_insert_with(|| self.instantiate_generic_param(id)),
             // The ty is some arbitrary constructor applied to some arbitrary
             // arguments. So recursively check the arguments for generic
             // type parameters that still need to be substituted.
@@ -240,6 +242,10 @@ impl<'ast> TypeCheckContext<'ast> {
             }
             None => resolved,
         }
+    }
+
+    pub(crate) fn instantiate_generic_param(&mut self, id: GenericId) -> TyId {
+        self.fresh_var()
     }
 
     /// Makes substitutions for all the generic type parameters of the given

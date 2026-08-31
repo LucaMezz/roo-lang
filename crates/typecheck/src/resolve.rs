@@ -76,7 +76,7 @@ impl Resolver<'_, '_> {
 
         let mut generics = Vec::new();
         self.with_scope(scope, |this| {
-            generics = this.cx.declare_generic_params(&f.generics.params);
+            generics = this.cx.declare_generic_params(&f.generics);
             f.walk(this);
         });
         self.cx.defs.fn_mut(fn_def).generics = generics;
@@ -97,16 +97,14 @@ impl Resolver<'_, '_> {
 
         let mut generics = Vec::new();
         self.with_scope(scope, |this| {
-            generics = this.cx.declare_generic_params(&alias.generics.params);
+            generics = this.cx.declare_generic_params(&alias.generics);
         });
         self.cx.defs.ty_alias_mut(alias_def).generics = generics;
     }
 
     fn resolve_enum_item(&mut self, ident: &Ident, generics: &Generics, def: &AstEnumDef) {
         let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&generics.params)
-        });
+        let generics = self.with_scope(scope, |this| this.cx.declare_generic_params(generics));
         let enum_def = self.cx.declare_typed(
             ident.symbol,
             ident.span,
@@ -193,9 +191,7 @@ impl Resolver<'_, '_> {
 
     fn resolve_struct_item(&mut self, ident: &Ident, generics: &Generics, data: &VariantData) {
         let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&generics.params)
-        });
+        let generics = self.with_scope(scope, |this| this.cx.declare_generic_params(generics));
         let variant = self.resolve_variant_data(ident.symbol, ident.span, data, generics, None);
         let def = self
             .cx
@@ -210,9 +206,7 @@ impl Resolver<'_, '_> {
 
     fn resolve_trait_item(&mut self, t: &Trait) {
         let scope = self.new_scope();
-        let generics = self.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&t.generics.params)
-        });
+        let generics = self.with_scope(scope, |this| this.cx.declare_generic_params(&t.generics));
         let self_generic = self.cx.generics.declare_new(SELF_TYPE.to_owned());
         self.cx.declare_typed(
             t.ident.symbol,

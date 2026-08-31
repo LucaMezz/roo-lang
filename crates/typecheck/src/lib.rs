@@ -12,10 +12,12 @@ use std::collections::HashMap;
 
 use ast::visit::Visitor;
 use ast::{
-    FnRetTy, FnTy, GenericParam, Item, ItemKind, Path, SELF_TYPE, Span, Ty, TyKind as AstTyKind,
+    FnRetTy, FnTy, GenericParam, Generics, Item, ItemKind, Path, SELF_TYPE, Span, Ty,
+    TyKind as AstTyKind,
 };
 use intern::{Interner, Symbol};
 
+use crate::defs::GenericParamDef;
 use crate::inference::{InferenceTable, TyId, VarId};
 use crate::types::TyKind;
 
@@ -805,14 +807,24 @@ impl<'ast> TypeCheckContext<'ast> {
     /// body is entered, and a new [`DefKind::GenericParam`]
     /// is created for `T` inside that scope so `T` becomes
     /// a valid type that can be used within the function body.
-    fn declare_generic_param(&mut self, symbol: Symbol, span: Span) -> (DefId, GenericId) {
+    fn declare_generic_param(&mut self, param: &GenericParam) -> (DefId, GenericId) {
+        let ident = param.ident;
+        let symbol = ident.symbol;
+        let span = ident.span;
+        let default_ty = &param.default.as_ref();
+        let default = default_ty.map(|ty| self.lower_ty(ty));
+        // TODO Implement trait bounds
+        let bounds = &param.bounds;
         let id = self
             .generics
             .declare_new(self.symbols.resolve(symbol).to_owned());
         let ty = self.ty(TyKind::Generic(id));
         let def = self.defs.insert(Def {
             symbol,
-            kind: DefKind::GenericParam(ty),
+            // TODO Create a new GenericParamDef struct.
+            // Add default_ty to the new struct.
+            // Somehow track the bounds on the generic param.
+            kind: DefKind::GenericParam(GenericParamDef { ty, default }),
             declared_at: span,
         });
         self.insert_type_in_scope(symbol, def);
@@ -820,13 +832,11 @@ impl<'ast> TypeCheckContext<'ast> {
         (def, id)
     }
 
-    fn declare_generic_params(&mut self, params: &[GenericParam]) -> Vec<GenericId> {
-        params
+    fn declare_generic_params(&mut self, generics: &Generics) -> Vec<GenericId> {
+        generics
+            .params
             .iter()
-            .map(|param| {
-                self.declare_generic_param(param.ident.symbol, param.ident.span)
-                    .1
-            })
+            .map(|param| self.declare_generic_param(param).1)
             .collect()
     }
 

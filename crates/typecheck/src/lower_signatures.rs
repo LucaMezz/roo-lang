@@ -72,9 +72,8 @@ impl SignatureLowerer<'_, '_> {
     fn lower_impl_item(&mut self, imp: &Impl) {
         let mut resolver = Resolver { cx: self.cx };
         let scope = resolver.new_scope();
-        let generics = resolver.with_scope(scope, |this| {
-            this.cx.declare_generic_params(&imp.generics.params)
-        });
+        let generics =
+            resolver.with_scope(scope, |this| this.cx.declare_generic_params(&imp.generics));
         resolver.with_scope(scope, |this| {
             imp.items.iter().for_each(|item| match &item.kind {
                 AssocItemKind::Fn(f) => this.resolve_fn_item(f),

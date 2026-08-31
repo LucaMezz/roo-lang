@@ -237,6 +237,12 @@ pub(crate) struct VariantDef {
     pub(crate) parent: Option<DefIdOf<EnumDef>>,
 }
 
+#[derive(Debug)]
+pub(crate) struct GenericParamDef {
+    pub(crate) ty: TyId,
+    pub(crate) default: Option<TyId>,
+}
+
 impl VariantDef {
     pub(crate) fn field(&self, symbol: Symbol) -> Option<&FieldDef> {
         self.fields.iter().find(|f| f.name == symbol)
@@ -265,7 +271,7 @@ pub(crate) enum DefKind {
     Fn(FnDef),
     Local(TyId),
     Param(TyId),
-    GenericParam(TyId),
+    GenericParam(GenericParamDef),
 }
 
 impl DefKind {
@@ -293,7 +299,9 @@ impl DefKind {
         match self {
             DefKind::Fn(fn_data) => Some(fn_data.ty),
             DefKind::TyAlias(alias_data) => Some(alias_data.ty),
-            DefKind::Local(ty) | DefKind::Param(ty) | DefKind::GenericParam(ty) => Some(*ty),
+            DefKind::Local(ty)
+            | DefKind::Param(ty)
+            | DefKind::GenericParam(GenericParamDef { ty, .. }) => Some(*ty),
             DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
                 variant.ctor_ty
             }

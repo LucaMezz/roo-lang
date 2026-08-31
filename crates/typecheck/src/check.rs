@@ -8,6 +8,7 @@ use ast::{
 use diagnostics::Related;
 use intern::Symbol;
 
+use crate::defs::TraitDef;
 use crate::errors::{
     ArgumentCountMismatch, CyclicType, InvalidFieldAccess, InvalidMethodReceiver,
     InvalidTupleIndex, MissingField, NotAMethod, NotCallable, TupleIndexOutOfBounds, TypeMismatch,
@@ -649,6 +650,7 @@ impl<'ast> TypeCheckContext<'ast> {
         self.target_implements(actual, trait_def, &trait_args)
     }
 
+    #[allow(unused)]
     fn unify_or_coerce(&mut self, actual: TyId, expected: TyId) -> Result<(), UnifyError> {
         if self.coerce(actual, expected) {
             return Ok(());

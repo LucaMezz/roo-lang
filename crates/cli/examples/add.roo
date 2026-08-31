@@ -65,6 +65,10 @@ impl TreeNode {
     }
 }
 
+fn id_add<T: Add>(x: T) {
+    x
+}
+
 fn main() {
     let x: Add = 10;
     let y: Add<int> = 10;
@@ -76,5 +80,14 @@ fn main() {
     let tree = Tree::new();
     let root = tree.root;
 
+    let num = 43;
     let def: Default = tree;
+
+    // TODO: Implement trait bounds.
+    let id1 = id_add(tree);
+    let id2 = id_add(y);
+    
+    // TODO: Support method calls directly on trait objects
+
+    // TODO: Implement annotation collection and checking.
 }
