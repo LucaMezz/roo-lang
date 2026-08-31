@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ast::{GenericArg, Path, Span};
+use ast::{GenericArg, GenericArgs, Path, PathSegment, Span};
 
 use crate::errors::GenericArgumentCountMismatch;
 use crate::generics::SyntheticNames;
@@ -154,7 +154,16 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn explicit_generic_args(&mut self, path: &Path, generics: &[GenericId]) -> Vec<(TyId, Span)> {
-        let Some(generic_args) = path.segments.last().and_then(|seg| seg.args.as_ref()) else {
+        let generic_args = path.segments.last().and_then(|seg| seg.args.as_ref());
+        self.explicit_generic_args_from(generic_args, generics)
+    }
+
+    fn explicit_generic_args_from(
+        &mut self,
+        generic_args: Option<&GenericArgs>,
+        generics: &[GenericId],
+    ) -> Vec<(TyId, Span)> {
+        let Some(generic_args) = generic_args else {
             return Vec::new();
         };
 
@@ -269,6 +278,15 @@ impl<'ast> TypeCheckContext<'ast> {
         path: &Path,
     ) -> HashMap<GenericId, TyId> {
         let explicit = self.explicit_generic_args(path, generics);
+        self.build_subst(generics, &explicit)
+    }
+
+    pub(crate) fn subst_for_seg(
+        &mut self,
+        generics: &[GenericId],
+        seg: &PathSegment,
+    ) -> HashMap<GenericId, TyId> {
+        let explicit = self.explicit_generic_args_from(seg.args.as_ref(), generics);
         self.build_subst(generics, &explicit)
     }
 

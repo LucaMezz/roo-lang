@@ -2,22 +2,23 @@ use std::collections::HashMap;
 
 use ast::{
     AssocItemKind, Block, Closure, Expr, ExprKind, FnRetTy, Ident, Impl, Item, ItemKind, Lit,
-    LitKind, Local, LocalKind, MethodCall, ModKind, Pat, PatKind, Path, QSelf, Span, Stmt,
-    StmtKind, StructExpr, Trait,
+    LitKind, Local, LocalKind, MethodCall, ModKind, Pat, PatKind, Path, QSelf, SELF_PARAM, Span,
+    Stmt, StmtKind, StructExpr, Trait,
 };
 use diagnostics::Related;
 use intern::Symbol;
 
 use crate::errors::{
-    ArgumentCountMismatch, CyclicType, InvalidFieldAccess, InvalidTupleIndex, MissingField,
-    NotCallable, TupleIndexOutOfBounds, TypeMismatch, UnknownField, UnresolvedType,
-    UnresolvedValue, expected_because_of, expected_due_to, generic_note, provenance,
+    ArgumentCountMismatch, CyclicType, InvalidFieldAccess, InvalidMethodReceiver,
+    InvalidTupleIndex, MissingField, NotAMethod, NotCallable, TupleIndexOutOfBounds, TypeMismatch,
+    UnknownField, UnresolvedMethod, UnresolvedType, UnresolvedValue, expected_because_of,
+    expected_due_to, generic_note, provenance,
 };
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
-    CxExt, DefId, DefIdOf, FnDef, GenericId, PatDeclKind, ScopeId, TyId, TypeCheckContext,
-    display_path,
+    CxExt, DefId, DefIdOf, FnDef, GenericId, Namespace, PatDeclKind, ScopeId, TyId,
+    TypeCheckContext, display_path, impl_target_of,
 };
 
 #[derive(Default)]
@@ -176,7 +177,110 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_method_call_expr(&mut self, call: &MethodCall) -> TyId {
-        unimplemented!()
+        let receiver_ty = self.check_expr(call.receiver.as_ref(), None);
+
+        let resolved_receiver = self.inf.resolve(receiver_ty);
+        let target = self
+            .inf
+            .ty(resolved_receiver)
+            .cloned()
+            .and_then(|kind| impl_target_of(&kind));
+
+        let Some(target) = target else {
+            let found = self.resolved(receiver_ty);
+            self.diagnostics
+                .push(InvalidMethodReceiver::new(call.receiver.span, found));
+            return self.check_method_args_untyped(call);
+        };
+
+        let symbol = call.seg.ident.symbol;
+        let Some(def) = self.resolve_in_impls_for_target(target, symbol, Namespace::Value) else {
+            let found = self.resolved(receiver_ty);
+            let name = self.symbols.resolve(symbol).to_owned();
+            self.diagnostics
+                .push(UnresolvedMethod::new(call.seg.ident.span, name, found));
+            return self.check_method_args_untyped(call);
+        };
+        self.positions.record_def(call.seg.ident.span, def);
+
+        let (fn_def, _) = self
+            .fn_def_scope(def)
+            .expect("a value found in an impl scope is always a fn def");
+        let fn_data = self.defs.fn_ref(fn_def);
+        let params = fn_data.params.clone();
+        let generics = fn_data.generics.clone();
+        let fn_ty = fn_data.ty;
+
+        let has_self = params.first().is_some_and(|p| p.symbol == SELF_PARAM);
+        if !has_self {
+            let found = self.resolved(receiver_ty);
+            let name = self.symbols.resolve(symbol).to_owned();
+            self.diagnostics
+                .push(NotAMethod::new(call.seg.ident.span, name, found));
+            return self.check_method_args_untyped(call);
+        }
+
+        let mut subst = self.subst_for_seg(&generics, &call.seg);
+        let instantiated = self.instantiate_ty(fn_ty, &mut subst);
+        let (mut input_tys, output_ty) = self
+            .resolved_fn_parts(instantiated)
+            .expect("a fn def's ty always resolves to TyKind::Fn");
+
+        let self_ty = input_tys.remove(0);
+        let _ = self.unify_reporting_mismatch(
+            self_ty,
+            receiver_ty,
+            call.receiver.span,
+            call.receiver.span,
+            TypeMismatchExtras::default(),
+        );
+
+        let expected = input_tys.len();
+        let actual = call.args.len();
+        if expected != actual {
+            let span = if actual < expected {
+                let end = call
+                    .args
+                    .last()
+                    .map(|arg| arg.span.end)
+                    .unwrap_or(call.seg.ident.span.end);
+                Span {
+                    start: call.seg.ident.span.start,
+                    end,
+                }
+            } else {
+                Span {
+                    start: call.args[expected].span.start,
+                    end: call
+                        .args
+                        .last()
+                        .expect("actual > expected implies at least one arg")
+                        .span
+                        .end,
+                }
+            };
+            self.diagnostics.push(ArgumentCountMismatch {
+                span,
+                expected,
+                found: actual,
+            });
+        }
+
+        let param_spans = &params[1..];
+        call.args.iter().enumerate().for_each(|(i, arg)| {
+            let expected_ty = input_tys.get(i).copied();
+            let expected_span = param_spans.get(i).and_then(|p| p.span);
+            self.check_expr_expecting(arg, expected_ty, expected_span);
+        });
+
+        output_ty
+    }
+
+    fn check_method_args_untyped(&mut self, call: &MethodCall) -> TyId {
+        call.args.iter().for_each(|arg| {
+            self.check_expr(arg, None);
+        });
+        self.ty(TyKind::Err)
     }
 
     fn check_binary_expr(&mut self) -> TyId {

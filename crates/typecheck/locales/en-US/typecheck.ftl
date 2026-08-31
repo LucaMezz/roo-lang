@@ -63,3 +63,9 @@ unexpected-self-param = `{$name}` has a `self` parameter, but trait `{$trait_nam
 unexpected-self-param-declared-here = declared without `self` here
 
 self-outside-impl-or-trait = `self` parameter is only valid inside an `impl` or `trait` block
+
+invalid-method-receiver = no method can be called on type `{$found}`
+
+unresolved-method = no method named `{$name}` found for type `{$found}`
+
+not-a-method = associated function `{$name}` on `{$found}` cannot be called with method syntax because it has no `self` parameter

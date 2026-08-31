@@ -385,6 +385,50 @@ impl SelfOutsideImplOrTrait {
     }
 }
 
+#[derive(Diagnose)]
+#[diagnose(code = 21, level = "error")]
+pub struct InvalidMethodReceiver {
+    #[diagnose(span)]
+    pub span: Span,
+    pub found: Type,
+}
+
+impl InvalidMethodReceiver {
+    pub fn new(span: Span, found: Type) -> Self {
+        Self { span, found }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 22, level = "error")]
+pub struct UnresolvedMethod {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub found: Type,
+}
+
+impl UnresolvedMethod {
+    pub fn new(span: Span, name: String, found: Type) -> Self {
+        Self { span, name, found }
+    }
+}
+
+#[derive(Diagnose)]
+#[diagnose(code = 23, level = "error")]
+pub struct NotAMethod {
+    #[diagnose(span)]
+    pub span: Span,
+    pub name: String,
+    pub found: Type,
+}
+
+impl NotAMethod {
+    pub fn new(span: Span, name: String, found: Type) -> Self {
+        Self { span, name, found }
+    }
+}
+
 diagnostics::catalog! {
     pub(crate) enum TypeCheckDiagnostic {
         TypeMismatch,
@@ -407,6 +451,9 @@ diagnostics::catalog! {
         MissingSelfParam,
         UnexpectedSelfParam,
         SelfOutsideImplOrTrait,
+        InvalidMethodReceiver,
+        UnresolvedMethod,
+        NotAMethod,
     }
 }
 

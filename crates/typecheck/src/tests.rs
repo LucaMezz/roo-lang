@@ -2158,6 +2158,153 @@ impl Foo {
 }
 
 #[test]
+fn check_all_method_call_resolves_through_the_receivers_impl() {
+    let source = r#"
+struct Point {
+    x: int,
+}
+impl Point {
+    fn get_x(self) -> int {
+        self.x
+    }
+}
+fn use_it() -> int {
+    let p = Point { x: 5 };
+    p.get_x()
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_method_call_checks_argument_types_against_the_signature() {
+    let source = r#"
+struct Point {
+    x: int,
+}
+impl Point {
+    fn set_x(self, x: int) -> int {
+        x
+    }
+}
+fn use_it() {
+    let p = Point { x: 5 };
+    p.set_x(true);
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
+#[test]
+fn check_all_method_call_on_a_generic_param_is_an_invalid_receiver() {
+    let source = r#"
+fn foo<T>(x: T) -> int {
+    x.bar()
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert!(diagnostics[0].message().contains("no method can be called"));
+}
+
+#[test]
+fn check_all_method_call_with_unknown_name_is_unresolved() {
+    let source = r#"
+struct Point {
+    x: int,
+}
+impl Point {
+    fn get_x(self) -> int {
+        self.x
+    }
+}
+fn use_it() {
+    let p = Point { x: 5 };
+    p.missing_method();
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "no method named `missing_method` found for type `Point`"
+    );
+}
+
+#[test]
+fn check_all_method_call_on_an_associated_fn_without_self_is_not_a_method() {
+    let source = r#"
+struct Point {
+    x: int,
+}
+impl Point {
+    fn new() -> Point {
+        Point { x: 0 }
+    }
+}
+fn use_it() {
+    let p = Point::new();
+    p.new();
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "associated function `new` on `Point` cannot be called with method syntax because it has no `self` parameter"
+    );
+}
+
+#[test]
+fn check_all_method_call_instantiates_the_impls_own_generics_from_the_receiver() {
+    let source = r#"
+struct Wrapper<T> {
+    value: T,
+}
+impl<T> Wrapper<T> {
+    fn get(self) -> T {
+        self.value
+    }
+}
+fn use_it() -> int {
+    let w = Wrapper { value: 5 };
+    w.get()
+}
+"#;
+    let cx = check_all(source);
+    assert!(cx.diagnostics().is_empty(), "{:#?}", cx.diagnostics());
+}
+
+#[test]
+fn check_all_method_call_uses_explicit_turbofish_generic_args() {
+    let source = r#"
+struct Container {
+    n: int,
+}
+impl Container {
+    fn wrap<T>(self, x: T) -> T {
+        x
+    }
+}
+fn use_it() {
+    let c = Container { n: 0 };
+    c.wrap::<int>(true);
+}
+"#;
+    let cx = check_all(source);
+    let diagnostics = cx.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].message(), "expected `int`, found `bool`");
+}
+
+#[test]
 fn check_all_self_type_annotation_resolves_inside_an_impl_fn_body() {
     let source = r#"
 struct Foo;

@@ -38,5 +38,5 @@ fn main() -> () {
     destroy_entity(engine::EntityId(10));
     let origin = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
     let dir = Vec3 { x: 3.0, y: 4.0, z: 5.0 };
-    // let result = origin.add(dir); 
+    let result = origin.add(dir); 
 }
