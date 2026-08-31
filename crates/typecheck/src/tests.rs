@@ -483,7 +483,10 @@ fn lower_ty_path_resolves_a_declared_struct_by_nominal_identity() {
 
     let ty_val = ty(&mut cx.symbols, "Foo");
     let t = cx.lower_ty(&ty_val);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def, vec![])));
+    assert_eq!(
+        resolved_kind(&mut cx, t),
+        Some(TyKind::Struct(DefIdOf::new_unchecked(def), vec![]))
+    );
 }
 
 #[test]
@@ -517,7 +520,10 @@ fn lower_ty_path_walks_through_a_module() {
 
     let ty_val = ty(&mut cx.symbols, "m::Foo");
     let t = cx.lower_ty(&ty_val);
-    assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Struct(def, vec![])));
+    assert_eq!(
+        resolved_kind(&mut cx, t),
+        Some(TyKind::Struct(DefIdOf::new_unchecked(def), vec![]))
+    );
 }
 
 #[test]
@@ -1582,7 +1588,7 @@ impl Foo {
     let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, params[0]) else {
         panic!("expected self param to resolve to a Struct ty");
     };
-    assert_eq!(self_struct_def, foo_def);
+    assert_eq!(self_struct_def, DefIdOf::new_unchecked(foo_def));
 }
 
 #[test]
@@ -1627,8 +1633,8 @@ impl Bar {
     let Some(TyKind::Struct(greet_self_def, _)) = resolved_kind(&mut cx, greet_params[0]) else {
         panic!("expected self param to resolve to a Struct ty");
     };
-    assert_eq!(hello_self_def, foo_def);
-    assert_eq!(greet_self_def, bar_def);
+    assert_eq!(hello_self_def, DefIdOf::new_unchecked(foo_def));
+    assert_eq!(greet_self_def, DefIdOf::new_unchecked(bar_def));
 }
 
 #[test]
@@ -1771,7 +1777,7 @@ impl Foo {
     let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, output) else {
         panic!("expected Self to resolve to a Struct ty");
     };
-    assert_eq!(self_struct_def, foo_def);
+    assert_eq!(self_struct_def, DefIdOf::new_unchecked(foo_def));
 }
 
 #[test]
@@ -1816,8 +1822,8 @@ impl Bar {
     let Some(TyKind::Struct(greet_self, _)) = resolved_kind(&mut cx, greet_output) else {
         panic!("expected Self to resolve to a Struct ty");
     };
-    assert_eq!(hello_self, foo_def);
-    assert_eq!(greet_self, bar_def);
+    assert_eq!(hello_self, DefIdOf::new_unchecked(foo_def));
+    assert_eq!(greet_self, DefIdOf::new_unchecked(bar_def));
 }
 
 #[test]
@@ -2544,7 +2550,7 @@ impl Renderer<'_> {
                 inputs_range.or(output_range)
             }
             TyKind::Struct(def, args) => {
-                let symbol = self.defs.get(def).symbol;
+                let symbol = self.defs.get(def.id()).symbol;
                 buf.push_str(self.symbols.resolve(symbol));
                 if !args.is_empty() {
                     buf.push('<');

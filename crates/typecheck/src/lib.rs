@@ -84,7 +84,7 @@ enum ImplTarget {
 
 fn impl_target_of(kind: &TyKind) -> Option<ImplTarget> {
     match kind {
-        TyKind::Struct(def, _) => Some(ImplTarget::Adt(*def)),
+        TyKind::Struct(def, _) => Some(ImplTarget::Adt(def.id())),
         TyKind::Enum(def, _) => Some(ImplTarget::Adt(def.id())),
         TyKind::Int => Some(ImplTarget::Int),
         TyKind::Float => Some(ImplTarget::Float),
@@ -460,7 +460,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
     fn unwrap_to_adt_def(&mut self, def: DefId) -> DefId {
         match self.resolved_alias_kind(def) {
-            Some(TyKind::Struct(inner, _)) => inner,
+            Some(TyKind::Struct(inner, _)) => inner.id(),
             Some(TyKind::Enum(inner, _)) => inner.id(),
             _ => def,
         }
@@ -523,12 +523,24 @@ impl<'ast> TypeCheckContext<'ast> {
         self.resolve_path(path, Namespace::Value)
     }
 
-    fn resolve_path_to_struct(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
+    fn resolve_path_to_struct(&mut self, path: &Path) -> Option<(DefIdOf<StructDef>, &StructDef)> {
         let id = self.resolve_path_to_type(path)?;
         let id = self.unwrap_to_adt_def(id);
-        self.def(id).kind.as_struct().map(|variant| (id, variant))
+        self.def(id)
+            .kind
+            .as_struct()
+            .map(|def| (DefIdOf::new_unchecked(id), def))
     }
 
+    fn resolve_path_to_struct_variant(
+        &mut self,
+        path: &Path,
+    ) -> Option<(DefIdOf<StructDef>, &VariantDef)> {
+        self.resolve_path_to_struct(path)
+            .map(|(id, def)| (id, &def.variant))
+    }
+
+    #[allow(unused)]
     fn resolve_path_to_enum(&mut self, path: &Path) -> Option<DefIdOf<EnumDef>> {
         let id = self.resolve_path_to_type(path)?;
         let id = self.unwrap_to_adt_def(id);
@@ -540,13 +552,16 @@ impl<'ast> TypeCheckContext<'ast> {
         self.trait_def_scope(id).map(|(def, _)| def)
     }
 
-    fn resolve_path_to_variant(&mut self, path: &Path) -> Option<(DefId, &VariantDef)> {
+    fn resolve_path_to_variant(
+        &mut self,
+        path: &Path,
+    ) -> Option<(DefIdOf<VariantDef>, &VariantDef)> {
         let id = self.resolve_path_to_value(path)?;
         self.def(id)
             .kind
             .as_variant()
             .filter(|variant| variant.ctor_ty.is_none())
-            .map(|variant| (id, variant))
+            .map(|variant| (DefIdOf::new_unchecked(id), variant))
     }
 
     fn resolve_path_from(
@@ -938,7 +953,7 @@ impl<'ast> TypeCheckContext<'ast> {
                     DefKind::Struct(_) => {
                         let generics = self.def(def).generics().to_vec();
                         let args = self.instantiate_adt_args(&generics, path);
-                        self.ty(TyKind::Struct(def, args))
+                        self.ty(TyKind::Struct(DefIdOf::new_unchecked(def), args))
                     }
                     DefKind::Enum(_) => {
                         let generics = self.def(def).generics().to_vec();

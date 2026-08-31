@@ -8,13 +8,9 @@ use ast::{
 use diagnostics::Related;
 use intern::Symbol;
 
-use crate::defs::TraitDef;
-use crate::errors::{
-    ArgumentCountMismatch, CyclicType, InvalidFieldAccess, InvalidMethodReceiver,
-    InvalidTupleIndex, MissingField, NotAMethod, NotCallable, TupleIndexOutOfBounds, TypeMismatch,
-    UnknownField, UnresolvedMethod, UnresolvedType, UnresolvedValue, expected_because_of,
-    expected_due_to, generic_note, provenance,
-};
+use crate::defs::StructDef;
+use crate::errors::*;
+
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
@@ -335,14 +331,12 @@ impl<'ast> TypeCheckContext<'ast> {
     fn struct_field_ty(
         &mut self,
         _expr_ty: TyId,
-        def: DefId,
+        def: DefIdOf<StructDef>,
         generics: Vec<TyId>,
         ident: &Ident,
     ) -> TyId {
-        let variant = self
-            .def(def)
-            .variant()
-            .expect("TyKind::Struct must resolve to a struct or variant def");
+        let struct_ref = self.defs.struct_ref(def);
+        let variant = &struct_ref.variant;
         let field_ty = variant.field(ident.symbol).map(|field| field.ty);
         let struct_name = variant.name;
 
@@ -410,10 +404,11 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_struct_expr(&mut self, expr: &StructExpr) -> TyId {
-        let resolved = self.resolve_path_to_struct(&expr.path);
-        let resolved = match resolved {
-            Some(resolved) => Some(resolved),
-            None => self.resolve_path_to_variant(&expr.path),
+        let resolved = if let Some((id, def)) = self.resolve_path_to_struct_variant(&expr.path) {
+            Some((id.id(), def))
+        } else {
+            self.resolve_path_to_variant(&expr.path)
+                .map(|(id, def)| (id.id(), def))
         };
         let Some((def, variant)) = resolved else {
             self.diagnostics.push(UnresolvedType::new(
@@ -453,7 +448,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
         let ty = match parent {
             Some(enum_def) => self.ty(TyKind::Enum(enum_def, args)),
-            None => self.ty(TyKind::Struct(def, args)),
+            None => self.ty(TyKind::Struct(DefIdOf::new_unchecked(def), args)),
         };
 
         if let Some(rest) = &expr.rest {

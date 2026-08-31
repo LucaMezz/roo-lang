@@ -455,7 +455,7 @@ impl SignatureLowerer<'_, '_> {
                 .collect();
             this.unify_ctor_ty(
                 def.id(),
-                TyKind::Struct(def.id(), placeholder_args),
+                TyKind::Struct(def, placeholder_args),
                 data,
                 &lowered,
             );

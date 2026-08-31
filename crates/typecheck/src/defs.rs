@@ -325,9 +325,9 @@ impl DefKind {
     }
 
     /// The variant data of this def, if it is a struct def.
-    pub(crate) fn as_struct(&self) -> Option<&VariantDef> {
+    pub(crate) fn as_struct(&self) -> Option<&StructDef> {
         match self {
-            DefKind::Struct(StructDef { variant, .. }) => Some(variant),
+            DefKind::Struct(def) => Some(def),
             _ => None,
         }
     }
@@ -344,7 +344,9 @@ impl DefKind {
     /// a bare enum variant def. Both share a [`VariantDef`] since
     /// they support the same field access.
     pub(crate) fn as_struct_or_variant(&self) -> Option<&VariantDef> {
-        self.as_struct().or_else(|| self.as_variant())
+        self.as_struct()
+            .map(|def| &def.variant)
+            .or_else(|| self.as_variant())
     }
 
     /// The function data of this def, if it is a function def.
@@ -417,8 +419,22 @@ impl Defs {
         }
     }
 
+    pub(crate) fn struct_ref(&self, def: DefIdOf<StructDef>) -> &StructDef {
+        match &self.defs[def.id()].kind {
+            DefKind::Struct(s) => s,
+            _ => unreachable!("DefIdOf<StructDef> guarantees a struct def"),
+        }
+    }
+
     pub(crate) fn enum_mut(&mut self, def: DefIdOf<EnumDef>) -> &mut EnumDef {
         match &mut self.defs[def.id()].kind {
+            DefKind::Enum(e) => e,
+            _ => unreachable!("DefIdOf<EnumDef> guarantees an enum def"),
+        }
+    }
+
+    pub(crate) fn enum_ref(&self, def: DefIdOf<EnumDef>) -> &EnumDef {
+        match &self.defs[def.id()].kind {
             DefKind::Enum(e) => e,
             _ => unreachable!("DefIdOf<EnumDef> guarantees an enum def"),
         }
@@ -447,6 +463,13 @@ impl Defs {
 
     pub(crate) fn variant_mut(&mut self, def: DefIdOf<VariantDef>) -> &mut VariantDef {
         match &mut self.defs[def.id()].kind {
+            DefKind::Variant(v) => v,
+            _ => unreachable!("DefIdOf<VariantDef> guarantees a variant def"),
+        }
+    }
+
+    pub(crate) fn variant_ref(&self, def: DefIdOf<VariantDef>) -> &VariantDef {
+        match &self.defs[def.id()].kind {
             DefKind::Variant(v) => v,
             _ => unreachable!("DefIdOf<VariantDef> guarantees a variant def"),
         }

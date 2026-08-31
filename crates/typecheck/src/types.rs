@@ -7,7 +7,7 @@
 use ast::{Pat, PatKind};
 use intern::Interner;
 
-use crate::defs::{Defs, EnumDef, TraitDef};
+use crate::defs::{Defs, EnumDef, StructDef, TraitDef, VariantDef};
 use crate::generics::GenericRegistry;
 use crate::inference::{InferenceTable, TyId, VarId};
 use crate::{DefId, DefIdOf, GenericId, TypeCheckContext};
@@ -24,7 +24,7 @@ pub(crate) enum TyKind {
     Array(TyId),
     Tuple(Vec<TyId>),
     Fn(Vec<TyId>, TyId),
-    Struct(DefId, Vec<TyId>),
+    Struct(DefIdOf<StructDef>, Vec<TyId>),
     Enum(DefIdOf<EnumDef>, Vec<TyId>),
     TraitObject(DefIdOf<TraitDef>, Vec<TyId>),
     Generic(GenericId),
@@ -155,7 +155,7 @@ impl TypeResolver<'_> {
                 Type::Fn(params, output)
             }
             TyKind::Struct(def, args) => {
-                let name = self.defs.get(def).symbol;
+                let name = self.defs.get(def.id()).symbol;
                 let args = args.iter().map(|&arg| self.resolve(arg)).collect();
                 Type::Named(self.names.resolve(name).to_owned(), args)
             }
