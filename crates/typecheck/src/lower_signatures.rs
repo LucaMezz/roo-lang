@@ -395,7 +395,7 @@ impl SignatureLowerer<'_, '_> {
                     .as_ref()
                     .map(|ty| self.cx.lower_ty(ty))
                     .unwrap_or_else(|| {
-                        let symbol = self.cx.symbols.intern("_T");
+                        let symbol = self.cx.symbols.intern(names.fresh().as_str());
                         let id = self.cx.declare_synthetic_generic_param(symbol);
                         synthesized.push(id);
                         self.cx.ty(TyKind::Generic(id))

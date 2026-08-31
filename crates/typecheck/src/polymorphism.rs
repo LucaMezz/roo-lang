@@ -119,7 +119,7 @@ impl<'ast> TypeCheckContext<'ast> {
             vars.iter().for_each(|&var| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = assigned.entry(var) {
                     let f = self.defs.fn_ref(*def);
-                    let symbol = self.symbols.intern("_T");
+                    let symbol = self.symbols.intern(names.fresh().as_str());
                     let id = self
                         .with_scope(f.scope, |this| this.declare_synthetic_generic_param(symbol));
                     let generic_ty = self.ty(TyKind::Generic(id));

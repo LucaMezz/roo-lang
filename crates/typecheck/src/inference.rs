@@ -328,18 +328,21 @@ impl InferenceTable {
         Snapshot {
             bindings: self.bindings.clone(),
             provenance_len: self.provenance.len(),
+            uf_key_to_var_length: self.uf_key_to_var.len(),
         }
     }
 
     pub(crate) fn rollback_to(&mut self, snapshot: Snapshot) {
         self.bindings = snapshot.bindings;
         self.provenance.truncate(snapshot.provenance_len);
+        self.uf_key_to_var.truncate(snapshot.uf_key_to_var_length);
     }
 }
 
 pub(crate) struct Snapshot {
     bindings: QuickUnionUf<Binding>,
     provenance_len: usize,
+    uf_key_to_var_length: usize,
 }
 
 impl Default for InferenceTable {

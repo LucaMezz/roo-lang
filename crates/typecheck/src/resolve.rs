@@ -208,11 +208,11 @@ impl Resolver<'_, '_> {
 
     fn resolve_trait_item(&mut self, t: &Trait) {
         let scope = self.new_scope();
-        let (generics, self_generic) = self.with_scope(scope, |this| {
+        let (self_generic, generics) = self.with_scope(scope, |this| {
             let symbol = this.cx.symbols.intern(SELF_TYPE);
             (
-                this.cx.declare_generic_params(&t.generics),
                 this.cx.declare_synthetic_generic_param(symbol),
+                this.cx.declare_generic_params(&t.generics),
             )
         });
 
@@ -226,8 +226,6 @@ impl Resolver<'_, '_> {
             },
         );
         self.with_scope(scope, |this| {
-            let self_ty = this.cx.ty(TyKind::Generic(self_generic));
-            this.cx.declare_self_ty_alias(self_ty, t.ident.span);
             t.items.iter().for_each(|item| item.visit(this))
         })
     }

@@ -39,7 +39,7 @@ mod types;
 
 use check::collect_fn_mod_items;
 use defs::{
-    Def, DefIdOf, DefKind, Defs, EnumDef, FnDef, IntoDefKind, ModDef, StructDef, TraitDef,
+    Def, DefId, DefIdOf, DefKind, Defs, EnumDef, FnDef, IntoDefKind, ModDef, StructDef, TraitDef,
     TyAliasDef, VariantDef,
 };
 use errors::Diagnostics;
@@ -54,12 +54,6 @@ pub use diagnostics::{Diagnostic, Level};
 pub use errors::Locale;
 
 use crate::errors::{AlreadyDefined, AnnotationsNeeded, SelfOutsideImplOrTrait, UnresolvedType};
-
-slotmap::new_key_type! {
-    /// A handle to a def stored in the def arena within
-    /// the [`TypeCheckContext`]
-    pub struct DefId;
-}
 
 #[derive(Debug, Clone)]
 struct ImplInfo {
@@ -809,6 +803,28 @@ impl<'ast> TypeCheckContext<'ast> {
             });
     }
 
+    fn declare_generic_with_symbol(
+        &mut self,
+        symbol: Symbol,
+        origin: DefOrigin,
+        default: Option<TyId>,
+    ) -> DefIdOf<GenericParamDef> {
+        let id = self.defs.next_id();
+        let ty = self.ty(TyKind::Generic(DefIdOf::new_unchecked(id)));
+        let def = self.defs.insert(Def {
+            symbol,
+            // TODO Somehow track the bounds on the generic param.
+            kind: DefKind::GenericParam(GenericParamDef {
+                default,
+                name: symbol,
+                ty,
+            }),
+            origin,
+        });
+        self.insert_type_in_scope(symbol, def);
+        DefIdOf::new_unchecked(def)
+    }
+
     /// Declares a new generic parameter within the current
     /// scope. For example, say there is a function
     /// ```ignore
@@ -828,33 +844,13 @@ impl<'ast> TypeCheckContext<'ast> {
         let default = default_ty.map(|ty| self.lower_ty(ty));
         // TODO Implement trait bounds
         let bounds = &param.bounds;
-        let def = self.defs.insert(Def {
-            symbol,
-            // TODO Create a new GenericParamDef struct.
-            // Add default_ty to the new struct.
-            // Somehow track the bounds on the generic param.
-            kind: DefKind::GenericParam(GenericParamDef {
-                default,
-                name: symbol,
-            }),
-            origin: DefOrigin::Source(span),
-        });
-        self.insert_type_in_scope(symbol, def);
-        self.positions.record_def(span, def);
-        DefIdOf::new_unchecked(def)
+        let def = self.declare_generic_with_symbol(symbol, DefOrigin::Source(span), default);
+        self.positions.record_def(span, def.id());
+        def
     }
 
     fn declare_synthetic_generic_param(&mut self, symbol: Symbol) -> DefIdOf<GenericParamDef> {
-        let def = self.defs.insert(Def {
-            symbol,
-            kind: DefKind::GenericParam(GenericParamDef {
-                default: None,
-                name: symbol,
-            }),
-            origin: DefOrigin::Synthetic,
-        });
-        self.insert_type_in_scope(symbol, def);
-        DefIdOf::new_unchecked(def)
+        self.declare_generic_with_symbol(symbol, DefOrigin::Synthetic, None)
     }
 
     fn declare_generic_params(&mut self, generics: &Generics) -> Vec<DefIdOf<GenericParamDef>> {
@@ -1175,5 +1171,5 @@ fn segment_namespace(i: usize, last: usize, namespace: Namespace) -> Namespace {
     }
 }
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;

@@ -3,57 +3,7 @@
 //! display name. Also contains [`SyntheticNames`], a local, one-off
 //! source of fresh generic parameter names for a single generalisation
 //! or synthesis scope.
-use std::collections::{HashMap, HashSet};
-
-use slotmap::SlotMap;
-
-slotmap::new_key_type! {
-    /// A handle to a generic parameter stored in [`GenericRegistry`].
-    pub struct GenericId;
-}
-
-#[derive(Default)]
-pub(crate) struct GenericRegistry {
-    /// Identifies a unique generic type parameter which appears
-    /// somewhere in the program.
-    ///
-    /// TODO No need for a SlotMap here. GenericIds are never
-    /// deleted from the arena, so no need for a generational
-    /// arena.
-    ids: SlotMap<GenericId, ()>,
-
-    /// A mapping from [`GenericId`] to the name of the
-    /// generic parameter.
-    names: HashMap<GenericId, String>,
-}
-
-impl GenericRegistry {
-    /// Creates a new blank [`GenericRegistry`].
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Mints a new [`GenericId`] and stores the given name for it,
-    /// so that a generic parameter can never exist without a name
-    /// or vice versa.
-    pub(crate) fn declare_new(&mut self, name: String) -> GenericId {
-        let id = self.ids.insert(());
-        self.names.insert(id, name);
-        id
-    }
-
-    /// Mints a new [`GenericId`] with a name drawn from `names`. See
-    /// [`SyntheticNames`].
-    pub(crate) fn declare_synthetic(&mut self, names: &mut SyntheticNames) -> GenericId {
-        self.declare_new(names.fresh())
-    }
-
-    /// Retireves the name of a generic parameter, if it has
-    /// one.
-    pub(crate) fn get(&self, id: &GenericId) -> Option<&String> {
-        self.names.get(id)
-    }
-}
+use std::collections::HashSet;
 
 #[derive(Default)]
 pub(crate) struct SyntheticNames {
@@ -109,7 +59,7 @@ impl SyntheticNames {
     }
 
     /// Returns the next name in this scope that isn't already taken.
-    fn fresh(&mut self) -> String {
+    pub(crate) fn fresh(&mut self) -> String {
         loop {
             let name = self.next();
             if self.taken.insert(name.clone()) {

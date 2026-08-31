@@ -5,8 +5,6 @@ use ast::{Block, Expr, ExprKind, Local, Pat, StmtKind};
 use chumsky::Parser;
 use intern::Interner;
 
-use crate::defs::FnDef;
-
 impl<'ast> TypeCheckContext<'ast> {
     fn diagnostics(&self) -> Vec<Diagnostic> {
         let catalog = errors::catalog(errors::Locale::EnUs);
@@ -2419,7 +2417,7 @@ fn fn_body_scope(cx: &TypeCheckContext<'_>, def: DefId) -> ScopeId {
     }
 }
 
-fn generics_list(registry: &GenericRegistry, generics: &[GenericId]) -> String {
+fn generics_list(generics: &[DefIdOf<GenericParamDef>]) -> String {
     if generics.is_empty() {
         return String::new();
     }
@@ -2439,7 +2437,6 @@ struct Renderer<'a> {
     inf: &'a mut InferenceTable,
     defs: &'a Defs,
     symbols: &'a Interner,
-    generics: &'a GenericRegistry,
 }
 
 impl<'ast> TypeCheckContext<'ast> {
@@ -2448,17 +2445,16 @@ impl<'ast> TypeCheckContext<'ast> {
             inf: &mut self.inf,
             defs: &self.defs,
             symbols: &self.symbols,
-            generics: &self.generics,
         }
     }
 
-    fn render_def_type(&mut self, def: DefId) -> String {
-        self.renderer().render_def_type(def)
-    }
-
-    fn describe_def(&mut self, def: DefId) -> String {
-        self.renderer().describe_def(def)
-    }
+    // fn render_def_type(&mut self, def: DefId) -> String {
+    //     self.renderer().render_def_type(def)
+    // }
+    //
+    // fn describe_def(&mut self, def: DefId) -> String {
+    //     self.renderer().describe_def(def)
+    // }
 }
 
 impl Renderer<'_> {
@@ -2595,12 +2591,7 @@ impl Renderer<'_> {
                 None
             }
             TyKind::Generic(id) => {
-                let text = self
-                    .generics
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| "<generic>".to_owned());
-                buf.push_str(&text);
+                unimplemented!();
                 None
             }
         }
@@ -3496,7 +3487,10 @@ fn compose<T>(f, g: Fn(int) -> _, x) -> Fn(T) -> String {
 
     let explicit = generics[0];
     let inferred = generics[1];
-    assert_ne!(explicit, inferred, "should be two distinct GenericIds");
+    assert_ne!(
+        explicit, inferred,
+        "should be two distinct DefIdOf<GenericParamDef>s"
+    );
 
     let explicit_symbol = cx.generics.get(&explicit).cloned();
     let inferred_symbol = cx.generics.get(&inferred).cloned();

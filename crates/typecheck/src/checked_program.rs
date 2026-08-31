@@ -41,12 +41,7 @@ impl<'ast> TypeCheckContext<'ast> {
             let generics = def
                 .generics()
                 .iter()
-                .map(|id| {
-                    self.generics
-                        .get(id)
-                        .cloned()
-                        .unwrap_or_else(|| "<generic>".to_owned())
-                })
+                .map(|id| self.generic_name(*id))
                 .collect();
             let kind = match &def.kind {
                 DefKind::Fn(FnDef { params, .. }) => FrozenDefKind::Fn {

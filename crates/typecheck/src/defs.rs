@@ -6,10 +6,12 @@ use std::marker::PhantomData;
 
 use ast::Span;
 use intern::Symbol;
-use slotmap::SlotMap;
 
 use crate::inference::TyId;
-use crate::{DefId, Namespace, ScopeId};
+use crate::{Namespace, ScopeId};
+
+#[derive(Hash, Copy, PartialEq, Eq, Clone, Debug)]
+pub struct DefId(usize);
 
 #[derive(Hash)]
 pub(crate) struct DefIdOf<K>(DefId, PhantomData<K>);
@@ -105,6 +107,9 @@ impl IntoDefKind for ModDef {
         DefKind::Mod(self)
     }
 }
+
+#[allow(unused)]
+pub(crate) type GenericId = DefIdOf<GenericParamDef>;
 
 #[derive(Debug)]
 pub(crate) enum DefOrigin {
@@ -254,6 +259,7 @@ pub(crate) struct VariantDef {
 #[derive(Debug, Hash)]
 pub(crate) struct GenericParamDef {
     pub(crate) name: Symbol,
+    pub(crate) ty: TyId,
     pub(crate) default: Option<TyId>,
 }
 
@@ -317,9 +323,8 @@ impl DefKind {
             DefKind::Struct(StructDef { variant, .. }) | DefKind::Variant(variant) => {
                 variant.ctor_ty
             }
-            DefKind::Enum(_) | DefKind::Trait(_) | DefKind::Mod(_) | DefKind::GenericParam(_) => {
-                None
-            }
+            DefKind::GenericParam(GenericParamDef { ty, .. }) => Some(*ty),
+            DefKind::Enum(_) | DefKind::Trait(_) | DefKind::Mod(_) => None,
         }
     }
 
@@ -398,24 +403,32 @@ impl DefKind {
 /// [`Def`].
 #[derive(Debug)]
 pub(crate) struct Defs {
-    defs: SlotMap<DefId, Def>,
+    defs: Vec<Def>,
 }
 
 impl Defs {
     pub(crate) fn new() -> Self {
-        Self {
-            defs: SlotMap::with_key(),
-        }
+        Self { defs: Vec::new() }
+    }
+
+    pub(crate) fn next_id(&self) -> DefId {
+        DefId(self.defs.len())
+    }
+
+    pub(crate) fn ids(&self) -> impl Iterator<Item = DefId> {
+        (0..self.len()).into_iter().map(|i| DefId(i))
     }
 
     /// Inserts a new def into the table, and returns a handle to
     /// it.
     pub(crate) fn insert(&mut self, def: Def) -> DefId {
-        self.defs.insert(def)
+        let id = self.next_id();
+        self.defs.push(def);
+        id
     }
 
     pub(crate) fn get(&self, def: DefId) -> &Def {
-        &self.defs[def]
+        &self.defs[def.0]
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -423,81 +436,81 @@ impl Defs {
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (DefId, &Def)> {
-        self.defs.iter()
+        self.ids().zip(self.defs.iter())
     }
 
     pub(crate) fn struct_mut(&mut self, def: DefIdOf<StructDef>) -> &mut StructDef {
-        match &mut self.defs[def.id()].kind {
+        match &mut self.defs[def.id().0].kind {
             DefKind::Struct(s) => s,
             _ => unreachable!("DefIdOf<StructDef> guarantees a struct def"),
         }
     }
 
     pub(crate) fn struct_ref(&self, def: DefIdOf<StructDef>) -> &StructDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::Struct(s) => s,
             _ => unreachable!("DefIdOf<StructDef> guarantees a struct def"),
         }
     }
 
     pub(crate) fn enum_mut(&mut self, def: DefIdOf<EnumDef>) -> &mut EnumDef {
-        match &mut self.defs[def.id()].kind {
+        match &mut self.defs[def.id().0].kind {
             DefKind::Enum(e) => e,
             _ => unreachable!("DefIdOf<EnumDef> guarantees an enum def"),
         }
     }
 
     pub(crate) fn enum_ref(&self, def: DefIdOf<EnumDef>) -> &EnumDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::Enum(e) => e,
             _ => unreachable!("DefIdOf<EnumDef> guarantees an enum def"),
         }
     }
 
     pub(crate) fn fn_mut(&mut self, def: DefIdOf<FnDef>) -> &mut FnDef {
-        match &mut self.defs[def.id()].kind {
+        match &mut self.defs[def.id().0].kind {
             DefKind::Fn(f) => f,
             _ => unreachable!("DefIdOf<FnDef> guarantees a function def"),
         }
     }
 
     pub(crate) fn fn_ref(&self, def: DefIdOf<FnDef>) -> &FnDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::Fn(f) => f,
             _ => unreachable!("DefIdOf<FnDef> guarantees a function def"),
         }
     }
 
     pub(crate) fn ty_alias_mut(&mut self, def: DefIdOf<TyAliasDef>) -> &mut TyAliasDef {
-        match &mut self.defs[def.id()].kind {
+        match &mut self.defs[def.id().0].kind {
             DefKind::TyAlias(a) => a,
             _ => unreachable!("DefIdOf<TyAliasDef> guarantees a type alias def"),
         }
     }
 
     pub(crate) fn variant_mut(&mut self, def: DefIdOf<VariantDef>) -> &mut VariantDef {
-        match &mut self.defs[def.id()].kind {
+        match &mut self.defs[def.id().0].kind {
             DefKind::Variant(v) => v,
             _ => unreachable!("DefIdOf<VariantDef> guarantees a variant def"),
         }
     }
 
     pub(crate) fn variant_ref(&self, def: DefIdOf<VariantDef>) -> &VariantDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::Variant(v) => v,
             _ => unreachable!("DefIdOf<VariantDef> guarantees a variant def"),
         }
     }
 
     pub(crate) fn trait_ref(&self, def: DefIdOf<TraitDef>) -> &TraitDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::Trait(t) => t,
             _ => unreachable!("DefIdOf<TraitDef> guarantees a trait def"),
         }
     }
 
     pub(crate) fn generic_param_ref(&self, def: DefIdOf<GenericParamDef>) -> &GenericParamDef {
-        match &self.defs[def.id()].kind {
+        match &self.defs[def.id().0].kind {
             DefKind::GenericParam(t) => t,
             _ => unreachable!("DefIdOf<GenericParamDef> guarantees a generic def"),
         }
