@@ -265,7 +265,7 @@ pub struct ExprField {
 #[derive(Clone, Debug, Walkable)]
 pub struct QSelf {
     pub ty: Box<Ty>,
-    pub trait_path: Option<Path>,
+    pub trait_path: Box<Path>,
 }
 
 #[derive(Clone, Debug, Walkable)]

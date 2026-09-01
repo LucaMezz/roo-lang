@@ -12,8 +12,21 @@ impl Add for int {
     fn add(self, other: Self) -> Output;
 }
 
-fn add<T: Add>(x: T, y: T) -> T {
-    T::add(x, y)
+trait Sub<Rhs = Self> {
+    type Output;
+
+    fn sub(self, other: Rhs) -> Output;
+}
+
+impl Sub for int {
+    type Output = Self;
+
+    #[intrinsic]
+    fn sub(self, other: Self) -> Output;
+}
+
+fn add<T: Add<T> + Sub<T> >(x: T, y: T) -> T::Output {
+    <T as Add>::add(x, y);
 }
 
 fn main() {

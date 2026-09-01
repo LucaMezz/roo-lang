@@ -129,6 +129,7 @@ fn expr_tuple_or_paren<'src>(
 fn expr_path<'src>() -> impl RooParser<'src, ExprKind> {
     q_self()
         .map(Box::new)
+        .then_ignore(just(Token::PathSep))
         .or_not()
         .then(path_turbofish(ty()))
         .map(|(qself, path)| ExprKind::Path(qself, path))

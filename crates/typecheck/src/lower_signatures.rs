@@ -686,7 +686,9 @@ mod tests {
     fn lower_signatures_recurses_into_a_mod() {
         let mut cx = resolve_and_lower("mod m { fn baz(x: bool) {} }");
         let target = path(&mut cx.symbols, &["m"]);
-        let m_def = cx.resolve_path_to_type(&target).expect("m should resolve");
+        let m_def = cx
+            .resolve_path_to_type(&target)
+            .expect("m should resolve");
         let DefKind::Mod(mod_data) = &cx.def(m_def).kind else {
             panic!("m should be a Mod def");
         };

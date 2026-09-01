@@ -14,8 +14,8 @@ use crate::errors::*;
 use crate::inference::UnifyError;
 use crate::types::{TyKind, Type};
 use crate::{
-    CxExt, DefId, DefIdOf, FnDef, Namespace, PatDeclKind, ScopeId, TyId, TypeCheckContext,
-    display_path, impl_target_of,
+    CxExt, DefId, DefIdOf, FnDef, ImplTarget, Namespace, PatDeclKind, ScopeId, TyId,
+    TypeCheckContext, display_path, impl_target_of,
 };
 
 #[derive(Default)]
@@ -183,16 +183,25 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_method_call_expr(&mut self, call: &MethodCall) -> TyId {
+        enum MethodReceiver {
+            Target(ImplTarget),
+            Generic(DefIdOf<GenericParamDef>),
+        }
+
         let receiver_ty = self.check_expr(call.receiver.as_ref(), None);
 
         let resolved_receiver = self.inf.resolve(receiver_ty);
-        let target = self
-            .inf
-            .ty(resolved_receiver)
-            .cloned()
-            .and_then(|kind| impl_target_of(&kind));
+        let receiver_kind = self.inf.ty(resolved_receiver).cloned();
 
-        let Some(target) = target else {
+        let method_receiver = match &receiver_kind {
+            Some(TyKind::Generic(id)) if !self.defs.generic_param_ref(*id).bounds.is_empty() => {
+                Some(MethodReceiver::Generic(*id))
+            }
+            Some(kind) => impl_target_of(kind).map(MethodReceiver::Target),
+            None => None,
+        };
+
+        let Some(method_receiver) = method_receiver else {
             let found = self.resolved(receiver_ty);
             self.diagnostics
                 .push(InvalidMethodReceiver::new(call.receiver.span, found));
@@ -200,7 +209,16 @@ impl<'ast> TypeCheckContext<'ast> {
         };
 
         let symbol = call.seg.ident.symbol;
-        let Some(def) = self.resolve_in_impls_for_target(target, symbol, Namespace::Value) else {
+        let resolution = match method_receiver {
+            MethodReceiver::Target(target) => self
+                .resolve_in_impls_for_target(target, symbol, Namespace::Value)
+                .map(|def| (def, HashMap::new())),
+            MethodReceiver::Generic(id) => {
+                self.resolve_method_in_generic_bounds(id, symbol, Namespace::Value)
+            }
+        };
+
+        let Some((def, mut trait_subst)) = resolution else {
             let found = self.resolved(receiver_ty);
             let name = self.symbols.resolve(symbol).to_owned();
             self.diagnostics
@@ -211,7 +229,7 @@ impl<'ast> TypeCheckContext<'ast> {
 
         let (fn_def, _) = self
             .fn_def_scope(def)
-            .expect("a value found in an impl scope is always a fn def");
+            .expect("a value found in an impl or trait scope is always a fn def");
         let fn_data = self.defs.fn_ref(fn_def);
         let params = fn_data.params.clone();
         let generics = fn_data.generics.clone();
@@ -227,6 +245,7 @@ impl<'ast> TypeCheckContext<'ast> {
         }
 
         let mut subst = self.subst_for_seg(&generics, &call.seg);
+        subst.extend(trait_subst.drain());
         let instantiated = self.instantiate_ty(fn_ty, &mut subst);
         let (mut input_tys, output_ty) = self
             .resolved_fn_parts(instantiated)
@@ -515,23 +534,49 @@ impl<'ast> TypeCheckContext<'ast> {
     }
 
     fn check_path_expr(&mut self, qself: &Option<Box<QSelf>>, path: &Path) -> TyId {
-        if qself.is_some() {
-            unimplemented!();
-        }
+        let Some(qself) = qself else {
+            return self
+                .resolve_path_to_value(path)
+                .map(|def| {
+                    self.record_path_reference(path, def);
+                    self.check_referenced_fn(def);
+                    self.instantiate_path(def, path)
+                })
+                .unwrap_or_else(|| {
+                    self.diagnostics.push(UnresolvedValue::new(
+                        path.span,
+                        display_path(path, &self.symbols),
+                    ));
+                    self.ty(TyKind::Err)
+                });
+        };
 
-        self.resolve_path_to_value(path)
-            .map(|def| {
-                self.record_path_reference(path, def);
-                self.check_referenced_fn(def);
-                self.instantiate_path(def, path)
-            })
-            .unwrap_or_else(|| {
-                self.diagnostics.push(UnresolvedValue::new(
-                    path.span,
-                    display_path(path, &self.symbols),
-                ));
-                self.ty(TyKind::Err)
-            })
+        let Some(first) = path.segments.first() else {
+            self.diagnostics.push(UnresolvedValue::new(
+                path.span,
+                display_path(path, &self.symbols),
+            ));
+            return self.ty(TyKind::Err);
+        };
+        let symbol = first.ident.symbol;
+
+        let Some((def, mut trait_subst)) = self.resolve_qself_item(qself, symbol, Namespace::Value)
+        else {
+            self.diagnostics.push(UnresolvedValue::new(
+                path.span,
+                display_path(path, &self.symbols),
+            ));
+            return self.ty(TyKind::Err);
+        };
+
+        self.record_path_reference(path, def);
+        self.check_referenced_fn(def);
+
+        let ty = self.def(def).ty();
+        let generics = self.def(def).generics().to_vec();
+        let mut subst = self.subst_for_seg(&generics, first);
+        subst.extend(trait_subst.drain());
+        self.instantiate_ty(ty, &mut subst)
     }
 
     fn check_array_expr(&mut self, exprs: &[Box<Expr>], expected: Option<TyId>) -> TyId {

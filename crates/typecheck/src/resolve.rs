@@ -450,6 +450,100 @@ mod tests {
     }
 
     #[test]
+    fn resolve_path_resolves_an_associated_fn_through_a_generic_params_bound() {
+        let source = indoc! {r#"
+            trait Show {
+                fn show() -> int;
+            }
+            fn dump<T: Show>(x: T) -> T { x }
+        "#};
+        let mut cx = resolve_and_lower(source);
+
+        let dump = declared_def(&cx, cx.current_scope, Namespace::Value, "dump")
+            .expect("dump should resolve");
+        cx.current_scope = fn_body_scope(&cx, dump);
+
+        let target = path(&mut cx.symbols, &["T", "show"]);
+        assert!(cx.resolve_path_to_value(&target).is_some());
+    }
+
+    #[test]
+    fn resolve_path_through_a_generic_bound_checks_the_requested_namespace() {
+        let source = indoc! {r#"
+            trait Show {
+                fn show() -> int;
+            }
+            fn dump<T: Show>(x: T) -> T { x }
+        "#};
+        let mut cx = resolve_and_lower(source);
+
+        let dump = declared_def(&cx, cx.current_scope, Namespace::Value, "dump")
+            .expect("dump should resolve");
+        cx.current_scope = fn_body_scope(&cx, dump);
+
+        let target = path(&mut cx.symbols, &["T", "show"]);
+        assert!(cx.resolve_path_to_type(&target).is_none());
+    }
+
+    #[test]
+    fn resolve_path_resolves_an_associated_type_through_a_generic_params_bound() {
+        let source = indoc! {r#"
+            trait Producer {
+                type Output;
+                fn make() -> Output;
+            }
+            fn run<T: Producer>(x: T) -> T { x }
+        "#};
+        let mut cx = resolve_and_lower(source);
+
+        let run = declared_def(&cx, cx.current_scope, Namespace::Value, "run")
+            .expect("run should resolve");
+        cx.current_scope = fn_body_scope(&cx, run);
+
+        let target = path(&mut cx.symbols, &["T", "Output"]);
+        assert!(cx.resolve_path_to_type(&target).is_some());
+    }
+
+    #[test]
+    fn resolve_path_through_a_generic_bound_fails_for_an_unknown_item() {
+        let source = indoc! {r#"
+            trait Show {
+                fn show() -> int;
+            }
+            fn dump<T: Show>(x: T) -> T { x }
+        "#};
+        let mut cx = resolve_and_lower(source);
+
+        let dump = declared_def(&cx, cx.current_scope, Namespace::Value, "dump")
+            .expect("dump should resolve");
+        cx.current_scope = fn_body_scope(&cx, dump);
+
+        let target = path(&mut cx.symbols, &["T", "nonexistent"]);
+        assert!(cx.resolve_path_to_value(&target).is_none());
+    }
+
+    #[test]
+    fn resolve_path_is_ambiguous_when_two_bounds_define_the_same_associated_item() {
+        let source = indoc! {r#"
+            trait Left {
+                fn run() -> int;
+            }
+            trait Right {
+                fn run() -> int;
+            }
+            fn go<T: Left + Right>(x: T) -> T { x }
+        "#};
+        let mut cx = resolve_and_lower(source);
+
+        let go =
+            declared_def(&cx, cx.current_scope, Namespace::Value, "go").expect("go should resolve");
+        cx.current_scope = fn_body_scope(&cx, go);
+
+        let target = path(&mut cx.symbols, &["T", "run"]);
+        assert!(cx.resolve_path_to_value(&target).is_none());
+    }
+
+    #[test]
     fn resolve_trait_declares_its_generic_params_in_its_own_scope() {
         let cx = resolve("trait Container<T> { fn get() -> T; }");
 

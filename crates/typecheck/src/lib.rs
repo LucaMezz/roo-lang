@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use ast::visit::Visitor;
 use ast::{
-    FnRetTy, FnTy, GenericParam, Generics, Item, ItemKind, Path, SELF_TYPE, Span, Ty,
+    FnRetTy, FnTy, GenericParam, Generics, Item, ItemKind, Path, QSelf, SELF_TYPE, Span, Ty,
     TyKind as AstTyKind,
 };
 use intern::{Interner, Symbol};
@@ -421,12 +421,54 @@ impl<'ast> TypeCheckContext<'ast> {
         symbol: Symbol,
         namespace: Namespace,
     ) -> Option<DefId> {
+        // The symbol refers to a module or an enum in the scope of def
         if let Some(found) = self.resolve_in_def_scope(def, symbol, namespace) {
             return Some(found);
         }
 
-        let target = self.impl_target_of_def(def)?;
-        self.resolve_in_impls_for_target(target, symbol, namespace)
+        // The symbol refers to an impl target
+        if let Some(target) = self.impl_target_of_def(def) {
+            return self.resolve_in_impls_for_target(target, symbol, namespace);
+        }
+
+        None
+    }
+
+    fn resolve_method_in_generic_bounds(
+        &mut self,
+        param: DefIdOf<GenericParamDef>,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<(DefId, HashMap<DefIdOf<GenericParamDef>, TyId>)> {
+        let bounds = self.defs.generic_param_ref(param).bounds.clone();
+
+        let mut found: Option<(DefId, HashMap<DefIdOf<GenericParamDef>, TyId>)> = None;
+        for bound in bounds {
+            let resolved = self.inf.resolve(bound);
+            let Some(TyKind::TraitObject(trait_def, trait_args)) = self.inf.ty(resolved).cloned()
+            else {
+                continue;
+            };
+            let Some(item) = self.resolve_in_trait(trait_def, symbol, namespace) else {
+                continue;
+            };
+            if found.as_ref().is_some_and(|(prev, _)| *prev != item) {
+                return None;
+            }
+            let trait_generics = self.defs.trait_ref(trait_def).generics.clone();
+            let subst = trait_generics.into_iter().zip(trait_args).collect();
+            found = Some((item, subst));
+        }
+        found
+    }
+
+    fn bound_trait_scope(&mut self, bound: TyId) -> Option<ScopeId> {
+        let resolved = self.inf.resolve(bound);
+        let trait_def = match self.inf.ty(resolved)? {
+            TyKind::TraitObject(trait_def, _) => trait_def.id(),
+            _ => return None,
+        };
+        self.trait_def_scope(trait_def).map(|(_, scope)| scope)
     }
 
     fn resolve_in_def_scope(
@@ -464,6 +506,24 @@ impl<'ast> TypeCheckContext<'ast> {
         };
         let resolved = self.inf.resolve(alias.ty);
         self.inf.ty(resolved).cloned()
+    }
+
+    fn resolve_qself_item(
+        &mut self,
+        qself: &QSelf,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<(DefId, HashMap<DefIdOf<GenericParamDef>, TyId>)> {
+        let self_ty = self.lower_ty(qself.ty.as_ref());
+        let trt = self.resolve_path_to_trait(qself.trait_path.as_ref())?;
+        let item = self.resolve_in_trait(trt, symbol, namespace)?;
+
+        let trait_generics = self.defs.trait_ref(trt).generics.clone();
+        let mut subst = self.subst_for(&trait_generics, qself.trait_path.as_ref());
+        let self_generic = self.defs.trait_ref(trt).self_generic;
+        subst.insert(self_generic, self_ty);
+
+        Some((item, subst))
     }
 
     fn resolve_primitive_prefix(
@@ -505,6 +565,16 @@ impl<'ast> TypeCheckContext<'ast> {
             return None;
         }
         Some(found)
+    }
+
+    fn resolve_in_trait(
+        &self,
+        trait_def: DefIdOf<TraitDef>,
+        symbol: Symbol,
+        namespace: Namespace,
+    ) -> Option<DefId> {
+        let scope = self.defs.trait_ref(trait_def).scope;
+        self.scopes.lookup(scope, symbol, namespace)
     }
 
     fn resolve_path_to_type(&mut self, path: &Path) -> Option<DefId> {

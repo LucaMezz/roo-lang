@@ -171,7 +171,7 @@ pub fn generics<'src>() -> impl RooParser<'src, Generics> {
 pub fn q_self<'src>() -> impl RooParser<'src, QSelf> {
     ty().map(Box::new)
         .then_ignore(just(Token::As))
-        .then(path(ty()).or_not())
+        .then(path(ty()).map(Box::new))
         .delimited_by(just(Token::Lt), just(Token::Gt))
         .map(|(ty, trait_path)| QSelf { ty, trait_path })
 }
