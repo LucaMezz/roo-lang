@@ -1,0 +1,21 @@
+
+trait Add<Rhs = Self> {
+    type Output;
+
+    fn add(self, other: Rhs) -> Output;
+}
+
+impl Add for int {
+    type Output = Self;
+
+    #[intrinsic]
+    fn add(self, other: Self) -> Output;
+}
+
+fn add<T: Add>(x: T, y: T) -> T {
+    T::add(x, y)
+}
+
+fn main() {
+    add(10, 12);
+}

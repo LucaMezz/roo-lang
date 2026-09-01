@@ -4,8 +4,9 @@ use ast::{Item, SELF_PARAM};
 use diagnostics::Diagnostic;
 use intern::Interner;
 
-use crate::defs::{DefKind, FnDef};
+use crate::defs::{DefKind, Defs, FnDef};
 use crate::errors::{Locale, TypeCheckDiagnostic};
+use crate::inference::{InferenceTable, TyId};
 use crate::position_index::PositionIndex;
 use crate::types::{Type, TypeResolver};
 use crate::{DefId, TypeCheckContext};
@@ -41,21 +42,28 @@ impl<'ast> TypeCheckContext<'ast> {
             let generics = def
                 .generics()
                 .iter()
-                .map(|id| self.generic_name(*id))
+                .map(|&gid| {
+                    let param = self.defs.generic_param_ref(gid);
+                    let name = self.symbols.resolve(param.name).to_owned();
+                    let bounds =
+                        render_bounds(&param.bounds, &mut self.inf, &self.defs, &self.symbols);
+                    FrozenGeneric { name, bounds }
+                })
                 .collect();
             let kind = match &def.kind {
                 DefKind::Fn(FnDef { params, .. }) => FrozenDefKind::Fn {
                     param_symbols: params.iter().map(|p| p.symbol.clone()).collect(),
                 },
+                DefKind::GenericParam(param) => FrozenDefKind::GenericParam {
+                    bounds: render_bounds(&param.bounds, &mut self.inf, &self.defs, &self.symbols),
+                },
                 DefKind::Param(_) => FrozenDefKind::Param,
                 DefKind::Local(_) => FrozenDefKind::Local,
                 DefKind::TyAlias(_) => FrozenDefKind::TyAlias,
                 DefKind::Mod(_) => FrozenDefKind::Mod,
-                DefKind::Struct(_)
-                | DefKind::Enum(_)
-                | DefKind::Variant(_)
-                | DefKind::Trait(_)
-                | DefKind::GenericParam(_) => FrozenDefKind::Other,
+                DefKind::Struct(_) | DefKind::Enum(_) | DefKind::Variant(_) | DefKind::Trait(_) => {
+                    FrozenDefKind::Other
+                }
             };
             defs.insert(
                 id,
@@ -80,11 +88,48 @@ struct FrozenDef {
     symbol: String,
     kind: FrozenDefKind,
     ty: Type,
-    generics: Vec<String>,
+    generics: Vec<FrozenGeneric>,
+}
+
+struct FrozenGeneric {
+    name: String,
+    bounds: Vec<String>,
+}
+
+impl FrozenGeneric {
+    fn render(&self) -> String {
+        if self.bounds.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}: {}", self.name, self.bounds.join(" + "))
+        }
+    }
+}
+
+fn render_bounds(
+    bounds: &[TyId],
+    inf: &mut InferenceTable,
+    defs: &Defs,
+    names: &Interner,
+) -> Vec<String> {
+    let mut rendered = Vec::with_capacity(bounds.len());
+    for &bound in bounds {
+        rendered.push(
+            TypeResolver {
+                inf: &mut *inf,
+                defs,
+                names,
+            }
+            .resolve(bound)
+            .render(),
+        );
+    }
+    rendered
 }
 
 enum FrozenDefKind {
     Fn { param_symbols: Vec<String> },
+    GenericParam { bounds: Vec<String> },
     Param,
     Local,
     TyAlias,
@@ -159,6 +204,10 @@ impl CheckedProgram {
         let bind = self.def(def);
         match &bind.kind {
             FrozenDefKind::Fn { param_symbols } => describe_fn_item(bind, param_symbols),
+            FrozenDefKind::GenericParam { bounds } if bounds.is_empty() => bind.symbol.clone(),
+            FrozenDefKind::GenericParam { bounds } => {
+                format!("{}: {}", bind.symbol, bounds.join(" + "))
+            }
             FrozenDefKind::Param => format!("{}: {}", bind.symbol, bind.ty.render()),
             FrozenDefKind::Local => format!("let {}: {}", bind.symbol, bind.ty.render()),
             FrozenDefKind::TyAlias => {
@@ -171,11 +220,12 @@ impl CheckedProgram {
 }
 
 /// Returns a string representation of a generic list.
-fn generics_list(generics: &[String]) -> String {
+fn generics_list(generics: &[FrozenGeneric]) -> String {
     if generics.is_empty() {
         return String::new();
     }
-    format!("<{}>", generics.join(", "))
+    let params: Vec<String> = generics.iter().map(FrozenGeneric::render).collect();
+    format!("<{}>", params.join(", "))
 }
 
 /// Returns a string with the def symbol followed by a
@@ -332,6 +382,38 @@ mod tests {
             cx.renderer().describe_def(def),
             "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
         );
+    }
+
+    #[test]
+    fn describe_def_a_fn_item_shows_the_bounds_on_its_generic_params() {
+        let source = indoc! {r#"
+            trait Show { fn show() -> int; }
+            trait Eq { fn eq() -> bool; }
+            fn dump<T: Show + Eq, U: Show>(a: T, b: U) -> T { a }
+        "#};
+        let mut cx = check_all(source);
+        let offset = source.find("dump").unwrap();
+        let def = cx
+            .def_at(offset)
+            .expect("should resolve at the fn's own symbol");
+        assert_eq!(
+            cx.renderer().describe_def(def),
+            "fn dump<T: Show + Eq, U: Show>(a: T, b: U) -> T"
+        );
+    }
+
+    #[test]
+    fn describe_def_a_generic_param_shows_its_own_bounds() {
+        let source = indoc! {r#"
+            trait Show { fn show() -> int; }
+            fn dump<T: Show>(x: T) -> T { x }
+        "#};
+        let mut cx = check_all(source);
+        let offset = source.find("T: Show").unwrap();
+        let def = cx
+            .def_at(offset)
+            .expect("should resolve at the generic param");
+        assert_eq!(cx.renderer().describe_def(def), "T: Show");
     }
 
     #[test]
@@ -534,6 +616,20 @@ mod tests {
     }
 
     #[test]
+    fn freeze_render_def_type_a_generic_fn_with_bounds() {
+        let source = indoc! {r#"
+            trait Show { fn show() -> int; }
+            fn identity<T: Show>(x: T) -> T { x }
+        "#};
+        let frozen = check_all_frozen(source);
+        let offset = source.find("identity").unwrap();
+        let def = frozen
+            .def_at(offset)
+            .expect("should resolve at the fn's own symbol");
+        assert_eq!(frozen.render_def_type(def), "<T: Show> Fn(T) -> T");
+    }
+
+    #[test]
     fn freeze_render_def_type_a_struct_parameter() {
         let source = indoc! {r#"
             struct Point {
@@ -579,6 +675,38 @@ mod tests {
             frozen.describe_def(def),
             "fn compose<T, U, V>(f: Fn(T) -> U, g: Fn(V) -> T, x: V) -> U"
         );
+    }
+
+    #[test]
+    fn freeze_describe_def_a_fn_item_shows_the_bounds_on_its_generic_params() {
+        let source = indoc! {r#"
+            trait Show { fn show() -> int; }
+            trait Eq { fn eq() -> bool; }
+            fn dump<T: Show + Eq, U: Show>(a: T, b: U) -> T { a }
+        "#};
+        let frozen = check_all_frozen(source);
+        let offset = source.find("dump").unwrap();
+        let def = frozen
+            .def_at(offset)
+            .expect("should resolve at the fn's own symbol");
+        assert_eq!(
+            frozen.describe_def(def),
+            "fn dump<T: Show + Eq, U: Show>(a: T, b: U) -> T"
+        );
+    }
+
+    #[test]
+    fn freeze_describe_def_a_generic_param_shows_its_own_bounds() {
+        let source = indoc! {r#"
+            trait Show { fn show() -> int; }
+            fn dump<T: Show>(x: T) -> T { x }
+        "#};
+        let frozen = check_all_frozen(source);
+        let offset = source.find("T: Show").unwrap();
+        let def = frozen
+            .def_at(offset)
+            .expect("should resolve at the generic param");
+        assert_eq!(frozen.describe_def(def), "T: Show");
     }
 
     #[test]

@@ -808,16 +808,17 @@ impl<'ast> TypeCheckContext<'ast> {
         symbol: Symbol,
         origin: DefOrigin,
         default: Option<TyId>,
+        bounds: Vec<TyId>,
     ) -> DefIdOf<GenericParamDef> {
         let id = self.defs.next_id();
         let ty = self.ty(TyKind::Generic(DefIdOf::new_unchecked(id)));
         let def = self.defs.insert(Def {
             symbol,
-            // TODO Somehow track the bounds on the generic param.
             kind: DefKind::GenericParam(GenericParamDef {
-                default,
                 name: symbol,
                 ty,
+                default,
+                bounds,
             }),
             origin,
         });
@@ -843,14 +844,19 @@ impl<'ast> TypeCheckContext<'ast> {
         let default_ty = &param.default.as_ref();
         let default = default_ty.map(|ty| self.lower_ty(ty));
         // TODO Implement trait bounds
-        let bounds = &param.bounds;
-        let def = self.declare_generic_with_symbol(symbol, DefOrigin::Source(span), default);
+        let bounds = param
+            .bounds
+            .iter()
+            .map(|bound| self.lower_ty(bound))
+            .collect::<Vec<_>>();
+        let def =
+            self.declare_generic_with_symbol(symbol, DefOrigin::Source(span), default, bounds);
         self.positions.record_def(span, def.id());
         def
     }
 
     fn declare_synthetic_generic_param(&mut self, symbol: Symbol) -> DefIdOf<GenericParamDef> {
-        self.declare_generic_with_symbol(symbol, DefOrigin::Synthetic, None)
+        self.declare_generic_with_symbol(symbol, DefOrigin::Synthetic, None, Vec::new())
     }
 
     fn declare_generic_params(&mut self, generics: &Generics) -> Vec<DefIdOf<GenericParamDef>> {

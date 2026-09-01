@@ -233,7 +233,7 @@ pub(crate) struct StructDef {
     pub(crate) scope: ScopeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub(crate) struct TraitDef {
     pub(crate) scope: ScopeId,
     pub(crate) generics: Vec<DefIdOf<GenericParamDef>>,
@@ -261,6 +261,7 @@ pub(crate) struct GenericParamDef {
     pub(crate) name: Symbol,
     pub(crate) ty: TyId,
     pub(crate) default: Option<TyId>,
+    pub(crate) bounds: Vec<TyId>,
 }
 
 impl VariantDef {

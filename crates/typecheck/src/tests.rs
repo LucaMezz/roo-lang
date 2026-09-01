@@ -135,17 +135,6 @@ pub(crate) fn fn_body_scope(cx: &TypeCheckContext<'_>, def: DefId) -> ScopeId {
     }
 }
 
-pub(crate) fn generics_list(
-    cx: &TypeCheckContext<'_>,
-    generics: &[DefIdOf<GenericParamDef>],
-) -> String {
-    if generics.is_empty() {
-        return String::new();
-    }
-    let symbols: Vec<String> = generics.iter().map(|id| cx.generic_name(*id)).collect();
-    format!("<{}>", symbols.join(", "))
-}
-
 pub(crate) struct Renderer<'a, 'ast> {
     cx: &'a mut TypeCheckContext<'ast>,
 }
@@ -165,6 +154,28 @@ impl<'ast> TypeCheckContext<'ast> {
 }
 
 impl Renderer<'_, '_> {
+    pub(crate) fn render_generic_param(&mut self, id: DefIdOf<GenericParamDef>) -> String {
+        let name = self.cx.generic_name(id);
+        let bounds = self.cx.defs.generic_param_ref(id).bounds.clone();
+        if bounds.is_empty() {
+            return name;
+        }
+        let rendered: Vec<String> = bounds.iter().map(|&bound| self.render_ty(bound)).collect();
+        format!("{name}: {}", rendered.join(" + "))
+    }
+
+    pub(crate) fn generics_list(&mut self, generics: &[DefIdOf<GenericParamDef>]) -> String {
+        if generics.is_empty() {
+            return String::new();
+        }
+        let params: Vec<String> = generics
+            .to_vec()
+            .into_iter()
+            .map(|id| self.render_generic_param(id))
+            .collect();
+        format!("<{}>", params.join(", "))
+    }
+
     pub(crate) fn render_ty(&mut self, ty: TyId) -> String {
         let mut buf = String::new();
         self.render_ty_into(&mut buf, ty, None);
@@ -307,8 +318,8 @@ impl Renderer<'_, '_> {
     pub(crate) fn render_def_type(&mut self, def: DefId) -> String {
         let ty = self.cx.defs.get(def).ty();
         let rendered = self.render_ty(ty);
-        let generics = self.cx.defs.get(def).generics();
-        let generics_rendered = generics_list(self.cx, generics);
+        let generics = self.cx.defs.get(def).generics().to_vec();
+        let generics_rendered = self.generics_list(&generics);
         if generics_rendered.is_empty() {
             rendered
         } else {
@@ -333,11 +344,10 @@ impl Renderer<'_, '_> {
                 format!("type {}", self.alias_symbol_with_generics(def))
             }
             DefKind::Mod(_) => format!("mod {}", self.def_display_symbol(def)),
-            DefKind::Struct(_)
-            | DefKind::Enum(_)
-            | DefKind::Variant(_)
-            | DefKind::Trait(_)
-            | DefKind::GenericParam(_) => self.render_def_type(def),
+            DefKind::GenericParam(_) => self.render_generic_param(DefIdOf::new_unchecked(def)),
+            DefKind::Struct(_) | DefKind::Enum(_) | DefKind::Variant(_) | DefKind::Trait(_) => {
+                self.render_def_type(def)
+            }
         }
     }
 
@@ -348,8 +358,8 @@ impl Renderer<'_, '_> {
 
     pub(crate) fn alias_symbol_with_generics(&mut self, def: DefId) -> String {
         let symbol = self.def_display_symbol(def);
-        let generics = self.cx.defs.get(def).generics();
-        let generics_rendered = generics_list(self.cx, generics);
+        let generics = self.cx.defs.get(def).generics().to_vec();
+        let generics_rendered = self.generics_list(&generics);
         format!("{symbol}{generics_rendered}")
     }
 
@@ -357,8 +367,8 @@ impl Renderer<'_, '_> {
         let symbol = self.cx.defs.get(def).symbol;
         let symbol = self.cx.symbols.resolve(symbol).to_owned();
 
-        let generics = self.cx.defs.get(def).generics();
-        let generics_rendered = generics_list(self.cx, generics);
+        let generics = self.cx.defs.get(def).generics().to_vec();
+        let generics_rendered = self.generics_list(&generics);
 
         let DefKind::Fn(FnDef { params, .. }) = &self.cx.defs.get(def).kind else {
             unreachable!("describe_fn_item is only ever called for a DefKind::Fn def");
