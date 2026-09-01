@@ -648,10 +648,9 @@ impl<'ast> TypeCheckContext<'ast> {
         else {
             return false;
         };
-        let trait_def = *trait_def;
         let trait_args = trait_args.clone();
 
-        self.target_implements(actual, trait_def, &trait_args)
+        self.target_implements(actual, *trait_def, &trait_args)
     }
 
     #[allow(unused)]
@@ -1173,4 +1172,501 @@ pub(crate) fn collect_fn_mod_items<'ast>(
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use ast::{Expr, ExprKind};
+
+    use crate::tests::*;
+
+    #[test]
+    fn check_expr_bool_literal() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "true");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
+        let expr_val = expr(&mut cx.symbols, "false");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Bool));
+    }
+
+    #[test]
+    fn check_expr_int_literal() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "5");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_expr_float_literal() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "5.0");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
+    }
+
+    #[test]
+    fn check_expr_str_literal() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "\"hi\"");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Str));
+    }
+
+    #[test]
+    fn check_expr_paren_has_the_inner_exprs_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "(5)");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_expr_err_is_a_wildcard() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let err_expr = Expr {
+            annotations: Vec::new(),
+            kind: ExprKind::Err,
+            span: ast::Span { start: 0, end: 0 },
+        };
+        let bool_ty = cx.ty(TyKind::Bool);
+        let t = cx.check_expr(&err_expr, Some(bool_ty));
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
+    }
+
+    #[test]
+    fn check_expr_unifies_the_result_against_the_expected_type() {
+        let mut cx = resolve("fn foo() {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let never_ty = cx.ty(TyKind::Never);
+        let expr_val = expr(&mut cx.symbols, "foo");
+        cx.check_expr(&expr_val, Some(never_ty));
+
+        assert_eq!(resolved_kind(&mut cx, def_ty), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_expr_tup_elements_keep_independent_types() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "(1, \"hi\")");
+        let t = cx.check_expr(&expr_val, None);
+        let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
+            panic!("should be a Tuple ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, args[0]), Some(TyKind::Int));
+        assert_eq!(resolved_kind(&mut cx, args[1]), Some(TyKind::Str));
+    }
+
+    #[test]
+    fn check_expr_array_elements_are_unified_with_each_other() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "[1, 2, 3]");
+        let t = cx.check_expr(&expr_val, None);
+        let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
+            panic!("should be an Array ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, elem), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_expr_empty_array_uses_the_expected_element_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let array_of_never = cx.ty(TyKind::Array(never_ty));
+
+        let expr_val = expr(&mut cx.symbols, "[]");
+        let t = cx.check_expr(&expr_val, Some(array_of_never));
+        let Some(TyKind::Array(elem)) = resolved_kind(&mut cx, t) else {
+            panic!("should be an Array ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, elem), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_expr_path_resolves_to_the_defs_type() {
+        let mut cx = resolve("fn foo() {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let expr_val = expr(&mut cx.symbols, "foo");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(t, def_ty);
+    }
+
+    #[test]
+    fn check_expr_path_to_an_undeclared_symbol_is_err() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "doesNotExist");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Err));
+    }
+
+    #[test]
+    fn check_expr_cast_lowers_the_target_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "5 as float");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
+    }
+
+    #[test]
+    fn check_expr_call_pins_the_callees_type_to_a_fn_shape() {
+        let mut cx = resolve("fn foo() {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let expr_val = expr(&mut cx.symbols, "foo()");
+        cx.check_expr(&expr_val, None);
+
+        assert!(matches!(
+            resolved_kind(&mut cx, def_ty),
+            Some(TyKind::Fn(..))
+        ));
+    }
+
+    #[test]
+    fn check_expr_call_checks_arguments_against_the_signature() {
+        let mut cx = resolve("fn foo() {}");
+        let expr_val = expr(&mut cx.symbols, "foo(5)");
+        cx.check_expr(&expr_val, None);
+
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should be a Fn ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_expr_call_result_is_an_unbound_var_when_nothing_constrains_it() {
+        let mut cx = resolve("fn foo() {}");
+        let expr_val = expr(&mut cx.symbols, "foo()");
+        let t = cx.check_expr(&expr_val, None);
+        let resolved = cx.inf.resolve(t);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+    }
+
+    #[test]
+    fn check_all_calling_an_unannotated_parameter_infers_its_fn_shape_with_no_error() {
+        let source = indoc! {r#"
+            fn apply(f, x) {
+                f(x)
+            }
+        "#};
+        let mut cx = check_all(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let target = path(&mut cx.symbols, &["apply"]);
+        let apply = cx
+            .resolve_path_to_value(&target)
+            .expect("apply should resolve");
+        assert_eq!(
+            cx.def(apply).generics().len(),
+            2,
+            "<T, U> Fn(Fn(T) -> U, T) -> U"
+        );
+    }
+
+    #[test]
+    fn check_expr_ret_with_no_value_is_never() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "return");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_expr_ret_with_a_value_is_still_never_not_the_values_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "return 5");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn never_is_a_wildcard_that_unifies_with_anything() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let int_ty = cx.ty(TyKind::Int);
+        assert!(cx.inf.unify(never_ty, int_ty).is_ok());
+    }
+
+    #[test]
+    fn if_with_no_else_and_a_unit_then_branch_is_unit_typed() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
+    }
+
+    #[test]
+    fn if_branches_are_unified_together() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { 1 } else { 2 }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn if_prefers_the_else_branchs_type_when_the_then_branch_diverges() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { return } else { 5 }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { 5 } else { return }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn if_is_never_when_both_branches_diverge() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { return } else { return }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn if_prefers_the_then_branchs_type_when_the_else_branch_diverges_via_a_semicolon() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let expr_val = expr(&mut cx.symbols, "if true { 5 } else { return 0; }");
+        let t = cx.check_expr(&expr_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_block_empty_is_unit() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{}");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
+    }
+
+    #[test]
+    fn check_block_trailing_expr_with_no_semicolon_is_its_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{ 5 }");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_block_trailing_expr_with_a_semicolon_does_not_count() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{ 5; }");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Tuple(Vec::new())));
+    }
+
+    #[test]
+    fn check_block_a_semicolon_tyinated_return_makes_the_block_never() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{ return 0; }");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_block_a_non_trailing_let_declares_a_def_visible_to_later_statements() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{ let x = 5; x }");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_block_a_non_trailing_lets_ascription_propagates_to_a_later_reference() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let block_val = block(&mut cx.symbols, "{ let x: float; let y = x; y }");
+        let t = cx.check_block(&block_val, None);
+        assert_eq!(resolved_kind(&mut cx, t), Some(TyKind::Float));
+    }
+
+    #[test]
+    fn check_pat_ident_declares_a_local_def() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let pat_val = pat(&mut cx.symbols, "x");
+        cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
+
+        assert!(lookup(&cx, cx.current_scope, Namespace::Value, "x"));
+    }
+
+    #[test]
+    fn check_pat_ident_binds_the_locals_type_to_expected() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let pat_val = pat(&mut cx.symbols, "x");
+        cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
+
+        let def = declared_def(&cx, cx.current_scope, Namespace::Value, "x")
+            .expect("x should be declared");
+        let def_ty = cx.def(def).ty();
+        assert_eq!(resolved_kind(&mut cx, def_ty), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_pat_wild_matches_anything_and_binds_nothing() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let pat_val = pat(&mut cx.symbols, "_");
+        let t = cx.check_pat(&pat_val, never_ty, PatDeclKind::Let);
+        assert_eq!(t, never_ty);
+        assert!(cx.defs.is_empty());
+    }
+
+    #[test]
+    fn check_pat_tuple_declares_one_local_per_position() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let never_ty = cx.ty(TyKind::Never);
+        let int_ty = cx.ty(TyKind::Int);
+        let expected = cx.ty(TyKind::Tuple(vec![never_ty, int_ty]));
+
+        let pat_val = pat(&mut cx.symbols, "(a, b)");
+        cx.check_pat(&pat_val, expected, PatDeclKind::Let);
+
+        let a = declared_def(&cx, cx.current_scope, Namespace::Value, "a")
+            .expect("a should be declared");
+        let b = declared_def(&cx, cx.current_scope, Namespace::Value, "b")
+            .expect("b should be declared");
+        let a_ty = cx.def(a).ty();
+        let b_ty = cx.def(b).ty();
+        assert_eq!(resolved_kind(&mut cx, a_ty), Some(TyKind::Never));
+        assert_eq!(resolved_kind(&mut cx, b_ty), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_pat_tuple_with_no_matching_expected_shape_uses_fresh_vars_per_position() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let int_ty = cx.ty(TyKind::Int);
+        let pat_val = pat(&mut cx.symbols, "(a, b)");
+        let t = cx.check_pat(&pat_val, int_ty, PatDeclKind::Let);
+        let Some(TyKind::Tuple(args)) = resolved_kind(&mut cx, t) else {
+            panic!("should be a Tuple ty");
+        };
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn check_local_declares_the_pattern_with_the_initializers_type() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let local_val = local(&mut cx.symbols, "let x = 5;");
+        cx.check_local(&local_val);
+
+        let def = declared_def(&cx, cx.current_scope, Namespace::Value, "x")
+            .expect("x should be declared");
+        let def_ty = cx.def(def).ty();
+        assert_eq!(resolved_kind(&mut cx, def_ty), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_local_with_no_initializer_uses_the_ascription() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let local_val = local(&mut cx.symbols, "let x: !;");
+        cx.check_local(&local_val);
+
+        let def = declared_def(&cx, cx.current_scope, Namespace::Value, "x")
+            .expect("x should be declared");
+        let def_ty = cx.def(def).ty();
+        assert_eq!(resolved_kind(&mut cx, def_ty), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_local_ascription_constrains_the_initializer() {
+        let mut cx = resolve("fn foo() {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+
+        let local_val = local(&mut cx.symbols, "let x: ! = foo();");
+        cx.check_local(&local_val);
+
+        let def_ty = cx.def(def).ty();
+        let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should be a Fn ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Never));
+    }
+
+    #[test]
+    fn check_all_infers_an_untyped_params_type_from_the_bodys_declared_return_type() {
+        let mut cx = check_all("fn identity(x) -> int { x }");
+        let target = path(&mut cx.symbols, &["identity"]);
+        let fn_def = cx
+            .resolve_path_to_value(&target)
+            .expect("identity should resolve");
+        let body_scope = fn_body_scope(&cx, fn_def);
+
+        let x_def = declared_def(&cx, body_scope, Namespace::Value, "x")
+            .expect("x should be declared as a param");
+        let x_ty = cx.def(x_def).ty();
+        assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_all_recurses_into_a_nested_fns_body() {
+        let mut cx = check_all("fn outer() { fn inner(x) -> int { x } }");
+        let target = path(&mut cx.symbols, &["outer"]);
+        let outer_def = cx
+            .resolve_path_to_value(&target)
+            .expect("outer should resolve");
+        let outer_scope = fn_body_scope(&cx, outer_def);
+
+        let inner_def = declared_def(&cx, outer_scope, Namespace::Value, "inner")
+            .expect("inner should be declared inside outer's body");
+        let inner_scope = fn_body_scope(&cx, inner_def);
+
+        let x_def = declared_def(&cx, inner_scope, Namespace::Value, "x")
+            .expect("x should be declared as inner's param");
+        let x_ty = cx.def(x_def).ty();
+        assert_eq!(resolved_kind(&mut cx, x_ty), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn check_all_nested_fn_body_resolves_a_reference_to_an_outer_params_def() {
+        let source = indoc! {r#"
+            fn outer(x: int) {
+                fn inner() {
+                    x;
+                }
+            }
+        "#};
+        let cx = check_all(source);
+
+        let param_decl_offset = source.find("x: int").unwrap();
+        let param_use_offset = source.rfind('x').unwrap();
+        assert_ne!(param_decl_offset, param_use_offset);
+
+        let decl_def = cx
+            .def_at(param_decl_offset)
+            .expect("should resolve at outer's parameter declaration");
+        let use_def = cx
+            .def_at(param_use_offset)
+            .expect("inner's reference to x should resolve to outer's parameter");
+        assert_eq!(decl_def, use_def);
+    }
 }

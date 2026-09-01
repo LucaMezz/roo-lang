@@ -531,3 +531,522 @@ impl Visitor for SignatureLowerer<'_, '_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tests::*;
+
+    #[test]
+    fn lower_signatures_fn_with_typed_params_and_return() {
+        let mut cx = resolve_and_lower("fn add(a: int, b: int) -> float { a }");
+        let target = path(&mut cx.symbols, &["add"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("add should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let Some(TyKind::Fn(input_args, ret)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should be a Fn ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
+        assert_eq!(resolved_kind(&mut cx, input_args[1]), Some(TyKind::Int));
+        assert_eq!(resolved_kind(&mut cx, ret), Some(TyKind::Float));
+    }
+
+    #[test]
+    fn lower_signatures_fn_with_no_return_type_is_a_fresh_unbound_var() {
+        let mut cx = resolve_and_lower("fn foo() {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let Some(TyKind::Fn(_, ret)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should be a Fn ty");
+        };
+        let resolved = cx.inf.resolve(ret);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+    }
+
+    #[test]
+    fn lower_signatures_fn_with_an_untyped_param_gets_a_fresh_var() {
+        let mut cx = resolve_and_lower("fn foo(x) {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should be a Fn ty");
+        };
+        let resolved = cx.inf.resolve(input_args[0]);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+    }
+
+    #[test]
+    fn lower_signatures_ty_alias() {
+        let mut cx = resolve_and_lower("type MyInt = int;");
+        let target = path(&mut cx.symbols, &["MyInt"]);
+        let def = cx
+            .resolve_path_to_type(&target)
+            .expect("MyInt should resolve");
+        let def_ty = cx.def(def).ty();
+        assert_eq!(resolved_kind(&mut cx, def_ty), Some(TyKind::Int));
+    }
+
+    #[test]
+    fn lower_signatures_each_struct_synthesises_field_generics_starting_from_t_independently() {
+        // Regression test: struct/enum field synthesis used to share one
+        // ever-incrementing counter across the whole program, so `First`
+        // would correctly synthesise `T` for its untyped field but
+        // `Second` would get `U` instead of independently restarting at
+        // `T`.
+        let mut cx = resolve_and_lower(indoc! {r#"
+            struct First { value }
+            struct Second { value }
+        "#});
+
+        let first_path = path(&mut cx.symbols, &["First"]);
+        let first = cx
+            .resolve_path_to_type(&first_path)
+            .expect("First should resolve");
+        let second_path = path(&mut cx.symbols, &["Second"]);
+        let second = cx
+            .resolve_path_to_type(&second_path)
+            .expect("Second should resolve");
+
+        let first_field_ty = cx.def(first).variant().expect("First is a struct").fields[0].ty;
+        let second_field_ty = cx.def(second).variant().expect("Second is a struct").fields[0].ty;
+
+        assert_eq!(cx.renderer().render_ty(first_field_ty), "T");
+        assert_eq!(cx.renderer().render_ty(second_field_ty), "T");
+    }
+
+    #[test]
+    fn lower_signatures_sibling_enum_variants_synthesise_field_generics_without_colliding() {
+        // Unrelated structs each independently get `T` (see the test
+        // above), but sibling variants of the *same* enum are a different
+        // case: they must NOT collide, since two distinct generics named
+        // `T` on the same enum would be ambiguous. One `SyntheticNames` is
+        // shared across all of an enum's variants for exactly this reason.
+        let mut cx = resolve_and_lower(indoc! {r#"
+            enum Either {
+                A { value },
+                B { value },
+            }
+        "#});
+
+        let target = path(&mut cx.symbols, &["Either"]);
+        let either = cx
+            .resolve_path_to_type(&target)
+            .expect("Either should resolve");
+
+        let DefKind::Enum(EnumDef { variants, .. }) = &cx.defs.get(either).kind else {
+            panic!("Either should be an enum");
+        };
+        let variants: Vec<DefId> = variants.iter().map(|v| v.id()).collect();
+        assert_eq!(variants.len(), 2);
+
+        let a_field_ty = cx
+            .def(variants[0])
+            .variant()
+            .expect("A is a variant")
+            .fields[0]
+            .ty;
+        let b_field_ty = cx
+            .def(variants[1])
+            .variant()
+            .expect("B is a variant")
+            .fields[0]
+            .ty;
+
+        assert_eq!(cx.renderer().render_ty(a_field_ty), "T");
+        assert_eq!(cx.renderer().render_ty(b_field_ty), "U");
+    }
+
+    #[test]
+    fn lower_signatures_recurses_into_a_fns_own_body() {
+        let mut cx = resolve_and_lower("fn outer() { fn inner(x: int) -> bool { true } }");
+        let body_scope = cx
+            .scopes
+            .child_of(cx.current_scope)
+            .expect("outer's body should have a child scope");
+        let def = declared_def(&cx, body_scope, Namespace::Value, "inner")
+            .expect("inner should be declared");
+        let def_ty = cx.def(def).ty();
+        assert!(matches!(
+            resolved_kind(&mut cx, def_ty),
+            Some(TyKind::Fn(..))
+        ));
+    }
+
+    #[test]
+    fn lower_signatures_recurses_into_a_mod() {
+        let mut cx = resolve_and_lower("mod m { fn baz(x: bool) {} }");
+        let target = path(&mut cx.symbols, &["m"]);
+        let m_def = cx.resolve_path_to_type(&target).expect("m should resolve");
+        let DefKind::Mod(mod_data) = &cx.def(m_def).kind else {
+            panic!("m should be a Mod def");
+        };
+        let m_scope = mod_data.scope;
+
+        let def = declared_def(&cx, m_scope, Namespace::Value, "baz").expect("baz should resolve");
+        let def_ty = cx.def(def).ty();
+        assert!(matches!(
+            resolved_kind(&mut cx, def_ty),
+            Some(TyKind::Fn(..))
+        ));
+    }
+
+    #[test]
+    fn lower_impl_item_self_param_resolves_to_the_impls_self_ty() {
+        let source = indoc! {r#"
+            struct Foo;
+            impl Foo {
+                fn hello(self) -> bool {
+                    true
+                }
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let foo_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should resolve");
+
+        let hello_offset = source.find("hello").expect("source contains hello");
+        let hello_def = cx
+            .def_at(hello_offset)
+            .expect("hello should have a recorded def");
+        let hello_ty = cx.def(hello_def).ty();
+
+        let Some(TyKind::Fn(params, _)) = resolved_kind(&mut cx, hello_ty) else {
+            panic!("expected a Fn ty");
+        };
+        assert_eq!(params.len(), 1);
+        let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, params[0]) else {
+            panic!("expected self param to resolve to a Struct ty");
+        };
+        assert_eq!(self_struct_def, DefIdOf::new_unchecked(foo_def));
+    }
+
+    #[test]
+    fn lower_impl_item_self_param_is_specific_to_each_impl_block() {
+        let source = indoc! {r#"
+            struct Foo;
+            struct Bar;
+            impl Foo {
+                fn hello(self) -> bool { true }
+            }
+            impl Bar {
+                fn greet(self) -> bool { true }
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let foo_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should resolve");
+        let bar_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Bar")
+            .expect("Bar should resolve");
+
+        let hello_def = cx
+            .def_at(source.find("hello").unwrap())
+            .expect("hello should have a recorded def");
+        let greet_def = cx
+            .def_at(source.find("greet").unwrap())
+            .expect("greet should have a recorded def");
+
+        let hello_ty = cx.def(hello_def).ty();
+        let greet_ty = cx.def(greet_def).ty();
+        let Some(TyKind::Fn(hello_params, _)) = resolved_kind(&mut cx, hello_ty) else {
+            panic!("expected a Fn ty");
+        };
+        let Some(TyKind::Fn(greet_params, _)) = resolved_kind(&mut cx, greet_ty) else {
+            panic!("expected a Fn ty");
+        };
+
+        let Some(TyKind::Struct(hello_self_def, _)) = resolved_kind(&mut cx, hello_params[0])
+        else {
+            panic!("expected self param to resolve to a Struct ty");
+        };
+        let Some(TyKind::Struct(greet_self_def, _)) = resolved_kind(&mut cx, greet_params[0])
+        else {
+            panic!("expected self param to resolve to a Struct ty");
+        };
+        assert_eq!(hello_self_def, DefIdOf::new_unchecked(foo_def));
+        assert_eq!(greet_self_def, DefIdOf::new_unchecked(bar_def));
+    }
+
+    #[test]
+    fn lower_trait_item_self_param_resolves_to_a_generic_ty() {
+        let source = indoc! {r#"
+            trait Greet {
+                fn hello(self) -> int;
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let hello_offset = source.find("hello").expect("source contains hello");
+        let hello_def = cx
+            .def_at(hello_offset)
+            .expect("hello should have a recorded def");
+        let hello_ty = cx.def(hello_def).ty();
+
+        let Some(TyKind::Fn(params, _)) = resolved_kind(&mut cx, hello_ty) else {
+            panic!("expected a Fn ty");
+        };
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            resolved_kind(&mut cx, params[0]),
+            Some(TyKind::Generic(_))
+        ));
+    }
+
+    #[test]
+    fn lower_trait_item_self_param_is_consistent_across_the_traits_own_items() {
+        let source = indoc! {r#"
+            trait Greet {
+                fn hello(self) -> int;
+                fn bye(self) -> int;
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let hello_def = cx
+            .def_at(source.find("hello").unwrap())
+            .expect("hello should have a recorded def");
+        let bye_def = cx
+            .def_at(source.find("bye").unwrap())
+            .expect("bye should have a recorded def");
+
+        let hello_ty = cx.def(hello_def).ty();
+        let bye_ty = cx.def(bye_def).ty();
+        let Some(TyKind::Fn(hello_params, _)) = resolved_kind(&mut cx, hello_ty) else {
+            panic!("expected a Fn ty");
+        };
+        let Some(TyKind::Fn(bye_params, _)) = resolved_kind(&mut cx, bye_ty) else {
+            panic!("expected a Fn ty");
+        };
+
+        let Some(TyKind::Generic(hello_self)) = resolved_kind(&mut cx, hello_params[0]) else {
+            panic!("expected self param to resolve to a Generic ty");
+        };
+        let Some(TyKind::Generic(bye_self)) = resolved_kind(&mut cx, bye_params[0]) else {
+            panic!("expected self param to resolve to a Generic ty");
+        };
+        assert_eq!(hello_self, bye_self);
+    }
+
+    #[test]
+    fn lower_trait_item_self_type_resolves_to_the_traits_self_generic() {
+        let source = indoc! {r#"
+            trait Make {
+                fn make() -> Self;
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let make_def = cx
+            .def_at(source.find("make").unwrap())
+            .expect("make should have a recorded def");
+        let make_ty = cx.def(make_def).ty();
+
+        let Some(TyKind::Fn(_, output)) = resolved_kind(&mut cx, make_ty) else {
+            panic!("expected a Fn ty");
+        };
+        assert!(matches!(
+            resolved_kind(&mut cx, output),
+            Some(TyKind::Generic(_))
+        ));
+    }
+
+    #[test]
+    fn lower_trait_item_self_type_and_self_param_share_the_same_generic() {
+        let source = indoc! {r#"
+            trait Make {
+                fn make(self) -> Self;
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let make_def = cx
+            .def_at(source.find("make").unwrap())
+            .expect("make should have a recorded def");
+        let make_ty = cx.def(make_def).ty();
+
+        let Some(TyKind::Fn(params, output)) = resolved_kind(&mut cx, make_ty) else {
+            panic!("expected a Fn ty");
+        };
+        let Some(TyKind::Generic(param_generic)) = resolved_kind(&mut cx, params[0]) else {
+            panic!("expected self param to resolve to a Generic ty");
+        };
+        let Some(TyKind::Generic(output_generic)) = resolved_kind(&mut cx, output) else {
+            panic!("expected Self return type to resolve to a Generic ty");
+        };
+        assert_eq!(param_generic, output_generic);
+    }
+
+    #[test]
+    fn lower_impl_item_self_type_resolves_to_the_impls_concrete_self_ty() {
+        let source = indoc! {r#"
+            struct Foo;
+            impl Foo {
+                fn make() -> Self {
+                    Foo
+                }
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let foo_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should resolve");
+
+        let make_def = cx
+            .def_at(source.find("make").unwrap())
+            .expect("make should have a recorded def");
+        let make_ty = cx.def(make_def).ty();
+
+        let Some(TyKind::Fn(_, output)) = resolved_kind(&mut cx, make_ty) else {
+            panic!("expected a Fn ty");
+        };
+        let Some(TyKind::Struct(self_struct_def, _)) = resolved_kind(&mut cx, output) else {
+            panic!("expected Self to resolve to a Struct ty");
+        };
+        assert_eq!(self_struct_def, DefIdOf::new_unchecked(foo_def));
+    }
+
+    #[test]
+    fn lower_impl_item_self_type_is_specific_to_each_impl_block() {
+        let source = indoc! {r#"
+            struct Foo;
+            struct Bar;
+            impl Foo {
+                fn hello() -> Self { Foo }
+            }
+            impl Bar {
+                fn greet() -> Self { Bar }
+            }
+        "#};
+        let mut cx = resolve_and_lower(source);
+        assert!(cx.diagnostics.is_empty());
+
+        let foo_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should resolve");
+        let bar_def = declared_def(&cx, cx.current_scope, Namespace::Type, "Bar")
+            .expect("Bar should resolve");
+
+        let hello_def = cx
+            .def_at(source.find("hello").unwrap())
+            .expect("hello should have a recorded def");
+        let greet_def = cx
+            .def_at(source.find("greet").unwrap())
+            .expect("greet should have a recorded def");
+
+        let hello_ty = cx.def(hello_def).ty();
+        let greet_ty = cx.def(greet_def).ty();
+        let Some(TyKind::Fn(_, hello_output)) = resolved_kind(&mut cx, hello_ty) else {
+            panic!("expected a Fn ty");
+        };
+        let Some(TyKind::Fn(_, greet_output)) = resolved_kind(&mut cx, greet_ty) else {
+            panic!("expected a Fn ty");
+        };
+
+        let Some(TyKind::Struct(hello_self, _)) = resolved_kind(&mut cx, hello_output) else {
+            panic!("expected Self to resolve to a Struct ty");
+        };
+        let Some(TyKind::Struct(greet_self, _)) = resolved_kind(&mut cx, greet_output) else {
+            panic!("expected Self to resolve to a Struct ty");
+        };
+        assert_eq!(hello_self, DefIdOf::new_unchecked(foo_def));
+        assert_eq!(greet_self, DefIdOf::new_unchecked(bar_def));
+    }
+
+    #[test]
+    fn lower_use_tree_simple_imports_a_value_into_the_current_scope() {
+        let mut cx = resolve_and_lower("mod m { fn baz() {} } use m::baz;");
+
+        let target = path(&mut cx.symbols, &["m", "baz"]);
+        let original = cx
+            .resolve_path_to_value(&target)
+            .expect("m::baz should resolve");
+        let imported = declared_def(&cx, cx.current_scope, Namespace::Value, "baz")
+            .expect("baz should have been imported into the current scope");
+
+        assert_eq!(imported, original);
+    }
+
+    #[test]
+    fn lower_use_tree_glob_imports_every_item_from_a_module() {
+        let mut cx = resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::*;");
+
+        let foo_target = path(&mut cx.symbols, &["m", "Foo"]);
+        let foo_original = cx
+            .resolve_path_to_type(&foo_target)
+            .expect("m::Foo should resolve");
+        let baz_target = path(&mut cx.symbols, &["m", "baz"]);
+        let baz_original = cx
+            .resolve_path_to_value(&baz_target)
+            .expect("m::baz should resolve");
+
+        let foo_imported = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should have been imported into the current scope");
+        let baz_imported = declared_def(&cx, cx.current_scope, Namespace::Value, "baz")
+            .expect("baz should have been imported into the current scope");
+
+        assert_eq!(foo_imported, foo_original);
+        assert_eq!(baz_imported, baz_original);
+    }
+
+    #[test]
+    fn lower_use_tree_nested_imports_each_item_in_the_group_and_honours_resymbols() {
+        let mut cx =
+            resolve_and_lower("mod m { struct Foo; fn baz() {} } use m::{Foo, baz as make_baz};");
+
+        let foo_target = path(&mut cx.symbols, &["m", "Foo"]);
+        let foo_original = cx
+            .resolve_path_to_type(&foo_target)
+            .expect("m::Foo should resolve");
+        let baz_target = path(&mut cx.symbols, &["m", "baz"]);
+        let baz_original = cx
+            .resolve_path_to_value(&baz_target)
+            .expect("m::baz should resolve");
+
+        let foo_imported = declared_def(&cx, cx.current_scope, Namespace::Type, "Foo")
+            .expect("Foo should have been imported into the current scope");
+        let make_baz_imported = declared_def(&cx, cx.current_scope, Namespace::Value, "make_baz")
+            .expect("baz should have been imported as make_baz");
+
+        assert_eq!(foo_imported, foo_original);
+        assert_eq!(make_baz_imported, baz_original);
+        assert!(
+            declared_def(&cx, cx.current_scope, Namespace::Value, "baz").is_none(),
+            "baz should not also be imported under its original symbol"
+        );
+    }
+
+    #[test]
+    fn lower_signatures_makes_the_declared_signature_authoritative() {
+        let mut cx = resolve_and_lower("fn foo(x: int) {}");
+        let target = path(&mut cx.symbols, &["foo"]);
+        let def = cx
+            .resolve_path_to_value(&target)
+            .expect("foo should resolve");
+        let def_ty = cx.def(def).ty();
+
+        let expr_val = expr(&mut cx.symbols, "foo(\"wrong\")");
+        cx.check_expr(&expr_val, None);
+
+        let Some(TyKind::Fn(input_args, _)) = resolved_kind(&mut cx, def_ty) else {
+            panic!("should still be a Fn ty");
+        };
+        assert_eq!(resolved_kind(&mut cx, input_args[0]), Some(TyKind::Int));
+    }
+}

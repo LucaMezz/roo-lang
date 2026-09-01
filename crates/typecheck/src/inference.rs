@@ -458,3 +458,46 @@ pub(crate) enum UnifyError {
     #[error("occurs check failed for {0:?}")]
     OccursCheck(VarId),
 }
+
+// TODO Make the tests operate directly on InferenceTable rather than
+// through the inference table belonging to a TypeCheckContext.
+#[cfg(test)]
+mod tests {
+    use crate::tests::*;
+
+    #[test]
+    fn inference_rollback_undoes_a_successful_unification_made_after_the_snapshot() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let a = cx.fresh_var();
+        let int_ty = cx.ty(TyKind::Int);
+
+        let snapshot = cx.inf.snapshot();
+        assert!(cx.inf.unify(a, int_ty).is_ok());
+        let resolved = cx.inf.resolve(a);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Int)));
+
+        cx.inf.rollback_to(snapshot);
+        let resolved = cx.inf.resolve(a);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+    }
+
+    #[test]
+    fn inference_rollback_discards_partial_bindings_left_by_a_failed_unification() {
+        let mut cx = TypeCheckContext::new(Interner::new());
+        let a = cx.fresh_var();
+        let bool_ty = cx.ty(TyKind::Bool);
+        let str_ty = cx.ty(TyKind::Str);
+        let int_ty = cx.ty(TyKind::Int);
+        let tuple1 = cx.ty(TyKind::Tuple(vec![a, int_ty]));
+        let tuple2 = cx.ty(TyKind::Tuple(vec![bool_ty, str_ty]));
+
+        let snapshot = cx.inf.snapshot();
+        assert!(cx.inf.unify(tuple1, tuple2).is_err());
+        let resolved = cx.inf.resolve(a);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Bool)));
+
+        cx.inf.rollback_to(snapshot);
+        let resolved = cx.inf.resolve(a);
+        assert!(matches!(cx.inf.ty(resolved), Some(TyKind::Var(_))));
+    }
+}

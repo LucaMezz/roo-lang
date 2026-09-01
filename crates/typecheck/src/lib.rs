@@ -1171,5 +1171,5 @@ fn segment_namespace(i: usize, last: usize, namespace: Namespace) -> Namespace {
     }
 }
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;

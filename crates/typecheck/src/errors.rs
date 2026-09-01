@@ -461,14 +461,20 @@ static EN_US: std::sync::LazyLock<diagnostics::Catalog> = std::sync::LazyLock::n
     diagnostics::Catalog::new("en-US", &[include_str!("../locales/en-US/typecheck.ftl")])
 });
 
+static EN_AU: std::sync::LazyLock<diagnostics::Catalog> = std::sync::LazyLock::new(|| {
+    diagnostics::Catalog::new("en-AU", &[include_str!("../locales/en-AU/typecheck.ftl")])
+});
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
     EnUs,
+    EnAu,
 }
 
 pub(crate) fn catalog(locale: Locale) -> &'static diagnostics::Catalog {
     match locale {
         Locale::EnUs => &EN_US,
+        Locale::EnAu => &EN_AU,
     }
 }
 
@@ -482,6 +488,16 @@ impl Diagnostics {
 
     pub(crate) fn into_vec(self) -> Vec<TypeCheckDiagnostic> {
         self.0
+    }
+
+    #[allow(unused)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[allow(unused)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

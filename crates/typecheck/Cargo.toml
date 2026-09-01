@@ -24,6 +24,7 @@ diagnostics-derive = { version = "0.1.0", path = "../diagnostics-derive" }
 lexer = { version = "0.1.0", path = "../lexer" }
 parser = { version = "0.1.0", path = "../parser" }
 chumsky = { version = "0.13.0", features = ["pratt"] }
+indoc = "2.0.7"
 
 [lints]
 workspace = true
