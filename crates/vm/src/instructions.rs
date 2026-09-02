@@ -1,4 +1,5 @@
 use crate::value::Value;
+use crate::{InstrAddr, StringId};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction {
@@ -6,8 +7,11 @@ pub enum Instruction {
     Halt,
     Push(Value),
     Pop,
-    Jump(usize),
-    JumpIfFalse(usize),
+    Jump(InstrAddr),
+    JumpIfFalse(InstrAddr),
+    LoadString(StringId),
+    Concat,
+    Slice(usize, usize),
     Add,
     Sub,
     Mul,
@@ -20,6 +24,7 @@ pub enum Instruction {
     Shr,
     Not,
     Neg,
+    Is,
     Eq,
     Ne,
     Lt,

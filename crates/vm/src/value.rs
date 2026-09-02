@@ -305,7 +305,10 @@ mod tests {
 
     #[test]
     fn dividing_int_by_zero_returns_division_by_zero() {
-        assert_eq!(Value::Int(1) / Value::Int(0), Err(ValueError::DivisionByZero));
+        assert_eq!(
+            Value::Int(1) / Value::Int(0),
+            Err(ValueError::DivisionByZero)
+        );
     }
 
     #[test]
@@ -331,7 +334,10 @@ mod tests {
 
     #[test]
     fn remainder_of_int_by_zero_returns_division_by_zero() {
-        assert_eq!(Value::Int(1) % Value::Int(0), Err(ValueError::DivisionByZero));
+        assert_eq!(
+            Value::Int(1) % Value::Int(0),
+            Err(ValueError::DivisionByZero)
+        );
     }
 
     #[test]
@@ -438,7 +444,10 @@ mod tests {
 
     #[test]
     fn eq_of_equal_floats_returns_true() {
-        assert_eq!(Value::Float(1.5).eq(Value::Float(1.5)), Ok(Value::Bool(true)));
+        assert_eq!(
+            Value::Float(1.5).eq(Value::Float(1.5)),
+            Ok(Value::Bool(true))
+        );
     }
 
     #[test]

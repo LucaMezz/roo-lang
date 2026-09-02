@@ -14,6 +14,18 @@ new_key_type! {
     pub struct HeapId;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstrAddr(usize);
+
+impl InstrAddr {
+    fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringId(usize);
+
 mod instructions;
 mod value;
 
@@ -29,6 +41,8 @@ pub enum VmError {
     /// An index was out of the bounds of the container being indexed.
     #[error("index out of bounds")]
     IndexOutOfBounds,
+    #[error("string slice does not fall on a char boundary")]
+    InvalidUtf8Boundary,
     /// A value operation failed.
     #[error(transparent)]
     Value(#[from] ValueError),
@@ -37,7 +51,7 @@ pub enum VmError {
 /// The virtual machine
 pub struct Vm {
     /// Address of the next instruction to be executed.
-    ip: usize,
+    ip: InstrAddr,
 
     /// The stack of the VM
     stack: Stack,
@@ -46,22 +60,31 @@ pub struct Vm {
     heap: Heap,
 
     /// The program to be executed by the VM
-    program: Arc<Program>,
+    program: Unit,
+
+    strings: Box<[HeapId]>,
 }
 
 impl Vm {
-    fn new(program: Arc<Program>) -> Self {
+    fn new(mut program: Unit) -> Self {
+        let mut heap = Heap::new();
+        let strings = Vec::from(std::mem::take(&mut program.strings))
+            .into_iter()
+            .map(|s| heap.insert(HeapObject::String(s)))
+            .collect();
+
         Self {
-            ip: 0,
+            ip: InstrAddr(0),
             stack: Stack::new(),
-            heap: Heap::new(),
+            heap,
             program,
+            strings,
         }
     }
 
     fn fetch(&mut self) -> Instruction {
         let instr = self.program.fetch(self.ip);
-        self.ip += 1;
+        self.ip = self.ip.next();
         instr
     }
 
@@ -80,6 +103,35 @@ impl Vm {
                     if !self.stack.pop_bool()? {
                         self.jump(target);
                     }
+                }
+                Instruction::LoadString(string_id) => {
+                    let id = self.strings[string_id.0];
+                    self.stack.push(Value::Ref(id));
+                }
+                Instruction::Concat => {
+                    let b = self.stack.pop_ref()?;
+                    let a = self.stack.pop_ref()?;
+
+                    let a = self.heap.get_string(a)?;
+                    let b = self.heap.get_string(b)?;
+
+                    let r = self
+                        .heap
+                        .insert(HeapObject::String(format!("{a}{b}").into()));
+
+                    self.stack.push(Value::Ref(r));
+                }
+                Instruction::Slice(start, end) => {
+                    let end = self.stack.pop_index()?;
+                    let start = self.stack.pop_index()?;
+                    let id = self.stack.pop_ref()?;
+                    let s = self.heap.get_string(id)?;
+                    if start > end || end > s.len() {
+                        return Err(VmError::IndexOutOfBounds);
+                    }
+                    let slice = s.get(start..end).ok_or(VmError::InvalidUtf8Boundary)?;
+                    let new_id = self.heap.insert(HeapObject::String(slice.into()));
+                    self.stack.push(Value::Ref(new_id));
                 }
                 Instruction::Add => {
                     let b = self.stack.pop()?;
@@ -139,15 +191,32 @@ impl Vm {
                     let a = self.stack.pop()?;
                     self.stack.push((-a)?);
                 }
+                Instruction::Is => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(Value::Bool(a == b));
+                }
                 Instruction::Eq => {
                     let b = self.stack.pop()?;
                     let a = self.stack.pop()?;
-                    self.stack.push(a.eq(b)?);
+                    let value = match (a, b) {
+                        (Value::Ref(a), Value::Ref(b)) => {
+                            Value::Bool(self.heap.get_string(a)? == self.heap.get_string(b)?)
+                        }
+                        _ => a.eq(b)?,
+                    };
+                    self.stack.push(value);
                 }
                 Instruction::Ne => {
                     let b = self.stack.pop()?;
                     let a = self.stack.pop()?;
-                    self.stack.push(a.ne(b)?);
+                    let value = match (a, b) {
+                        (Value::Ref(a), Value::Ref(b)) => {
+                            Value::Bool(self.heap.get_string(a)? != self.heap.get_string(b)?)
+                        }
+                        _ => a.ne(b)?,
+                    };
+                    self.stack.push(value);
                 }
                 Instruction::Lt => {
                     let b = self.stack.pop()?;
@@ -242,26 +311,38 @@ impl Vm {
         Ok(())
     }
 
-    fn jump(&mut self, instr: usize) {
-        self.ip = instr;
+    fn jump(&mut self, addr: InstrAddr) {
+        self.ip = addr;
     }
 }
 
 /// A program made up of instructions.
 #[derive(Default)]
-pub struct Program {
-    instrs: Vec<Instruction>,
+pub struct Unit {
+    instrs: Box<[Instruction]>,
+    strings: Box<[Box<str>]>,
 }
 
-impl Program {
-    fn fetch(&self, instr: usize) -> Instruction {
-        self.instrs[instr]
+impl Unit {
+    fn new(instrs: Box<[Instruction]>, strings: Box<[Box<str>]>) -> Self {
+        Self { instrs, strings }
+    }
+
+    fn fetch(&self, addr: InstrAddr) -> Instruction {
+        self.instrs[addr.0]
+    }
+
+    fn strings(&self) -> &[Box<str>] {
+        &self.strings
     }
 }
 
-impl From<Vec<Instruction>> for Program {
-    fn from(value: Vec<Instruction>) -> Self {
-        Self { instrs: value }
+impl From<Box<[Instruction]>> for Unit {
+    fn from(value: Box<[Instruction]>) -> Self {
+        Self {
+            instrs: value,
+            strings: Box::new([]),
+        }
     }
 }
 
@@ -420,8 +501,170 @@ pub enum HeapObject {
 mod tests {
     use super::*;
 
-    fn vm_with(instrs: Vec<Instruction>) -> Vm {
-        Vm::new(Arc::new(Program::from(instrs)))
+    fn vm_with(instrs: Box<[Instruction]>) -> Vm {
+        Vm::new(Unit::from(instrs))
+    }
+
+    #[test]
+    fn vm_new_allocates_the_units_strings_into_the_heap() {
+        let unit = Unit::new(
+            Box::new([Instruction::Halt]),
+            Box::new(["hello".into(), "world".into()]),
+        );
+
+        let vm = Vm::new(unit);
+
+        assert_eq!(vm.strings.len(), 2);
+        assert_eq!(
+            vm.heap.get(vm.strings[0]),
+            Ok(&HeapObject::String("hello".into()))
+        );
+        assert_eq!(
+            vm.heap.get(vm.strings[1]),
+            Ok(&HeapObject::String("world".into()))
+        );
+    }
+
+    #[test]
+    fn vm_load_string_pushes_a_ref_to_the_heap_allocated_string() {
+        let unit = Unit::new(
+            Box::new([Instruction::LoadString(StringId(0)), Instruction::Halt]),
+            Box::new(["hello".into()]),
+        );
+
+        let mut vm = Vm::new(unit);
+        vm.execute().unwrap();
+
+        let Value::Ref(id) = vm.stack.pop().unwrap() else {
+            panic!("expected a Value::Ref");
+        };
+        assert_eq!(vm.heap.get(id), Ok(&HeapObject::String("hello".into())));
+    }
+
+    #[test]
+    fn vm_load_string_can_load_the_same_string_multiple_times() {
+        let unit = Unit::new(
+            Box::new([
+                Instruction::LoadString(StringId(0)),
+                Instruction::LoadString(StringId(0)),
+                Instruction::Halt,
+            ]),
+            Box::new(["hello".into()]),
+        );
+
+        let mut vm = Vm::new(unit);
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), vm.stack.pop());
+    }
+
+    #[test]
+    fn vm_new_leaves_the_units_own_strings_empty_after_moving_them() {
+        let unit = Unit::new(Box::new([Instruction::Halt]), Box::new(["hello".into()]));
+
+        let vm = Vm::new(unit);
+
+        assert_eq!(vm.program.strings(), &[] as &[Box<str>]);
+    }
+
+    #[test]
+    fn vm_concat_joins_two_strings_and_pushes_a_new_ref() {
+        let unit = Unit::new(
+            Box::new([
+                Instruction::LoadString(StringId(0)),
+                Instruction::LoadString(StringId(1)),
+                Instruction::Concat,
+                Instruction::Halt,
+            ]),
+            Box::new(["foo".into(), "bar".into()]),
+        );
+
+        let mut vm = Vm::new(unit);
+        vm.execute().unwrap();
+
+        let Value::Ref(id) = vm.stack.pop().unwrap() else {
+            panic!("expected a Value::Ref");
+        };
+        assert_eq!(vm.heap.get(id), Ok(&HeapObject::String("foobar".into())));
+    }
+
+    #[test]
+    fn vm_concat_on_a_non_ref_value_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instruction::Concat, Instruction::Halt]));
+        vm.stack.push(Value::Int(1));
+        vm.stack.push(Value::Int(2));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_concat_on_a_non_string_heap_object_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instruction::Concat, Instruction::Halt]));
+        let array_id = vm.heap.insert(HeapObject::Array(vec![]));
+        let string_id = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(array_id));
+        vm.stack.push(Value::Ref(string_id));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_slice_returns_a_substring() {
+        let mut vm = vm_with(Box::new([Instruction::Slice(0, 0), Instruction::Halt]));
+        let id = vm.heap.insert(HeapObject::String("hello".into()));
+        vm.stack.push(Value::Ref(id));
+        vm.stack.push(Value::Int(1));
+        vm.stack.push(Value::Int(3));
+
+        vm.execute().unwrap();
+
+        let Value::Ref(new_id) = vm.stack.pop().unwrap() else {
+            panic!("expected a Value::Ref");
+        };
+        assert_eq!(vm.heap.get(new_id), Ok(&HeapObject::String("el".into())));
+    }
+
+    #[test]
+    fn vm_slice_out_of_bounds_returns_an_error() {
+        let mut vm = vm_with(Box::new([Instruction::Slice(0, 0), Instruction::Halt]));
+        let id = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(id));
+        vm.stack.push(Value::Int(0));
+        vm.stack.push(Value::Int(5));
+
+        assert_eq!(vm.execute(), Err(VmError::IndexOutOfBounds));
+    }
+
+    #[test]
+    fn vm_slice_with_start_after_end_returns_an_error() {
+        let mut vm = vm_with(Box::new([Instruction::Slice(0, 0), Instruction::Halt]));
+        let id = vm.heap.insert(HeapObject::String("hello".into()));
+        vm.stack.push(Value::Ref(id));
+        vm.stack.push(Value::Int(3));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::IndexOutOfBounds));
+    }
+
+    #[test]
+    fn vm_slice_off_a_char_boundary_returns_invalid_utf8_boundary() {
+        let mut vm = vm_with(Box::new([Instruction::Slice(0, 0), Instruction::Halt]));
+        let id = vm.heap.insert(HeapObject::String("é".into()));
+        vm.stack.push(Value::Ref(id));
+        vm.stack.push(Value::Int(0));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::InvalidUtf8Boundary));
+    }
+
+    #[test]
+    fn vm_slice_on_a_non_ref_value_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instruction::Slice(0, 0), Instruction::Halt]));
+        vm.stack.push(Value::Int(1));
+        vm.stack.push(Value::Int(0));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
     }
 
     #[test]
@@ -623,31 +866,31 @@ mod tests {
 
     #[test]
     fn vm_fetch_advances_the_instruction_pointer() {
-        let mut vm = vm_with(vec![Instruction::Nop, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Nop, Instruction::Halt]));
 
-        assert_eq!(vm.ip, 0);
+        assert_eq!(vm.ip, InstrAddr(0));
         vm.fetch();
-        assert_eq!(vm.ip, 1);
+        assert_eq!(vm.ip, InstrAddr(1));
     }
 
     #[test]
     fn vm_jump_sets_the_instruction_pointer_directly() {
-        let mut vm = vm_with(vec![Instruction::Nop, Instruction::Halt]);
-        vm.ip = 5;
+        let mut vm = vm_with(Box::new([Instruction::Nop, Instruction::Halt]));
+        vm.ip = InstrAddr(5);
 
-        vm.jump(2);
+        vm.jump(InstrAddr(2));
 
-        assert_eq!(vm.ip, 2);
+        assert_eq!(vm.ip, InstrAddr(2));
     }
 
     #[test]
     fn vm_jump_instruction_skips_over_the_instructions_in_between() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
-            Instruction::Jump(3),
+            Instruction::Jump(InstrAddr(3)),
             Instruction::Push(Value::Int(99)),
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -657,13 +900,13 @@ mod tests {
 
     #[test]
     fn vm_jump_instruction_can_jump_backward() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
-            Instruction::Jump(4),
+            Instruction::Jump(InstrAddr(4)),
             Instruction::Push(Value::Int(2)),
             Instruction::Halt,
-            Instruction::Jump(2),
-        ]);
+            Instruction::Jump(InstrAddr(2)),
+        ]));
 
         vm.execute().unwrap();
 
@@ -673,14 +916,14 @@ mod tests {
 
     #[test]
     fn vm_jump_if_false_jumps_when_condition_is_false() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Bool(false)),
-            Instruction::JumpIfFalse(4),
+            Instruction::JumpIfFalse(InstrAddr(4)),
             Instruction::Push(Value::Int(99)),
             Instruction::Halt,
             Instruction::Push(Value::Int(1)),
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -690,13 +933,13 @@ mod tests {
 
     #[test]
     fn vm_jump_if_false_does_not_jump_when_condition_is_true() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Bool(true)),
-            Instruction::JumpIfFalse(4),
+            Instruction::JumpIfFalse(InstrAddr(4)),
             Instruction::Push(Value::Int(1)),
             Instruction::Halt,
             Instruction::Push(Value::Int(99)),
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -706,22 +949,22 @@ mod tests {
 
     #[test]
     fn vm_jump_if_false_with_non_bool_condition_returns_type_mismatch() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(0)),
-            Instruction::JumpIfFalse(3),
+            Instruction::JumpIfFalse(InstrAddr(3)),
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
     }
 
     #[test]
     fn vm_dup_pushes_a_copy_of_the_top_value() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Dup,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -732,13 +975,13 @@ mod tests {
 
     #[test]
     fn vm_dup_leaves_values_beneath_it_untouched() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(2)),
             Instruction::Dup,
             Instruction::Add,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -748,18 +991,18 @@ mod tests {
 
     #[test]
     fn vm_dup_on_an_empty_stack_returns_stack_underflow() {
-        let mut vm = vm_with(vec![Instruction::Dup, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Dup, Instruction::Halt]));
 
         assert_eq!(vm.execute(), Err(VmError::StackUnderflow));
     }
 
     #[test]
     fn vm_nop_leaves_the_stack_unchanged() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Nop,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -769,12 +1012,12 @@ mod tests {
 
     #[test]
     fn vm_executes_add_and_leaves_the_result_on_the_stack() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(2)),
             Instruction::Add,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -783,15 +1026,15 @@ mod tests {
 
     #[test]
     fn vm_lt_feeding_jump_if_false_implements_an_if_condition() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(2)),
             Instruction::Lt,
-            Instruction::JumpIfFalse(6),
+            Instruction::JumpIfFalse(InstrAddr(6)),
             Instruction::Push(Value::Int(42)),
             Instruction::Halt,
             Instruction::Push(Value::Int(0)),
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -799,14 +1042,130 @@ mod tests {
     }
 
     #[test]
+    fn vm_is_returns_true_for_equal_scalars() {
+        let mut vm = vm_with(Box::new([
+            Instruction::Push(Value::Int(1)),
+            Instruction::Push(Value::Int(1)),
+            Instruction::Is,
+            Instruction::Halt,
+        ]));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn vm_is_returns_false_for_different_scalars() {
+        let mut vm = vm_with(Box::new([
+            Instruction::Push(Value::Int(1)),
+            Instruction::Push(Value::Int(2)),
+            Instruction::Is,
+            Instruction::Halt,
+        ]));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn vm_is_returns_true_for_the_same_heap_reference() {
+        let mut vm = vm_with(Box::new([Instruction::Is, Instruction::Halt]));
+        let id = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(id));
+        vm.stack.push(Value::Ref(id));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn vm_is_returns_false_for_different_refs_with_equal_string_content() {
+        let mut vm = vm_with(Box::new([Instruction::Is, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::String("hi".into()));
+        let b = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn vm_eq_returns_true_for_different_refs_with_equal_string_content() {
+        let mut vm = vm_with(Box::new([Instruction::Eq, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::String("hi".into()));
+        let b = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn vm_eq_returns_false_for_refs_with_different_string_content() {
+        let mut vm = vm_with(Box::new([Instruction::Eq, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::String("hi".into()));
+        let b = vm.heap.insert(HeapObject::String("bye".into()));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn vm_eq_on_a_non_string_heap_object_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instruction::Eq, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::Array(vec![]));
+        let b = vm.heap.insert(HeapObject::Array(vec![]));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_ne_returns_false_for_different_refs_with_equal_string_content() {
+        let mut vm = vm_with(Box::new([Instruction::Ne, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::String("hi".into()));
+        let b = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn vm_ne_returns_true_for_refs_with_different_string_content() {
+        let mut vm = vm_with(Box::new([Instruction::Ne, Instruction::Halt]));
+        let a = vm.heap.insert(HeapObject::String("hi".into()));
+        let b = vm.heap.insert(HeapObject::String("bye".into()));
+        vm.stack.push(Value::Ref(a));
+        vm.stack.push(Value::Ref(b));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Bool(true)));
+    }
+
+    #[test]
     fn vm_array_instruction_allocates_an_array_and_pushes_a_ref() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(2)),
             Instruction::Push(Value::Int(3)),
             Instruction::Array(3),
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -825,7 +1184,7 @@ mod tests {
 
     #[test]
     fn vm_array_instruction_with_zero_elements_allocates_an_empty_array() {
-        let mut vm = vm_with(vec![Instruction::Array(0), Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Array(0), Instruction::Halt]));
 
         vm.execute().unwrap();
 
@@ -837,7 +1196,7 @@ mod tests {
 
     #[test]
     fn vm_index_gets_an_array_element() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(2)),
             Instruction::Push(Value::Int(3)),
@@ -845,7 +1204,7 @@ mod tests {
             Instruction::Push(Value::Int(1)),
             Instruction::Index,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -854,7 +1213,7 @@ mod tests {
 
     #[test]
     fn vm_index_gets_an_adt_field() {
-        let mut vm = vm_with(vec![Instruction::Index, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Index, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Adt {
             tag: 0,
             fields: Box::new([Value::Int(10), Value::Int(20)]),
@@ -869,58 +1228,58 @@ mod tests {
 
     #[test]
     fn vm_index_out_of_bounds_returns_an_error() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Array(1),
             Instruction::Push(Value::Int(5)),
             Instruction::Index,
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::IndexOutOfBounds));
     }
 
     #[test]
     fn vm_index_with_negative_index_returns_overflow() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Array(1),
             Instruction::Push(Value::Int(-1)),
             Instruction::Index,
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::Overflow)));
     }
 
     #[test]
     fn vm_index_with_a_non_int_index_returns_type_mismatch() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Array(1),
             Instruction::Push(Value::Bool(true)),
             Instruction::Index,
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
     }
 
     #[test]
     fn vm_index_on_a_non_ref_value_returns_type_mismatch() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Push(Value::Int(0)),
             Instruction::Index,
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
     }
 
     #[test]
     fn vm_index_on_a_non_indexable_heap_object_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::Index, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Index, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::String("hi".into()));
         vm.stack.push(Value::Ref(id));
         vm.stack.push(Value::Int(0));
@@ -930,7 +1289,7 @@ mod tests {
 
     #[test]
     fn vm_index_mut_sets_an_array_element() {
-        let mut vm = vm_with(vec![Instruction::IndexMut, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::IndexMut, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![
             Value::Int(1),
             Value::Int(2),
@@ -954,7 +1313,7 @@ mod tests {
 
     #[test]
     fn vm_index_mut_sets_an_adt_field() {
-        let mut vm = vm_with(vec![Instruction::IndexMut, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::IndexMut, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Adt {
             tag: 0,
             fields: Box::new([Value::Int(10), Value::Int(20)]),
@@ -976,7 +1335,7 @@ mod tests {
 
     #[test]
     fn vm_index_mut_out_of_bounds_returns_an_error() {
-        let mut vm = vm_with(vec![Instruction::IndexMut, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::IndexMut, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![Value::Int(1)]));
         vm.stack.push(Value::Ref(id));
         vm.stack.push(Value::Int(5));
@@ -987,7 +1346,7 @@ mod tests {
 
     #[test]
     fn vm_index_mut_on_a_non_ref_value_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::IndexMut, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::IndexMut, Instruction::Halt]));
         vm.stack.push(Value::Int(1));
         vm.stack.push(Value::Int(0));
         vm.stack.push(Value::Int(99));
@@ -997,7 +1356,7 @@ mod tests {
 
     #[test]
     fn vm_insert_at_the_end_acts_like_append() {
-        let mut vm = vm_with(vec![Instruction::Insert, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Insert, Instruction::Halt]));
         let id = vm
             .heap
             .insert(HeapObject::Array(vec![Value::Int(1), Value::Int(2)]));
@@ -1019,7 +1378,7 @@ mod tests {
 
     #[test]
     fn vm_insert_in_the_middle_shifts_later_elements() {
-        let mut vm = vm_with(vec![Instruction::Insert, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Insert, Instruction::Halt]));
         let id = vm
             .heap
             .insert(HeapObject::Array(vec![Value::Int(1), Value::Int(3)]));
@@ -1041,7 +1400,7 @@ mod tests {
 
     #[test]
     fn vm_insert_out_of_bounds_returns_an_error_instead_of_panicking() {
-        let mut vm = vm_with(vec![Instruction::Insert, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Insert, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![Value::Int(1)]));
         vm.stack.push(Value::Ref(id));
         vm.stack.push(Value::Int(5));
@@ -1052,7 +1411,7 @@ mod tests {
 
     #[test]
     fn vm_insert_on_a_non_ref_value_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::Insert, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Insert, Instruction::Halt]));
         vm.stack.push(Value::Int(1));
         vm.stack.push(Value::Int(0));
         vm.stack.push(Value::Int(2));
@@ -1062,7 +1421,7 @@ mod tests {
 
     #[test]
     fn vm_insert_on_a_non_array_heap_object_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::Insert, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Insert, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Adt {
             tag: 0,
             fields: Box::new([]),
@@ -1076,7 +1435,7 @@ mod tests {
 
     #[test]
     fn vm_remove_removes_the_element_at_the_index() {
-        let mut vm = vm_with(vec![Instruction::Remove, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Remove, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![
             Value::Int(1),
             Value::Int(2),
@@ -1095,7 +1454,7 @@ mod tests {
 
     #[test]
     fn vm_remove_out_of_bounds_returns_an_error_instead_of_panicking() {
-        let mut vm = vm_with(vec![Instruction::Remove, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Remove, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![Value::Int(1)]));
         vm.stack.push(Value::Ref(id));
         vm.stack.push(Value::Int(5));
@@ -1105,7 +1464,7 @@ mod tests {
 
     #[test]
     fn vm_remove_on_a_non_array_heap_object_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::Remove, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Remove, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::String("hi".into()));
         vm.stack.push(Value::Ref(id));
         vm.stack.push(Value::Int(0));
@@ -1115,7 +1474,7 @@ mod tests {
 
     #[test]
     fn vm_len_returns_the_number_of_array_elements() {
-        let mut vm = vm_with(vec![Instruction::Len, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Len, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Array(vec![
             Value::Int(1),
             Value::Int(2),
@@ -1130,7 +1489,7 @@ mod tests {
 
     #[test]
     fn vm_len_returns_the_number_of_adt_fields() {
-        let mut vm = vm_with(vec![Instruction::Len, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Len, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::Adt {
             tag: 0,
             fields: Box::new([Value::Int(1), Value::Int(2)]),
@@ -1144,7 +1503,7 @@ mod tests {
 
     #[test]
     fn vm_len_returns_the_byte_length_of_a_string() {
-        let mut vm = vm_with(vec![Instruction::Len, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Len, Instruction::Halt]));
         let id = vm.heap.insert(HeapObject::String("hello".into()));
         vm.stack.push(Value::Ref(id));
 
@@ -1155,7 +1514,7 @@ mod tests {
 
     #[test]
     fn vm_len_on_a_non_ref_value_returns_type_mismatch() {
-        let mut vm = vm_with(vec![Instruction::Len, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Len, Instruction::Halt]));
         vm.stack.push(Value::Int(1));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
@@ -1163,11 +1522,11 @@ mod tests {
 
     #[test]
     fn vm_pop_instruction_removes_the_top_value() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Pop,
             Instruction::Halt,
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -1176,11 +1535,11 @@ mod tests {
 
     #[test]
     fn vm_halt_stops_execution_before_later_instructions_run() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Int(1)),
             Instruction::Halt,
             Instruction::Push(Value::Int(2)),
-        ]);
+        ]));
 
         vm.execute().unwrap();
 
@@ -1190,19 +1549,19 @@ mod tests {
 
     #[test]
     fn vm_add_on_an_empty_stack_returns_stack_underflow() {
-        let mut vm = vm_with(vec![Instruction::Add, Instruction::Halt]);
+        let mut vm = vm_with(Box::new([Instruction::Add, Instruction::Halt]));
 
         assert_eq!(vm.execute(), Err(VmError::StackUnderflow));
     }
 
     #[test]
     fn vm_add_with_mismatched_types_propagates_the_value_error() {
-        let mut vm = vm_with(vec![
+        let mut vm = vm_with(Box::new([
             Instruction::Push(Value::Bool(true)),
             Instruction::Push(Value::Int(1)),
             Instruction::Add,
             Instruction::Halt,
-        ]);
+        ]));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
     }
