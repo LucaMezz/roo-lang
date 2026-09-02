@@ -63,6 +63,12 @@ impl Vm {
                 Instruction::Pop => {
                     self.stack.pop()?;
                 }
+                Instruction::Jump(target) => self.jump(target),
+                Instruction::JumpIfFalse(target) => match self.stack.pop()? {
+                    Value::Bool(false) => self.jump(target),
+                    Value::Bool(true) => {}
+                    _ => return Err(ValueError::TypeMismatch.into()),
+                },
                 Instruction::Add => {
                     let b = self.stack.pop()?;
                     let a = self.stack.pop()?;
@@ -121,10 +127,44 @@ impl Vm {
                     let a = self.stack.pop()?;
                     self.stack.push((-a)?);
                 }
+                Instruction::Eq => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.eq(b)?);
+                }
+                Instruction::Ne => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.ne(b)?);
+                }
+                Instruction::Lt => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.lt(b)?);
+                }
+                Instruction::Le => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.le(b)?);
+                }
+                Instruction::Gt => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.gt(b)?);
+                }
+                Instruction::Ge => {
+                    let b = self.stack.pop()?;
+                    let a = self.stack.pop()?;
+                    self.stack.push(a.ge(b)?);
+                }
                 _ => unimplemented!(),
             };
         }
         Ok(())
+    }
+
+    fn jump(&mut self, instr: usize) {
+        self.ip = instr;
     }
 }
 
@@ -233,6 +273,91 @@ mod tests {
     }
 
     #[test]
+    fn vm_jump_sets_the_instruction_pointer_directly() {
+        let mut vm = vm_with(vec![Instruction::Nop, Instruction::Halt]);
+        vm.ip = 5;
+
+        vm.jump(2);
+
+        assert_eq!(vm.ip, 2);
+    }
+
+    #[test]
+    fn vm_jump_instruction_skips_over_the_instructions_in_between() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Int(1)),
+            Instruction::Jump(3),
+            Instruction::Push(Value::Int(99)),
+            Instruction::Halt,
+        ]);
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(1)));
+        assert_eq!(vm.stack.pop(), Err(VmError::StackUnderflow));
+    }
+
+    #[test]
+    fn vm_jump_instruction_can_jump_backward() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Int(1)),
+            Instruction::Jump(4),
+            Instruction::Push(Value::Int(2)),
+            Instruction::Halt,
+            Instruction::Jump(2),
+        ]);
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(2)));
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(1)));
+    }
+
+    #[test]
+    fn vm_jump_if_false_jumps_when_condition_is_false() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Bool(false)),
+            Instruction::JumpIfFalse(4),
+            Instruction::Push(Value::Int(99)),
+            Instruction::Halt,
+            Instruction::Push(Value::Int(1)),
+            Instruction::Halt,
+        ]);
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(1)));
+        assert_eq!(vm.stack.pop(), Err(VmError::StackUnderflow));
+    }
+
+    #[test]
+    fn vm_jump_if_false_does_not_jump_when_condition_is_true() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Bool(true)),
+            Instruction::JumpIfFalse(4),
+            Instruction::Push(Value::Int(1)),
+            Instruction::Halt,
+            Instruction::Push(Value::Int(99)),
+        ]);
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(1)));
+        assert_eq!(vm.stack.pop(), Err(VmError::StackUnderflow));
+    }
+
+    #[test]
+    fn vm_jump_if_false_with_non_bool_condition_returns_type_mismatch() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Int(0)),
+            Instruction::JumpIfFalse(3),
+            Instruction::Halt,
+        ]);
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
     fn vm_nop_leaves_the_stack_unchanged() {
         let mut vm = vm_with(vec![
             Instruction::Push(Value::Int(1)),
@@ -258,6 +383,23 @@ mod tests {
         vm.execute().unwrap();
 
         assert_eq!(vm.stack.pop(), Ok(Value::Int(3)));
+    }
+
+    #[test]
+    fn vm_lt_feeding_jump_if_false_implements_an_if_condition() {
+        let mut vm = vm_with(vec![
+            Instruction::Push(Value::Int(1)),
+            Instruction::Push(Value::Int(2)),
+            Instruction::Lt,
+            Instruction::JumpIfFalse(6),
+            Instruction::Push(Value::Int(42)),
+            Instruction::Halt,
+            Instruction::Push(Value::Int(0)),
+        ]);
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(42)));
     }
 
     #[test]

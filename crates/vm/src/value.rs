@@ -177,6 +177,58 @@ impl Neg for Value {
     }
 }
 
+impl Value {
+    pub fn eq(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a == b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a == b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+
+    pub fn ne(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a != b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a != b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a != b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+
+    pub fn lt(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+
+    pub fn le(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+
+    pub fn gt(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+
+    pub fn ge(self, rhs: Self) -> Result<Value, ValueError> {
+        match (self, rhs) {
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
+            _ => Err(ValueError::TypeMismatch),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +371,102 @@ mod tests {
     #[test]
     fn neg_of_bool_returns_type_mismatch() {
         assert_eq!(-Value::Bool(true), Err(ValueError::TypeMismatch));
+    }
+
+    #[test]
+    fn eq_of_equal_ints_returns_true() {
+        assert_eq!(Value::Int(1).eq(Value::Int(1)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn eq_of_different_ints_returns_false() {
+        assert_eq!(Value::Int(1).eq(Value::Int(2)), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn eq_of_equal_floats_returns_true() {
+        assert_eq!(Value::Float(1.5).eq(Value::Float(1.5)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn eq_of_equal_bools_returns_true() {
+        assert_eq!(
+            Value::Bool(true).eq(Value::Bool(true)),
+            Ok(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn eq_of_mismatched_types_returns_type_mismatch() {
+        assert_eq!(
+            Value::Int(1).eq(Value::Bool(true)),
+            Err(ValueError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn ne_of_different_ints_returns_true() {
+        assert_eq!(Value::Int(1).ne(Value::Int(2)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn ne_of_equal_ints_returns_false() {
+        assert_eq!(Value::Int(1).ne(Value::Int(1)), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn ne_of_mismatched_types_returns_type_mismatch() {
+        assert_eq!(
+            Value::Int(1).ne(Value::Bool(true)),
+            Err(ValueError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn lt_of_smaller_int_returns_true() {
+        assert_eq!(Value::Int(1).lt(Value::Int(2)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn lt_of_larger_int_returns_false() {
+        assert_eq!(Value::Int(2).lt(Value::Int(1)), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn lt_of_bools_returns_type_mismatch() {
+        assert_eq!(
+            Value::Bool(true).lt(Value::Bool(false)),
+            Err(ValueError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn le_of_equal_ints_returns_true() {
+        assert_eq!(Value::Int(1).le(Value::Int(1)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn le_of_larger_int_returns_false() {
+        assert_eq!(Value::Int(2).le(Value::Int(1)), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn gt_of_larger_int_returns_true() {
+        assert_eq!(Value::Int(2).gt(Value::Int(1)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn gt_of_smaller_int_returns_false() {
+        assert_eq!(Value::Int(1).gt(Value::Int(2)), Ok(Value::Bool(false)));
+    }
+
+    #[test]
+    fn ge_of_equal_ints_returns_true() {
+        assert_eq!(Value::Int(1).ge(Value::Int(1)), Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn ge_of_smaller_int_returns_false() {
+        assert_eq!(Value::Int(1).ge(Value::Int(2)), Ok(Value::Bool(false)));
     }
 }
