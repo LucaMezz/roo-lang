@@ -12,6 +12,7 @@ categories = ["compilers"]
 
 [dependencies]
 thiserror = "2.0.20"
+slotmap = "1.1.1"
 
 [lints]
 workspace = true

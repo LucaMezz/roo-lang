@@ -3,10 +3,16 @@
 
 use std::sync::Arc;
 
+use slotmap::{SlotMap, new_key_type};
 use thiserror::Error;
 
 use crate::instructions::Instruction;
 use crate::value::{Value, ValueError};
+
+new_key_type! {
+    /// A pointer to a heap-allocated object.
+    pub struct HeapId;
+}
 
 mod instructions;
 mod value;
@@ -213,13 +219,33 @@ impl Stack {
 /// A heap
 pub struct Heap {
     /// The data stored in the heap.
-    data: Vec<u8>,
+    data: SlotMap<HeapId, HeapObject>,
 }
 
 impl Heap {
     fn new() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: SlotMap::with_key(),
+        }
     }
+}
+
+/// An object which is allocated on the heap.
+pub enum HeapObject {
+    /// A stack value with fixed size, which has instead been
+    /// allocated on the heap.
+    Value(Value),
+    /// A heap-allocated algebraic data type.
+    Adt {
+        /// Which variant is active.
+        tag: u32,
+        /// The fields of the variant.
+        fields: Box<[Value]>,
+    },
+    /// A heap-allocated array of stack values.
+    Array(Box<[Value]>),
+    /// A heap-allocated string.
+    String(Box<str>),
 }
 
 #[cfg(test)]
