@@ -1,0 +1,17 @@
+[package]
+name = "vm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "roo-lang's virtual machine"
+readme = "../../README.md"
+license.workspace = true
+keywords = ["vm", "interpreter", "bytecode"]
+categories = ["compilers"]
+# repository.workspace = true
+
+[dependencies]
+thiserror = "2.0.20"
+
+[lints]
+workspace = true
