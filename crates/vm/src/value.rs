@@ -2,12 +2,15 @@ use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Shl, Shr, Su
 
 use thiserror::Error;
 
+use crate::HeapId;
+
 /// A value
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Ref(HeapId),
 }
 
 /// An error produced by a fallible operation on a `Value`.
@@ -28,7 +31,9 @@ impl Add for Value {
 
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (Value::Int(a), Value::Int(b)) => {
+                a.checked_add(b).map(Value::Int).ok_or(ValueError::Overflow)
+            }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             _ => Err(ValueError::TypeMismatch),
         }
@@ -40,7 +45,9 @@ impl Sub for Value {
 
     fn sub(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+            (Value::Int(a), Value::Int(b)) => {
+                a.checked_sub(b).map(Value::Int).ok_or(ValueError::Overflow)
+            }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             _ => Err(ValueError::TypeMismatch),
         }
@@ -52,7 +59,9 @@ impl Mul for Value {
 
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+            (Value::Int(a), Value::Int(b)) => {
+                a.checked_mul(b).map(Value::Int).ok_or(ValueError::Overflow)
+            }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
             _ => Err(ValueError::TypeMismatch),
         }
@@ -65,7 +74,9 @@ impl Div for Value {
     fn div(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Value::Int(_), Value::Int(0)) => Err(ValueError::DivisionByZero),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
+            (Value::Int(a), Value::Int(b)) => {
+                a.checked_div(b).map(Value::Int).ok_or(ValueError::Overflow)
+            }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             _ => Err(ValueError::TypeMismatch),
         }
@@ -78,7 +89,9 @@ impl Rem for Value {
     fn rem(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Value::Int(_), Value::Int(0)) => Err(ValueError::DivisionByZero),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
+            (Value::Int(a), Value::Int(b)) => {
+                a.checked_rem(b).map(Value::Int).ok_or(ValueError::Overflow)
+            }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a % b)),
             _ => Err(ValueError::TypeMismatch),
         }
@@ -160,7 +173,7 @@ impl Not for Value {
         match self {
             Value::Bool(a) => Ok(Value::Bool(!a)),
             Value::Int(a) => Ok(Value::Int(!a)),
-            Value::Float(_) => Err(ValueError::TypeMismatch),
+            _ => Err(ValueError::TypeMismatch),
         }
     }
 }
@@ -172,7 +185,7 @@ impl Neg for Value {
         match self {
             Value::Int(a) => a.checked_neg().map(Value::Int).ok_or(ValueError::Overflow),
             Value::Float(a) => Ok(Value::Float(-a)),
-            Value::Bool(_) => Err(ValueError::TypeMismatch),
+            _ => Err(ValueError::TypeMismatch),
         }
     }
 }
@@ -252,13 +265,37 @@ mod tests {
     }
 
     #[test]
+    fn adding_ints_that_overflow_returns_overflow() {
+        assert_eq!(
+            Value::Int(i64::MAX) + Value::Int(1),
+            Err(ValueError::Overflow)
+        );
+    }
+
+    #[test]
     fn subtracting_ints_returns_their_difference() {
         assert_eq!(Value::Int(5) - Value::Int(3), Ok(Value::Int(2)));
     }
 
     #[test]
+    fn subtracting_ints_that_overflow_returns_overflow() {
+        assert_eq!(
+            Value::Int(i64::MIN) - Value::Int(1),
+            Err(ValueError::Overflow)
+        );
+    }
+
+    #[test]
     fn multiplying_ints_returns_their_product() {
         assert_eq!(Value::Int(4) * Value::Int(3), Ok(Value::Int(12)));
+    }
+
+    #[test]
+    fn multiplying_ints_that_overflow_returns_overflow() {
+        assert_eq!(
+            Value::Int(i64::MAX) * Value::Int(2),
+            Err(ValueError::Overflow)
+        );
     }
 
     #[test]
@@ -269,6 +306,14 @@ mod tests {
     #[test]
     fn dividing_int_by_zero_returns_division_by_zero() {
         assert_eq!(Value::Int(1) / Value::Int(0), Err(ValueError::DivisionByZero));
+    }
+
+    #[test]
+    fn dividing_int_min_by_negative_one_returns_overflow() {
+        assert_eq!(
+            Value::Int(i64::MIN) / Value::Int(-1),
+            Err(ValueError::Overflow)
+        );
     }
 
     #[test]
@@ -287,6 +332,14 @@ mod tests {
     #[test]
     fn remainder_of_int_by_zero_returns_division_by_zero() {
         assert_eq!(Value::Int(1) % Value::Int(0), Err(ValueError::DivisionByZero));
+    }
+
+    #[test]
+    fn remainder_of_int_min_by_negative_one_returns_overflow() {
+        assert_eq!(
+            Value::Int(i64::MIN) % Value::Int(-1),
+            Err(ValueError::Overflow)
+        );
     }
 
     #[test]

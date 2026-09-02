@@ -26,4 +26,11 @@ pub enum Instruction {
     Le,
     Gt,
     Ge,
+    Dup,
+    Array(usize),
+    Index,
+    IndexMut,
+    Insert,
+    Remove,
+    Len,
 }
