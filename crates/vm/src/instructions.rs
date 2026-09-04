@@ -38,8 +38,10 @@ pub enum Instr {
     Insert,
     Remove,
     Len,
+    Adt(usize),
     Call,
     Ret,
     GetLocal(usize),
     SetLocal(usize),
+    Tag,
 }

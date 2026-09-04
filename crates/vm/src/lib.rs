@@ -141,8 +141,8 @@ impl Vm {
                     self.stack.push(Value::Ref(r));
                 }
                 Instr::Slice(start, end) => {
-                    let end = self.stack.pop_index()?;
-                    let start = self.stack.pop_index()?;
+                    let end = self.stack.pop_usize()?;
+                    let start = self.stack.pop_usize()?;
                     let id = self.stack.pop_ref()?;
                     let s = self.heap.get_string(id)?;
                     if start > end || end > s.len() {
@@ -271,7 +271,7 @@ impl Vm {
                     self.stack.push(Value::Ref(id));
                 }
                 Instr::Index => {
-                    let index = self.stack.pop_index()?;
+                    let index = self.stack.pop_usize()?;
                     let id = self.stack.pop_ref()?;
                     let elements = match self.heap.get(id)? {
                         HeapObject::Array(elements) => elements.as_slice(),
@@ -283,7 +283,7 @@ impl Vm {
                 }
                 Instr::IndexMut => {
                     let value = self.stack.pop()?;
-                    let index = self.stack.pop_index()?;
+                    let index = self.stack.pop_usize()?;
                     let id = self.stack.pop_ref()?;
                     let elements = match self.heap.get_mut(id)? {
                         HeapObject::Array(elements) => elements.as_mut_slice(),
@@ -295,7 +295,7 @@ impl Vm {
                 }
                 Instr::Insert => {
                     let value = self.stack.pop()?;
-                    let index = self.stack.pop_index()?;
+                    let index = self.stack.pop_usize()?;
                     let id = self.stack.pop_ref()?;
                     let elements = self.heap.get_array_mut(id)?;
                     if index > elements.len() {
@@ -304,7 +304,7 @@ impl Vm {
                     elements.insert(index, value);
                 }
                 Instr::Remove => {
-                    let index = self.stack.pop_index()?;
+                    let index = self.stack.pop_usize()?;
                     let id = self.stack.pop_ref()?;
                     let elements = self.heap.get_array_mut(id)?;
                     if index >= elements.len() {
@@ -320,12 +320,23 @@ impl Vm {
                         HeapObject::String(string) => string.len(),
                         _ => return Err(ValueError::TypeMismatch.into()),
                     };
-                    self.stack.push(Value::Int(
-                        i64::try_from(len).map_err(|_| ValueError::Overflow)?,
-                    ));
+                    self.stack.push_usize(len)?;
+                }
+                Instr::Adt(size) => {
+                    let fields = self.stack.pop_n(size)?.into();
+                    let tag = self.stack.pop_usize()?;
+                    let id = self.heap.insert(HeapObject::Adt { tag, fields });
+
+                    self.stack.push(Value::Ref(id));
+                }
+                Instr::Tag => {
+                    let id = self.stack.pop_ref()?;
+                    let (tag, _) = self.heap.get_adt(id)?;
+
+                    self.stack.push_usize(tag)?;
                 }
                 Instr::Call => {
-                    let id = self.stack.pop_index()?;
+                    let id = self.stack.pop_usize()?;
                     // Assume that all arguments to the function are
                     // under the fn id which is popped above
                     let proto = self.program.get_fn(FnId(id))?;
@@ -437,6 +448,12 @@ impl Stack {
         self.values.pop().ok_or(VmError::StackUnderflow)
     }
 
+    fn pop_n(&mut self, n: usize) -> Result<Vec<Value>, VmError> {
+        let len = self.values.len();
+        let split = len.checked_sub(n).ok_or(VmError::StackUnderflow)?;
+        Ok(self.values.split_off(split))
+    }
+
     fn top(&self) -> usize {
         self.values.len()
     }
@@ -466,9 +483,15 @@ impl Stack {
         }
     }
 
-    fn pop_index(&mut self) -> Result<usize, VmError> {
+    fn pop_usize(&mut self) -> Result<usize, VmError> {
         let index = self.pop_int()?;
         usize::try_from(index).map_err(|_| ValueError::Overflow.into())
+    }
+
+    fn push_usize(&mut self, value: usize) -> Result<(), VmError> {
+        let value = i64::try_from(value).map_err(|_| ValueError::Overflow)?;
+        self.push(Value::Int(value));
+        Ok(())
     }
 
     fn peek(&self) -> Result<&Value, VmError> {
@@ -558,14 +581,14 @@ impl Heap {
         }
     }
 
-    fn get_adt(&self, id: HeapId) -> Result<(u32, &[Value]), VmError> {
+    fn get_adt(&self, id: HeapId) -> Result<(usize, &[Value]), VmError> {
         match self.get(id)? {
             HeapObject::Adt { tag, fields } => Ok((*tag, fields)),
             _ => Err(ValueError::TypeMismatch.into()),
         }
     }
 
-    fn get_adt_mut(&mut self, id: HeapId) -> Result<(u32, &mut [Value]), VmError> {
+    fn get_adt_mut(&mut self, id: HeapId) -> Result<(usize, &mut [Value]), VmError> {
         match self.get_mut(id)? {
             HeapObject::Adt { tag, fields } => Ok((*tag, fields)),
             _ => Err(ValueError::TypeMismatch.into()),
@@ -614,7 +637,7 @@ pub enum HeapObject {
     /// A heap-allocated algebraic data type.
     Adt {
         /// Which variant is active.
-        tag: u32,
+        tag: usize,
         /// The fields of the variant.
         fields: Box<[Value]>,
     },
@@ -1666,6 +1689,95 @@ mod tests {
     #[test]
     fn vm_len_on_a_non_ref_value_returns_type_mismatch() {
         let mut vm = vm_with(Box::new([Instr::Len, Instr::Halt]));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_adt_constructs_a_tagged_value_from_stack_fields() {
+        let mut vm = vm_with(Box::new([Instr::Adt(2), Instr::Halt]));
+        vm.stack.push(Value::Int(3)); // tag
+        vm.stack.push(Value::Int(10));
+        vm.stack.push(Value::Int(20));
+
+        vm.execute().unwrap();
+
+        let Value::Ref(id) = vm.stack.pop().unwrap() else {
+            panic!("expected a Value::Ref");
+        };
+        assert_eq!(
+            vm.heap.get(id),
+            Ok(&HeapObject::Adt {
+                tag: 3,
+                fields: Box::new([Value::Int(10), Value::Int(20)]),
+            })
+        );
+    }
+
+    #[test]
+    fn vm_adt_with_zero_fields_constructs_a_unit_variant() {
+        let mut vm = vm_with(Box::new([Instr::Adt(0), Instr::Halt]));
+        vm.stack.push(Value::Int(1)); // tag
+
+        vm.execute().unwrap();
+
+        let Value::Ref(id) = vm.stack.pop().unwrap() else {
+            panic!("expected a Value::Ref");
+        };
+        assert_eq!(
+            vm.heap.get(id),
+            Ok(&HeapObject::Adt {
+                tag: 1,
+                fields: Box::new([]),
+            })
+        );
+    }
+
+    #[test]
+    fn vm_adt_with_not_enough_fields_on_the_stack_returns_stack_underflow() {
+        let mut vm = vm_with(Box::new([Instr::Adt(3), Instr::Halt]));
+        vm.stack.push(Value::Int(0));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::StackUnderflow));
+    }
+
+    #[test]
+    fn vm_adt_with_a_non_int_tag_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instr::Adt(1), Instr::Halt]));
+        vm.stack.push(Value::Bool(true)); // tag
+        vm.stack.push(Value::Int(10)); // field
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_tag_reads_the_tag_of_an_adt() {
+        let mut vm = vm_with(Box::new([Instr::Tag, Instr::Halt]));
+        let id = vm.heap.insert(HeapObject::Adt {
+            tag: 7,
+            fields: Box::new([Value::Int(1)]),
+        });
+        vm.stack.push(Value::Ref(id));
+
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(7)));
+    }
+
+    #[test]
+    fn vm_tag_on_a_non_adt_heap_object_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instr::Tag, Instr::Halt]));
+        let id = vm.heap.insert(HeapObject::String("hi".into()));
+        vm.stack.push(Value::Ref(id));
+
+        assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
+    }
+
+    #[test]
+    fn vm_tag_on_a_non_ref_value_returns_type_mismatch() {
+        let mut vm = vm_with(Box::new([Instr::Tag, Instr::Halt]));
         vm.stack.push(Value::Int(1));
 
         assert_eq!(vm.execute(), Err(VmError::Value(ValueError::TypeMismatch)));
