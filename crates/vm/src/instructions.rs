@@ -2,7 +2,7 @@ use crate::value::Value;
 use crate::{InstrAddr, StringId};
 
 #[derive(Debug, Clone, Copy)]
-pub enum Instruction {
+pub enum Instr {
     Nop,
     Halt,
     Push(Value),
@@ -38,4 +38,6 @@ pub enum Instruction {
     Insert,
     Remove,
     Len,
+    Call,
+    Ret,
 }
