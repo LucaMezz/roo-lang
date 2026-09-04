@@ -40,4 +40,6 @@ pub enum Instr {
     Len,
     Call,
     Ret,
+    GetLocal(usize),
+    SetLocal(usize),
 }

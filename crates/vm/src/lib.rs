@@ -47,6 +47,9 @@ pub enum VmError {
     /// A function id did not point to a function proto in the unit.
     #[error("invalid function reference")]
     InvalidFnRef,
+    /// A local variable index did not point to a valid stack slot for the current frame.
+    #[error("invalid local index")]
+    InvalidLocalIndex,
     /// An index was out of the bounds of the container being indexed.
     #[error("index out of bounds")]
     IndexOutOfBounds,
@@ -343,6 +346,18 @@ impl Vm {
 
                     self.jump(frame.savedpc);
                 }
+                Instr::GetLocal(offset) => {
+                    let frame = self.call_stack.peek()?;
+                    let local = self.stack.get(frame.top + offset)?;
+
+                    self.stack.push(*local);
+                }
+                Instr::SetLocal(offset) => {
+                    let value = self.stack.pop()?;
+                    let frame = self.call_stack.peek()?;
+
+                    self.stack.set(frame.top + offset, value)?;
+                }
                 _ => unimplemented!(),
             };
         }
@@ -458,6 +473,19 @@ impl Stack {
 
     fn peek(&self) -> Result<&Value, VmError> {
         self.values.last().ok_or(VmError::StackUnderflow)
+    }
+
+    fn get(&self, offset: usize) -> Result<&Value, VmError> {
+        self.values.get(offset).ok_or(VmError::InvalidLocalIndex)
+    }
+
+    fn set(&mut self, offset: usize, value: Value) -> Result<(), VmError> {
+        let slot = self
+            .values
+            .get_mut(offset)
+            .ok_or(VmError::InvalidLocalIndex)?;
+        *slot = value;
+        Ok(())
     }
 }
 
@@ -1732,6 +1760,95 @@ mod tests {
         let mut vm = vm_with(Box::new([Instr::Ret, Instr::Halt]));
 
         assert_eq!(vm.execute(), Err(VmError::CallStackUnderflow));
+    }
+
+    #[test]
+    fn vm_get_local_reads_a_value_that_is_not_on_top_of_the_stack() {
+        // fn(x, y) { x + y }, called as f(3, 4)
+        let unit = Unit::new(
+            Box::new([
+                Instr::Push(Value::Int(3)),
+                Instr::Push(Value::Int(4)),
+                Instr::Push(Value::Int(0)),
+                Instr::Call,
+                Instr::Halt,
+                Instr::GetLocal(0),
+                Instr::GetLocal(1),
+                Instr::Add,
+                Instr::Ret,
+            ]),
+            Box::new([]),
+            Box::new([FnProto {
+                entry: InstrAddr(5),
+                arity: 2,
+            }]),
+        );
+
+        let mut vm = Vm::new(unit);
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(7)));
+    }
+
+    #[test]
+    fn vm_set_local_overwrites_a_value_that_a_later_get_local_observes() {
+        // fn(x) { x = x + 100; x }, called as f(5)
+        let unit = Unit::new(
+            Box::new([
+                Instr::Push(Value::Int(5)),
+                Instr::Push(Value::Int(0)),
+                Instr::Call,
+                Instr::Halt,
+                Instr::GetLocal(0),
+                Instr::Push(Value::Int(100)),
+                Instr::Add,
+                Instr::SetLocal(0),
+                Instr::GetLocal(0),
+                Instr::Ret,
+            ]),
+            Box::new([]),
+            Box::new([FnProto {
+                entry: InstrAddr(4),
+                arity: 1,
+            }]),
+        );
+
+        let mut vm = Vm::new(unit);
+        vm.execute().unwrap();
+
+        assert_eq!(vm.stack.pop(), Ok(Value::Int(105)));
+    }
+
+    #[test]
+    fn vm_get_local_with_no_active_call_frame_returns_call_stack_underflow() {
+        let mut vm = vm_with(Box::new([Instr::GetLocal(0), Instr::Halt]));
+
+        assert_eq!(vm.execute(), Err(VmError::CallStackUnderflow));
+    }
+
+    #[test]
+    fn vm_get_local_with_an_offset_past_the_stack_returns_invalid_local_index() {
+        let mut vm = vm_with(Box::new([Instr::GetLocal(5), Instr::Halt]));
+        vm.call_stack.push(CallFrame::new(0, InstrAddr(0)));
+
+        assert_eq!(vm.execute(), Err(VmError::InvalidLocalIndex));
+    }
+
+    #[test]
+    fn vm_set_local_with_no_active_call_frame_returns_call_stack_underflow() {
+        let mut vm = vm_with(Box::new([Instr::SetLocal(0), Instr::Halt]));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::CallStackUnderflow));
+    }
+
+    #[test]
+    fn vm_set_local_with_an_offset_past_the_stack_returns_invalid_local_index() {
+        let mut vm = vm_with(Box::new([Instr::SetLocal(5), Instr::Halt]));
+        vm.call_stack.push(CallFrame::new(0, InstrAddr(0)));
+        vm.stack.push(Value::Int(1));
+
+        assert_eq!(vm.execute(), Err(VmError::InvalidLocalIndex));
     }
 
     #[test]
